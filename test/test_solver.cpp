@@ -96,6 +96,24 @@ SolveResult solvePuzzle(const char * path, unsigned int problemIdx = 0, bool dis
   };
 }
 
+/* MinGW does not declare setenv/unsetenv. An empty value removes the
+   variable on Windows, matching unsetenv. */
+#ifdef _WIN32
+void setNoSimd(bool on) {
+  (void)_putenv_s("BURRTOOLS_NO_SIMD", on ? "1" : "");
+}
+#else
+void setNoSimd(bool on) {
+  if (on) setenv("BURRTOOLS_NO_SIMD", "1", 1);
+  else unsetenv("BURRTOOLS_NO_SIMD");
+}
+#endif
+
+struct ForceNoSimd {
+  ForceNoSimd() { setNoSimd(true); }
+  ~ForceNoSimd() { setNoSimd(false); }
+};
+
 } // namespace
 
 TEST_CASE("Pelikan Burr solver regression (GT_BRICKS)", "[solver][pelikan]") {
@@ -901,7 +919,7 @@ TEST_CASE("Parallel assembler 1: the interrupted flag does not break normal rest
   /* SIMD abort is not resumable (position lives in the solver, not the
    * Huang stacks). Force the serial iterative path this case is about.
    */
-  setenv("BURRTOOLS_NO_SIMD", "1", 1);
+  ForceNoSimd forceNoSimd;
   assembler_1_c assm(*problem);
   assm.setNumThreads(1);            // serial: a resumable stop
   REQUIRE(assm.createMatrix(false, false, false) == assembler_c::ERR_NONE);
@@ -924,7 +942,6 @@ TEST_CASE("Parallel assembler 1: the interrupted flag does not break normal rest
   std::string payload = extractAssemblerContent(state);
   CHECK(restored.setPosition(payload.c_str(), assemblerVersionOf(state).c_str())
         == assembler_c::ERR_NONE);
-  unsetenv("BURRTOOLS_NO_SIMD");
 }
 
 /* getFinished() must not claim a completed search just because a previous
