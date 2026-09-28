@@ -13,13 +13,13 @@
 
 namespace {
 
-/* Re-solve test/puzzles/EnigmaTIC.xmpuzzle with Check Rotations on.
+/* Re-solve test/test_rotation_solvers.xmpuzzle with Check Rotations on.
    The file already stores one rotation solution; that copy is cleared
    first so the assertions describe what this solver finds, not what
    was baked into the file. Ordinary fixture loads do not do this:
    opening a puzzle does not filter rotated assemblies. */
 void requireEnigmaRotationSolution(solverType_e type) {
-  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/puzzles/EnigmaTIC.xmpuzzle");
+  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_rotation_solvers.xmpuzzle");
   REQUIRE(puzzle != nullptr);
   problem_c * pr = puzzle->getProblem(0);
   REQUIRE(pr != nullptr);

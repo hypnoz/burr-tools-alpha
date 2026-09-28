@@ -105,8 +105,8 @@ private:
 
   /**
    * When true, saved solutions were produced with Check Rotations and are
-   * written under <solutionsWithRotations> so older BurrTools can skip them.
-   * Classic <solutions> is used when this is false.
+   * written under \<solutionsWithRotations\> so older BurrTools can skip them.
+   * Classic \<solutions\> is used when this is false.
    */
   bool solutionsWithRotations;
 
@@ -517,7 +517,7 @@ public:
   unsigned int getNumberOfSavedSolutions(void) const { return solutions.size(); }
 
   /**
-   * True when solutions should be persisted under <solutionsWithRotations>
+   * True when solutions should be persisted under \<solutionsWithRotations\>
    * (Check Rotations was used). Older BurrTools skip that element.
    */
   bool getSolutionsWithRotations(void) const { return solutionsWithRotations; }

@@ -60,7 +60,10 @@ private:
 
   struct Save {
     std::vector<unsigned int> size;
-    unsigned int active;
+    /* Zero until storeSizes() records the live item count. A default Frame
+       is moved into the frames vector, and MinGW -O3 -Werror rejects a move
+       of an uninitialized unsigned. */
+    unsigned int active = 0;
   };
 
   struct Frame {

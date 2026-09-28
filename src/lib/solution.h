@@ -85,8 +85,9 @@ public:
 
   /**
    * Save the solution to the XML file.
+   * @param xml the writer positioned at the solution element
    * @param includeRotationFields when true, persist mid-disassembly orientations
-   *        and rotation metadata (for <solutionsWithRotations>)
+   *        and rotation metadata (for \<solutionsWithRotations\>)
    */
   void save(xmlWriter_c & xml, bool includeRotationFields = false) const;
 

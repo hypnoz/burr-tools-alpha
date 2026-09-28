@@ -96,13 +96,18 @@ public:
   /**
    * Collect cells useful for Debug Rotations visualisation of one candidate.
    *
- * @param outBlocking    static cells that currently violate arc-sweep,
- *                       same-layer sandwich, perpendicular-plane capture, or
- *                       axis-cross opposition (hard conflicts)
+   * @param occupied    world cells occupied by pieces that are not moving
+   * @param startCells  world cells of the moving piece before rotation
+   * @param pivot       rotation centre (doubled cell-index, see pivot_t)
+   * @param axis        0=X, 1=Y, 2=Z
+   * @param sense       0 = +90°, 1 = -90°
+   * @param outBlocking    static cells that currently violate arc-sweep,
+   *                       same-layer sandwich, perpendicular-plane capture, or
+   *                       axis-cross opposition (hard conflicts)
    * @param outClearance   mid-path lattice cells that are not part of the moving
    *                       piece at start — empty cells here would block if filled
- * @param outRestricted  empty ±in-plane slots face-adjacent to a moving voxel
- *                       on a layer that touches the other piece
+   * @param outRestricted  empty ±in-plane slots face-adjacent to a moving voxel
+   *                       on a layer that touches the other piece
    */
   void collectDebugConflictCells(const std::vector<cell_t> & occupied,
                                  const std::vector<cell_t> & startCells,

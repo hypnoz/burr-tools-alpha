@@ -133,9 +133,11 @@ public:
 
   ~state_c();
 
-  /** save into an xml node */
   /**
-   * @param includeRotationFields when false, omit <dt> and <rotation> so the
+   * Save this state into an XML node.
+   * @param xml the writer positioned at the state element
+   * @param piecenumber how many piece coordinates to write
+   * @param includeRotationFields when false, omit \<dt\> and \<rotation\> so the
    *        file stays readable by older BurrTools
    */
   void save(xmlWriter_c & xml, unsigned int piecenumber, bool includeRotationFields = false) const;
