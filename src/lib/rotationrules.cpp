@@ -618,7 +618,7 @@ bool rotationRules_c::allowRotation(const std::vector<cell_t> & occupied,
   {
     const char * spec = getenv("BT_ROT_DUMP");
     int px, py, pz, a, s;
-    if (spec && sscanf(spec, "%d,%d,%d,%u,%u", &px, &py, &pz, &a, &s) == 5 &&
+    if (spec && sscanf(spec, "%d,%d,%d,%d,%d", &px, &py, &pz, &a, &s) == 5 &&
         pivot.hx == px * 2 && pivot.hy == py * 2 && pivot.hz == pz * 2 &&
         axis == (unsigned)a && sense == (unsigned)s) {
       static bool dumped = false;

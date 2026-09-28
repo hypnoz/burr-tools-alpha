@@ -67,6 +67,10 @@ bt2Cells_c & bt2Cells_c::operator=(const bt2Cells_c & src) {
   solRows = src.solRows;
   frames = src.frames;
   activeFrames = src.activeFrames;
+  /* Callbacks are not part of the search state. The copy constructor
+     clears them too, so a clone does not deliver solutions twice. */
+  cbUser = 0;
+  cbFn = 0;
   iterations = 0;
   return *this;
 }

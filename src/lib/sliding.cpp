@@ -42,12 +42,6 @@ void fillTray(voxel_c * v) {
       v->setState(x, y, 0, voxel_c::VX_FILLED);
 }
 
-void clearColors(voxel_c * v) {
-  for (unsigned int i = 0; i < v->getXYZ(); i++)
-    if (v->getState(i) != voxel_c::VX_EMPTY)
-      v->setColor(i, 0);
-}
-
 void paintPieceNeutral(voxel_c * piece) {
   for (unsigned int i = 0; i < piece->getXYZ(); i++)
     if (piece->getState(i) != voxel_c::VX_EMPTY)

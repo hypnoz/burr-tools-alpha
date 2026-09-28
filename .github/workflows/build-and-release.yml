@@ -176,8 +176,9 @@ jobs:
            --body-file coverage-report.md --edit-last --create-if-none
 
 
-  # Builds the Doxygen API reference and, on master, publishes it to GitHub
-  # Pages at https://burr-tools.github.io/burr-tools/.
+  # Builds the Doxygen API reference. This job does not publish anything.
+  # `just docs` fails the run on any Doxygen warning, which is the check worth
+  # keeping on every repository, including forks.
   #
   # Gated to pull requests and master, matching `coverage` above. That is not
   # just symmetry: the `release` job downloads *every* artifact of the run into
@@ -218,10 +219,15 @@ jobs:
   # token, and a pull request from a fork must not be handed either. Keeping the
   # generation step in its own read-only job means forks still get their docs
   # build checked; only this job, which never runs for a pull request, deploys.
+  #
+  # Publish only from burr-tools/burr-tools. deploy-pages writes to GitHub Pages
+  # for the repository that ran the workflow, and that call 404s when Pages is
+  # not enabled. A fork such as hypnoz/burr-tools-rotations does not own
+  # https://burr-tools.github.io/burr-tools/ and should not try to create a site.
   deploy-docs:
     needs: docs
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'burr-tools/burr-tools'
     permissions:
       pages: write
       id-token: write
