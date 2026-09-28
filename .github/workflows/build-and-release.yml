@@ -29,7 +29,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       release_name: ${{ steps.version.outputs.release_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -46,12 +46,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Cache Meson wraps and ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             subprojects/packagecache
@@ -75,7 +75,7 @@ jobs:
             cppcheck
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@v4
 
       - name: Build and package
         env:
@@ -92,7 +92,7 @@ jobs:
         run: just check
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: burrtools-linux
           path: burrtools-${{ needs.version.outputs.version }}-linux-*.tar.gz
@@ -107,7 +107,7 @@ jobs:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
         submodules: recursive
@@ -119,7 +119,7 @@ jobs:
       run: sudo apt-get install -y libboost-all-dev meson ninja-build build-essential freeglut3-dev libgl-dev libglu1-mesa-dev libpng-dev mesa-common-dev zlib1g-dev gcovr
 
     - name: Install just
-      uses: extractions/setup-just@v2
+      uses: extractions/setup-just@v4
 
     # `shell: bash` sets pipefail, so a gcovr failure is not masked by tee's
     # exit status.
@@ -131,7 +131,7 @@ jobs:
     # the artifact-url output does not exist until the upload has run.
     - name: Upload HTML coverage report
       id: coverage_artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: coverage-html
         path: coverage-html/
@@ -191,7 +191,7 @@ jobs:
       contents: read
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         # `just docs` stamps the docs with `git describe --tags`, which needs
         # the tags and enough history to find the most recent one.
@@ -204,13 +204,13 @@ jobs:
       run: sudo apt-get install -y doxygen graphviz
 
     - name: Install just
-      uses: extractions/setup-just@v2
+      uses: extractions/setup-just@v4
 
     - name: Generate API documentation
       run: just docs
 
     - name: Upload the Pages artifact
-      uses: actions/upload-pages-artifact@v3
+      uses: actions/upload-pages-artifact@v5
       with:
         path: gendoc/html
 
@@ -243,7 +243,7 @@ jobs:
     steps:
     - name: Deploy to GitHub Pages
       id: deployment
-      uses: actions/deploy-pages@v4
+      uses: actions/deploy-pages@v5
 
 
   build-windows:
@@ -251,12 +251,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Cache Meson wraps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             subprojects/packagecache
@@ -293,7 +293,7 @@ jobs:
           rm -rf "$STAGE"
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: burrtools-windows
           path: burrtools-${{ needs.version.outputs.version }}-windows-x86_64.zip
@@ -304,12 +304,12 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Cache Meson wraps and ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             subprojects/packagecache
@@ -321,7 +321,7 @@ jobs:
             meson-macos-
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@v4
 
       - name: Build
         env:
@@ -361,7 +361,7 @@ jobs:
           mv "BurrTools-${VERSION}-macos-${ARCH}.dmg" "burrtools-${VERSION}-macos-${ARCH}-cli.zip" artifacts/
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: burrtools-macos
           path: artifacts/*
@@ -374,12 +374,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -399,7 +399,7 @@ jobs:
           } >> notes.md
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: BurrTools ${{ needs.version.outputs.release_name }}
           body_path: notes.md
