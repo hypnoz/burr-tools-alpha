@@ -24,6 +24,26 @@
 #include "../lib/puzzle.h"
 #include "../lib/voxel.h"
 #include "../lib/gridtype.h"
+#include "../lib/sliding.h"
+
+#include <FL/Fl_Hold_Browser.H>
+#include <cstdint>
+
+/* Scrolling piece list that participates in the tool-tab grid. */
+class LFl_Hold_Browser : public Fl_Hold_Browser, public layoutable_c {
+public:
+  LFl_Hold_Browser(int x, int y, int w, int h)
+    : Fl_Hold_Browser(0, 0, 10, 10), layoutable_c(x, y, w, h) {}
+
+  void getMinSize(int *width, int *height) const override {
+    *width = 110;
+    *height = 80;
+  }
+};
+
+#include "../lib/puzzle.h"
+#include "../lib/voxel.h"
+#include "../lib/gridtype.h"
 #include "WindowWidgets.h"
 #include "guigridtype.h"
 #include <stdlib.h>
@@ -567,7 +587,9 @@ void ToolTab_0::setVoxelSpace(puzzle_c * puz, unsigned int sh) {
   puzzle = puz;
   shape = sh;
 
-  bt_assert(!puzzle || (puzzle->getGridType()->getType() == gridType_c::GT_BRICKS));
+  bt_assert(!puzzle ||
+            puzzle->getGridType()->getType() == gridType_c::GT_BRICKS ||
+            puzzle->getGridType()->getType() == gridType_c::GT_SLIDING);
 
   if (puzzle && shape < puzzle->getNumberOfShapes())
     changeSize->setXYZ(puzzle->getShape(shape)->getX(),
@@ -575,13 +597,35 @@ void ToolTab_0::setVoxelSpace(puzzle_c * puz, unsigned int sh) {
         puzzle->getShape(shape)->getZ());
   else
     changeSize->setXYZ(0, 0, 0);
+
+  bool sliding = puzzle && puzzle->getGridType()->getType() == gridType_c::GT_SLIDING;
+  if (startGoalTab) {
+    if (sliding) startGoalTab->show();
+    else startGoalTab->hide();
+  }
+  refreshPieceList();
 }
 
 static void cb_ToolTab0Size_stub(Fl_Widget* o, long /*v*/) { static_cast<ToolTab_0*>(o->parent()->parent()->parent())->cb_size(); }
 static void cb_ToolTab0Transform_stub(Fl_Widget* o, long v) { static_cast<ToolTab_0*>(o->parent())->cb_transform(v); }
 static void cb_ToolTab0Transform2_stub(Fl_Widget* o, long v) { static_cast<ToolTab_0*>(o->parent()->parent())->cb_transform(v); }
+static void cb_ToolTab0StartGoal_stub(Fl_Widget* o, long) {
+  Fl_Widget * p = o;
+  while (p && !dynamic_cast<ToolTab_0*>(p))
+    p = p->parent();
+  if (p)
+    static_cast<ToolTab_0*>(p)->cb_startGoalMode();
+}
+static void cb_ToolTab0SgPiece_stub(Fl_Widget* o, long) {
+  Fl_Hold_Browser * b = dynamic_cast<Fl_Hold_Browser*>(o);
+  Fl_Widget * p = o;
+  while (p && !dynamic_cast<ToolTab_0*>(p))
+    p = p->parent();
+  if (p && b && b->value() > 0)
+    static_cast<ToolTab_0*>(p)->selectPiece((unsigned int)(uintptr_t)b->data(b->value()));
+}
 
-ToolTab_0::ToolTab_0(int x, int y, int w, int h) : ToolTab(x, y, w, h) {
+ToolTab_0::ToolTab_0(int x, int y, int w, int h) : ToolTab(x, y, w, h), pieceList(0), selectedSgPiece((unsigned int)-1), modeCallbackPending(false), shownTab(0) {
 
   {
     layouter_c * o = new layouter_c(0, 1, 1, 1);
@@ -619,7 +663,117 @@ ToolTab_0::ToolTab_0(int x, int y, int w, int h) : ToolTab(x, y, w, h) {
     o->hide();
   }
 
+  {
+    startGoalTab = new layouter_c(0, 1, 1, 1);
+    startGoalTab->label("Start/Goal");
+    startGoalTab->pitch(5);
+    startGoalTab->hide();
+
+    modeStart = new LFl_Radio_Button("Start", 0, 0, 1, 1);
+    modeStart->tooltip(" Paint start labels onto the selected start/goal shape ");
+    modeStart->value(1);
+    modeStart->callback(cb_ToolTab0StartGoal_stub);
+    modeGoal = new LFl_Radio_Button("Goal", 0, 1, 1, 1);
+    modeGoal->tooltip(" Paint goal labels onto the selected start/goal shape ");
+    modeGoal->callback(cb_ToolTab0StartGoal_stub);
+
+    (new LFl_Box(1, 0, 1, 2))->setMinimumSize(20, 0);
+
+    LFl_Hold_Browser * list = new LFl_Hold_Browser(2, 0, 1, 2);
+    list->weight(1, 1);
+    list->callback(cb_ToolTab0SgPiece_stub);
+    pieceList = list;
+
+    startGoalTab->end();
+  }
+
   end();
+  shownTab = value();
+}
+
+void ToolTab_0::cb_startGoalMode(void) {
+  modeCallbackPending = true;
+  do_callback();
+}
+
+void ToolTab_0::selectPiece(unsigned int shapeId) {
+  selectedSgPiece = shapeId;
+  modeCallbackPending = true;
+  do_callback();
+}
+
+int ToolTab_0::startGoalMode(void) const {
+  return (modeGoal && modeGoal->value()) ? 1 : 0;
+}
+
+bool ToolTab_0::labelEditActive(void) {
+  return startGoalTab && value() == startGoalTab;
+}
+
+bool ToolTab_0::consumeTabChange(void) {
+  Fl_Widget * now = value();
+  if (now == shownTab)
+    return false;
+  shownTab = now;
+  return true;
+}
+
+unsigned int ToolTab_0::selectedPiece(void) const {
+  return selectedSgPiece;
+}
+
+bool ToolTab_0::takeModeCallback(void) {
+  bool pending = modeCallbackPending;
+  modeCallbackPending = false;
+  return pending;
+}
+
+void ToolTab_0::refreshPieceList(void) {
+  if (!pieceList)
+    return;
+
+  bool sliding = puzzle && puzzle->getGridType()->getType() == gridType_c::GT_SLIDING;
+  bool editing = sliding && puzzle && shape < puzzle->getNumberOfShapes() &&
+                 sliding::isStartGoalShape(puzzle->getShape(shape));
+
+  if (modeStart) {
+    if (editing) { modeStart->activate(); modeGoal->activate(); }
+    else { modeStart->deactivate(); modeGoal->deactivate(); }
+  }
+  if (editing) pieceList->activate();
+  else pieceList->deactivate();
+
+  unsigned int keep = selectedSgPiece;
+  pieceList->callback((Fl_Callback1*)0);
+  pieceList->clear();
+
+  int line = 0;
+  int selectLine = 1;
+  if (puzzle) {
+    for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++) {
+      const voxel_c * v = puzzle->getShape(i);
+      if (sliding::isStartGoalShape(v) || sliding::isHiddenSlidingShape(v))
+        continue;
+      char txt[120];
+      if (v->getName().length())
+        snprintf(txt, sizeof(txt), "S%u - %s", i + 1, v->getName().c_str());
+      else
+        snprintf(txt, sizeof(txt), "S%u", i + 1);
+      pieceList->add(txt, (void*)(uintptr_t)i);
+      line++;
+      if (i == keep)
+        selectLine = line;
+    }
+  }
+
+  if (pieceList->size() > 0) {
+    pieceList->select(selectLine);
+    selectedSgPiece = (unsigned int)(uintptr_t)pieceList->data(pieceList->value());
+  } else {
+    selectedSgPiece = (unsigned int)-1;
+  }
+  pieceList->callback(cb_ToolTab0SgPiece_stub);
+  pieceList->redraw();
 }
 
 void ToolTab_0::cb_size(void) {
@@ -1421,4 +1575,124 @@ void ToolTabContainer::newGridType(const guiGridType_c * ggt) {
   add(tt);
   resize(x(), y(), w(), h());
 }
+
+
+void ToolTab_Sliding::setVoxelSpace(puzzle_c * puz, unsigned int sh) {
+  puzzle = puz;
+  shape = sh;
+
+  bt_assert(!puzzle || (puzzle->getGridType()->getType() == gridType_c::GT_SLIDING));
+
+  if (puzzle && shape < puzzle->getNumberOfShapes())
+    changeSize->setXYZ(puzzle->getShape(shape)->getX(),
+        puzzle->getShape(shape)->getY(),
+        1);
+  else
+    changeSize->setXYZ(0, 0, 1);
+}
+
+static void cb_ToolTabSlidingSize_stub(Fl_Widget* o, long /*v*/) {
+  static_cast<ToolTab_Sliding*>(o->parent()->parent()->parent())->cb_size();
+}
+static void cb_ToolTabSlidingMode_stub(Fl_Widget* o, long /*v*/) {
+  Fl_Widget *p = o->parent();
+  while (p && !dynamic_cast<ToolTab_Sliding*>(p))
+    p = p->parent();
+  if (p)
+    static_cast<ToolTab_Sliding*>(p)->cb_mode();
+}
+
+ToolTab_Sliding::ToolTab_Sliding(int x, int y, int w, int h) : ToolTab(x, y, w, h) {
+
+  {
+    layouter_c * o = new layouter_c(0, 1, 1, 1);
+    o->label("Size");
+    o->pitch(5);
+
+    layouter_c *o2 = new layouter_c(0, 0, 1, 1);
+
+    changeSize = new ChangeSize(0, 1, 1, 1);
+    changeSize->callback(cb_ToolTabSlidingSize_stub);
+
+    toAll = new LFl_Check_Button("Apply to All Shapes", 0, 0, 1, 1);
+    toAll->tooltip(" If this is active, size changes apply to all shapes ");
+    toAll->clear_visible_focus();
+    toAll->stretchHCenter();
+
+    o2->end();
+    o->end();
+  }
+
+  {
+    layouter_c * o = new layouter_c(0, 2, 1, 1);
+    o->label("Tray edit");
+    o->pitch(5);
+
+    modeWalls = new LFl_Radio_Button("Walls", 0, 0, 1, 1);
+    modeWalls->tooltip(" Toggle floor and wall cells on the tray ");
+    modeWalls->value(1);
+    modeWalls->callback(cb_ToolTabSlidingMode_stub);
+
+    modeStart = new LFl_Radio_Button("Start", 0, 1, 1, 1);
+    modeStart->tooltip(" Place or remove a piece's starting position on the tray ");
+    modeStart->callback(cb_ToolTabSlidingMode_stub);
+
+    modeGoal = new LFl_Radio_Button("Goal", 0, 2, 1, 1);
+    modeGoal->tooltip(" Place or clear a piece's goal position on the tray ");
+    modeGoal->callback(cb_ToolTabSlidingMode_stub);
+
+    o->end();
+  }
+
+  end();
+}
+
+void ToolTab_Sliding::cb_size(void) {
+  if (!puzzle || shape >= puzzle->getNumberOfShapes())
+    return;
+
+  /* Sliding is always one layer deep. */
+  int nx = changeSize->getX();
+  int ny = changeSize->getY();
+  if (nx < 1) nx = 1;
+  if (ny < 1) ny = 1;
+
+  if (toAll->value()) {
+    int dx = nx - (int)puzzle->getShape(shape)->getX();
+    int dy = ny - (int)puzzle->getShape(shape)->getY();
+    if (dx < 0) dx = 0;
+    if (dy < 0) dy = 0;
+    for (unsigned int s = 0; s < puzzle->getNumberOfShapes(); s++) {
+      int sx = (int)puzzle->getShape(s)->getX() + dx;
+      int sy = (int)puzzle->getShape(s)->getY() + dy;
+      if (sx < 1) sx = 1;
+      if (sy < 1) sy = 1;
+      puzzle->getShape(s)->resize(sx, sy, 1, 0);
+    }
+  } else {
+    puzzle->getShape(shape)->resize(nx, ny, 1, 0);
+  }
+  changeSize->setXYZ(nx, ny, 1);
+  do_callback();
+}
+
+void ToolTab_Sliding::cb_mode(void) {
+  /* Do not pass getMode() as the long argument: Fl_Widget::do_callback(widget, long)
+   * feeds that value to the container stub as void* user_data, which crashes when
+   * the stub casts it back to ToolTabContainer*. The mode is read via getMode()
+   * from the main-window callback instead. */
+  do_callback();
+}
+
+int ToolTab_Sliding::getMode(void) const {
+  if (modeStart->value())
+    return MODE_START;
+  if (modeGoal->value())
+    return MODE_GOAL;
+  return MODE_WALLS;
+}
+
+void ToolTab_Sliding::applyTask(voxel_c * /*space*/, long /*task*/) {
+}
+
 

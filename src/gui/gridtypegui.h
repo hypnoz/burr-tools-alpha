@@ -90,17 +90,23 @@ class gridTypeSelectorWindow_c : public LFl_Double_Window {
     /* currently selected grid type from the vector above */
     unsigned int current;
 
+    /* true only when the user confirms with OK */
+    bool okPressed;
+
   public:
 
     gridTypeSelectorWindow_c(void);
     ~gridTypeSelectorWindow_c(void);
 
-    /* after the window has been close you can get the created grid type with this function
-     */
+    /* after the window has been closed with OK, the created grid type */
     std::unique_ptr<gridType_c> getGridType(void);
+
+    /* false when the window was closed with Cancel or the window close box */
+    bool accepted(void) const { return okPressed; }
 
 
     void select_cb(void);
+    void ok_cb(void);
 };
 
 #endif

@@ -70,7 +70,7 @@ class part_c {
 };
 
 problem_c::problem_c(puzzle_c & puz) :
-  puzzle(puz), result(0xFFFFFFFF),
+  puzzle(puz), result(0xFFFFFFFF), goalShape(0xFFFFFFFF),
   solutionsWithRotations(false),
   solveState(SS_UNSOLVED), numAssemblies(0),
   numSolutions(0), usedTime(0), maxHoles(0xFFFFFFFF)
@@ -79,7 +79,7 @@ problem_c::problem_c(puzzle_c & puz) :
 problem_c::~problem_c(void) = default;
 
 problem_c::problem_c(const problem_c * orig, puzzle_c & puz) :
-  puzzle(puz), result(orig->result),
+  puzzle(puz), result(orig->result), goalShape(orig->goalShape),
   solutionsWithRotations(false),
   solveState(SS_UNSOLVED), numAssemblies(0), numSolutions(0), usedTime(0)
 {
@@ -167,6 +167,12 @@ void problem_c::save(xmlWriter_c & xml) const
   xml.newAttrib("id", result);
   xml.endTag("result");
 
+  if (goalShape != 0xFFFFFFFF) {
+    xml.newTag("goal");
+    xml.newAttrib("id", goalShape);
+    xml.endTag("goal");
+  }
+
   xml.newTag("bitmap");
   for (std::set<uint32_t>::iterator i = colorConstraints.begin(); i != colorConstraints.end(); ++i)
   {
@@ -207,6 +213,7 @@ void problem_c::save(xmlWriter_c & xml) const
 }
 
 problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0xFFFFFFFF),
+  goalShape(0xFFFFFFFF),
   solutionsWithRotations(false)
 {
   pars.require(xmlParser_c::START_TAG, "problem");
@@ -349,6 +356,14 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
       result = atoi(str.c_str());
       pars.skipSubTree();
     }
+    else if (pars.getName() == "goal")
+    {
+      str = pars.getAttributeValue("id");
+      if (!str.length())
+        pars.exception("the goal node must have an 'id' attribute with content");
+      goalShape = atoi(str.c_str());
+      pars.skipSubTree();
+    }
     else if (pars.getName() == "solutions" ||
              pars.getName() == "solutionsWithRotations")
     {
@@ -442,6 +457,8 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
   // if, for whatever reasons the shape is was not right, we reset it to an empty shape
   if (result >= puzzle.getNumberOfShapes())
     result = 0xFFFFFFFF;
+  if (goalShape >= puzzle.getNumberOfShapes())
+    goalShape = 0xFFFFFFFF;
 
   pars.require(xmlParser_c::END_TAG, "problem");
 
@@ -497,6 +514,12 @@ void problem_c::removeShape(unsigned short idx) {
     result = 0xFFFFFFFF;
   }
 
+  if (goalShape == idx)
+  {
+    editProblem();
+    goalShape = 0xFFFFFFFF;
+  }
+
   // remove the shape from the part list
   setShapeMaximum(idx, 0);
 
@@ -508,12 +531,17 @@ void problem_c::removeShape(unsigned short idx) {
 
   if (result > idx)
     result--;
+  if (goalShape != 0xFFFFFFFF && goalShape > idx)
+    goalShape--;
 }
 
 void problem_c::exchangeShapes(unsigned int shapeId1, unsigned int shapeId2) {
 
   if (result == shapeId1) result = shapeId2;
   else if (result == shapeId2) result = shapeId1;
+
+  if (goalShape == shapeId1) goalShape = shapeId2;
+  else if (goalShape == shapeId2) goalShape = shapeId1;
 
   for (unsigned int i = 0; i < parts.size(); i++)
     if (parts[i]->shapeId == shapeId1) parts[i]->shapeId = shapeId2;
@@ -644,6 +672,41 @@ unsigned int problem_c::getResultId(void) const {
 }
 bool problem_c::resultValid(void) const {
   return result < puzzle.getNumberOfShapes();
+}
+
+void problem_c::setGoalId(unsigned int shape)
+{
+  bt_assert(shape < puzzle.getNumberOfShapes());
+  if (shape != goalShape)
+  {
+    removeAllSolutions();
+    goalShape = shape;
+  }
+}
+
+void problem_c::clearGoal(void)
+{
+  removeAllSolutions();
+  goalShape = 0xFFFFFFFF;
+}
+
+bool problem_c::goalValid(void) const {
+  return goalShape < puzzle.getNumberOfShapes();
+}
+
+unsigned int problem_c::getGoalId(void) const {
+  bt_assert(goalShape < puzzle.getNumberOfShapes());
+  return goalShape;
+}
+
+const voxel_c * problem_c::getGoalShape(void) const {
+  bt_assert(goalValid());
+  return puzzle.getShape(goalShape);
+}
+
+voxel_c * problem_c::getGoalShape(void) {
+  bt_assert(goalValid());
+  return puzzle.getShape(goalShape);
 }
 
 /* get the result shape voxel space */
@@ -843,6 +906,8 @@ unsigned int problem_c::getPartIdForShape(unsigned int shapeId) const {
 
 bool problem_c::usesShape(unsigned int shape) const {
   if (result == shape)
+    return true;
+  if (goalShape == shape)
     return true;
 
   for (unsigned int i = 0; i < parts.size(); i++)

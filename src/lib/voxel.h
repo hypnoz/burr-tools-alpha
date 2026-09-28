@@ -144,6 +144,13 @@ protected:
   int weight;
 
   /**
+   * Per-voxel goal piece id (shape index + 1) used by Sliding start/goal
+   * trays. Empty when the shape has no goal marks. Start marks use the
+   * normal colour channel.
+   */
+  std::vector<unsigned char> goalPiece;
+
+  /**
    * A cache for hotspot and bounding box coordinates of the rotated voxel
    *
    * calculating the hotspot and bounding box can be expensive
@@ -346,9 +353,17 @@ public:
 
   /**
    * the x, y, z variant of the set function.
+   * An empty cell keeps no goal mark, and a cell that was empty does not
+   * bring a hidden goal mark back when it is filled again.
    */
   void set(unsigned int x, unsigned int y, unsigned int z, voxel_type val) {
-    space[getIndex(x, y, z)] = val;
+    unsigned int i = (unsigned int)getIndex(x, y, z);
+    voxel_type old = space[i];
+    space[i] = val;
+    if (((old & 3) == VX_EMPTY) || ((val & 3) == VX_EMPTY)) {
+      if (i < goalPiece.size())
+        goalPiece[i] = 0;
+    }
     recalcBoundingBox();
     symmetries = symmetryInvalid();
   }
@@ -358,7 +373,12 @@ public:
    */
   void set(unsigned int p, voxel_type val) {
     bt_assert(p<voxels);
+    voxel_type old = space[p];
     space[p] = val;
+    if (((old & 3) == VX_EMPTY) || ((val & 3) == VX_EMPTY)) {
+      if (p < goalPiece.size())
+        goalPiece[p] = 0;
+    }
     recalcBoundingBox();
     symmetries = symmetryInvalid();
   }
@@ -607,6 +627,16 @@ public:
   unsigned int getColor(unsigned int x, unsigned int y, unsigned int z) const { return get(x, y, z) >> 2; }
   unsigned int getColor2(int x, int y, int z) const { return get2(x, y, z) >> 2; }
   unsigned int getColor(unsigned int i) const { return get(i) >> 2; }
+
+  /** Goal-piece mark (shape index + 1), or 0. */
+  unsigned int getGoalPiece(unsigned int i) const {
+    return (i < goalPiece.size()) ? goalPiece[i] : 0;
+  }
+  unsigned int getGoalPiece(unsigned int x, unsigned int y, unsigned int z) const {
+    return getGoalPiece((unsigned int)getIndex(x, y, z));
+  }
+  void setGoalPiece(unsigned int i, unsigned int pieceId);
+  bool hasGoalPieces(void) const;
   //@}
 
   //@{

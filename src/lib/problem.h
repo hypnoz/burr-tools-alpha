@@ -89,6 +89,11 @@ private:
   unsigned int result;
 
   /**
+   * Sliding goal map shape index, or 0xFFFFFFFF when unused.
+   */
+  unsigned int goalShape;
+
+  /**
    * (some of) the found solutions. Not all or even none might be
    * in this vector if the user decides to only count, or not keep them
    * all. This vector contains the solutions that were kept
@@ -242,6 +247,17 @@ public:
    * Make sure to only call getResultId[Shape] when you know that the shape is valid
    */
   unsigned int getResultId(void) const;
+
+  /**
+   * Sliding puzzle goal map (optional). Same tray geometry as the result,
+   * holding goal footprints as voxel colours. Not used by the assembler.
+   */
+  void setGoalId(unsigned int shape);
+  void clearGoal(void);
+  bool goalValid(void) const;
+  unsigned int getGoalId(void) const;
+  const voxel_c * getGoalShape(void) const;
+  voxel_c * getGoalShape(void);
 
   //@}
 

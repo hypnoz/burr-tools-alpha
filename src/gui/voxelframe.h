@@ -31,6 +31,7 @@
 #include <FL/gl.h>
 #pragma GCC diagnostic pop
 
+#include <string>
 #include <vector>
 
 class voxel_c;
@@ -122,6 +123,8 @@ class voxelFrame_c : public Fl_Gl_Window {
      */
     void setMarker(int x1, int y1, int x2, int y2, int z, int markerType);
     void hideMarker(void);
+    /** Limit the hover highlight to one shape, or -1 for every shape. */
+    void setMarkerShape(int shapeNr);
 
     void useLightning(bool val) {
       _useLightning = val;
@@ -193,6 +196,8 @@ class voxelFrame_c : public Fl_Gl_Window {
     void setSpaceColor(unsigned int nr, float a);
 
     void setSpacePosition(unsigned int nr, float x, float y, float z, float scale);
+    void setSpaceCellLabels(unsigned int nr, std::vector<std::string> labels);
+    void setSpaceTitle(unsigned int nr, const char * title);
 
     typedef enum {
       ScaleRotateTranslate,      // for showing problems
@@ -219,6 +224,8 @@ class voxelFrame_c : public Fl_Gl_Window {
       Polyhedron * poly = nullptr;
       Polyhedron * pickPoly = nullptr;  // the flat mesh of the edge-line style, used to pick in the other styles
       GLuint list = 0;  // the display list for this shape 0 means no list defined
+      std::vector<std::string> cellLabels;
+      std::string title;
 
       /* mid-tumble animation (angle==0 means inactive) */
       float animAngle;
@@ -238,6 +245,7 @@ class voxelFrame_c : public Fl_Gl_Window {
     /* the marker position */
     int mX1 = 0, mY1 = 0, mZ = 0, mX2 = 0, mY2 = 0;
     int markerType;
+    int markerShape = -1;
 
     rotater_c * rotater;
     int rotMethod;

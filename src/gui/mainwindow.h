@@ -118,6 +118,8 @@ class mainWindow_c : public LFl_Double_Window {
 
   FlatButton *BtnPrepare, *BtnStart, *BtnCont, *BtnStop, *BtnPlacement, *BtnStep, *BtnMovement;
   FlatButton *BtnNewShape, *BtnDelShape, *BtnCpyShape, *BtnRenShape, *BtnUndo, *BtnRedo, *BtnShapeLeft, *BtnShapeRight, *BtnWeightInc, *BtnWeightDec, *BtnDetails;
+  FlatButton *BtnNewStartGoal, *BtnDelStartGoal;
+  Fl_Widget *startGoalRow, *startGoalGap;
   FlatButton *BtnNewColor, *BtnDelColor, *BtnChnColor;
   FlatButton *BtnNewProb, *BtnDelProb, *BtnCpyProb, *BtnRenProb, *BtnProbLeft, *BtnProbRight;
   FlatButton *BtnColSrtPc, *BtnColSrtRes, *BtnColAdd, *BtnColRem;
@@ -153,6 +155,19 @@ class mainWindow_c : public LFl_Double_Window {
   ColorSelector * colorSelector;
 
   VoxelEditGroup_c *pieceEdit;
+
+  /** Entities "Colors" and Puzzle "Colour Assignment" groups; hidden for Sliding. */
+  layouter_c * colorsGroup;
+  layouter_c * colourAssignmentGroup;
+  layouter_c * colourConstraintsGroup;
+
+  /** Sliding tray edit mode: 0 = Start labels, 1 = Goal labels. */
+  int slidingEditMode;
+
+  /** Sliding starts with Disassemble checked. Later clicks are kept. */
+  bool slidingDisasmDefaulted;
+
+  void applySlidingGridMode(void);
 
   Fl_Choice * solverTypeChoice;
   Fl_Choice * sortMethod;
@@ -255,6 +270,8 @@ public:
   void cb_NameShape(void);
   void cb_ShapeExchange(int with);
   void cb_WeightChange(int by);
+  void cb_NewStartGoal(void);
+  void cb_DelStartGoal(void);
   void cb_Undo(void);
   void cb_Redo(void);
 

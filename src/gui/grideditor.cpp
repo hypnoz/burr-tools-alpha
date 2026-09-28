@@ -24,8 +24,10 @@
 
 #include "../lib/puzzle.h"
 #include "../lib/voxel.h"
+#include "../lib/sliding.h"
 
 #include <FL/fl_draw.H>
+#include <cstdio>
 
 void gridEditor_c::setZ(unsigned int z) {
 
@@ -80,6 +82,32 @@ bool gridEditor_c::setRecursive(unsigned char tools, int x, int y, int z) {
     // if not don't change anything
     if (space->validCoordinate(x, y, z)) {
 
+      if (slidingLabel != 0) {
+        /* Start/Goal tab: the voxel itself stays put. Left click paints the
+         * selected piece onto a cell that already exists. Right click clears
+         * that cell's label. Empty cells are ignored. */
+        if (space->getState(x, y, z) != voxel_c::VX_EMPTY) {
+          const bool erase = state != 1;
+          if (slidingLabel == 1) {
+            unsigned int next = erase ? 0 : slidingPiece;
+            if (!erase && (slidingPiece == 0 || slidingPiece > 63))
+              next = space->getColor(x, y, z);
+            if (space->getColor(x, y, z) != next) {
+              changed = true;
+              space->setColor(x, y, z, next);
+            }
+          } else {
+            unsigned int next = erase ? 0 : slidingPiece;
+            if (!erase && (slidingPiece == 0 || slidingPiece > 63))
+              next = space->getGoalPiece(x, y, z);
+            if (space->getGoalPiece(x, y, z) != next) {
+              changed = true;
+              space->setGoalPiece((unsigned)space->getIndex(x, y, z), next);
+            }
+          }
+        }
+      } else {
+
       voxel_type v = voxel_c::VX_EMPTY;
 
       enTask todo = (state == 1) ? (task) : (TSK_RESET);
@@ -95,20 +123,29 @@ bool gridEditor_c::setRecursive(unsigned char tools, int x, int y, int z) {
           break;
       }
 
+      bool wasEmpty = space->getState(x, y, z) == voxel_c::VX_EMPTY;
+      bool startGoal = sliding::isStartGoalShape(space);
+
       // on all other tasks but the colour changing one, we need to set the state of the voxel
       if ((todo != gridEditor_c::TSK_COLOR) && (space->getState(x, y, z) != v)) {
         changed = true;
         space->setState(x, y, z, v);
 
-        // when emptying a cube, also clear the colour away
-        if (v == voxel_c::VX_EMPTY)
+        // A removed cell, or one that was just created, keeps neither label.
+        if (v == voxel_c::VX_EMPTY || (startGoal && wasEmpty)) {
           space->setColor(x, y, z, 0);
+          if (space->getGoalPiece(x, y, z))
+            space->setGoalPiece((unsigned)space->getIndex(x, y, z), 0);
+        }
       }
 
-      // this is for the colour change task
-      if ((space->getState(x, y, z) != voxel_c::VX_EMPTY) && (space->getColor(x, y, z) != currentColor)) {
+      /* Start/goal shapes store S# in the colour channel. The normal colour
+       * pen must not rewrite that, or a click clears Start and leaves Goal. */
+      if (!startGoal && (space->getState(x, y, z) != voxel_c::VX_EMPTY) && (space->getColor(x, y, z) != currentColor)) {
         changed = true;
         space->setColor(x, y, z, currentColor);
+      }
+
       }
     }
   } else if (tools & gridEditor_c::TOOL_MIRROR_X) {
@@ -251,6 +288,20 @@ int gridEditor_c::handle(int event) {
       clear_visible_focus();
       callbackReason = RS_STROKEBEGIN;
       do_callback();
+
+      if (task == TSK_SLIDING_CLICK) {
+        int cx, cy;
+        if (calcGridPosition(Fl::event_x(), Fl::event_y(), currentZ, &cx, &cy)) {
+          if (0 <= cx && cx < (long)space->getX() && 0 <= cy && cy < (long)space->getY()) {
+            mX = startX = cx;
+            mY = startY = cy;
+            mZ = currentZ;
+            callbackReason = RS_SLIDING_CLICK;
+            do_callback();
+          }
+        }
+        return 1;
+      }
     }
 
     // fall through
@@ -384,7 +435,10 @@ void gridEditor_c::draw() {
         continue;
 
       // apply the chequerboard pattern
-      if ((x+y+currentZ) & 1) {
+      bool whiteTray = sliding::isStartGoalShape(space);
+      if (whiteTray) {
+        r = g = b = ((x + y + currentZ) & 1) ? 235 : 255;
+      } else if ((x+y+currentZ) & 1) {
         r = int(255*darkPieceColor(pieceColorR(piecenumber)));
         g = int(255*darkPieceColor(pieceColorG(piecenumber)));
         b = int(255*darkPieceColor(pieceColorB(piecenumber)));
@@ -406,14 +460,35 @@ void gridEditor_c::draw() {
         break;
       }
 
-      // if the voxel is not empty and has a colour assigned, draw a marker in the
-      // upper left corner with the colour of the constraint colour
-      if ((space->getState(x, y, currentZ) != voxel_c::VX_EMPTY) &&
-          space->getColor(x, y, currentZ)) {
+      // Start/goal trays draw the piece's S# in the voxel instead of a colour swatch.
+      if (slidingLabel && space->getState(x, y, currentZ) != voxel_c::VX_EMPTY) {
+        unsigned int mark = (slidingLabel == 2)
+          ? space->getGoalPiece(x, y, currentZ)
+          : space->getColor(x, y, currentZ);
+        if (mark) {
+          char buf[16];
+          snprintf(buf, sizeof(buf), "S%u", mark);
+          fl_color(fl_rgb_color(230, 110, 0));
+          fl_font(FL_HELVETICA_BOLD, (sy > 18) ? 14 : 10);
+          int tw = 0, th = 0;
+          fl_measure(buf, tw, th);
+          int cx = tx + (int)x * sx + (sx - tw) / 2;
+          int cy = ty - ((int)y + 1) * sy + (sy + th) / 2 - fl_descent();
+          fl_draw(buf, cx, cy);
+        }
+      } else if (!whiteTray &&
+          (space->getState(x, y, currentZ) != voxel_c::VX_EMPTY)) {
 
-        puzzle->getColor(space->getColor(x, y, currentZ)-1, &r, &g, &b);
-        fl_color(r, g, b);
-        drawTileColor(x, y, currentZ, tx, ty, sx, sy);
+        /* A real constraint colour is drawn as a swatch. Sliding start locks
+         * store an S# in the same channel, and that number is not a palette
+         * entry. puzzle_c::getColor asserts on an out-of-range index, which
+         * is what happened when selecting a locked piece such as S2. */
+        unsigned int col = space->getColor(x, y, currentZ);
+        if (col > 0 && col <= puzzle->colorNumber()) {
+          puzzle->getColor(col - 1, &r, &g, &b);
+          fl_color(r, g, b);
+          drawTileColor(x, y, currentZ, tx, ty, sx, sy);
+        }
       }
 
       // the colour for the grid lines

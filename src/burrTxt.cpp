@@ -31,6 +31,7 @@
 #include "lib/print.h"
 #include "lib/voxel.h"
 #include "lib/solution.h"
+#include "lib/sliding.h"
 #include "tools/xml.h"
 #include "tools/gzstream.h"
 
@@ -45,7 +46,9 @@
 #include <chrono>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <mutex>
+#include <string>
 
 using namespace std;
 
@@ -178,6 +181,7 @@ public:
   int pn;
   problem_c * puzzle;
   std::mutex cbMutex;
+  std::map<std::string, unsigned int> slideBestMoves;
 
   bool hasBest;
   char bestDotlevel[200];
@@ -221,22 +225,39 @@ public:
 
     if (disassemble) {
 
-      auto da = d->disassemble(a.get());
+      /* Sliding "disassemble" is the start-to-goal slide, not brick take-apart. */
+      std::unique_ptr<separation_c> da = sliding::isSliding(*puzzle)
+          ? sliding::findSlidePath(*puzzle, *a)
+          : d->disassemble(a.get());
 
       if (da) {
-        Solutions++;
+        bool countIt = true;
+        if (sliding::isSliding(*puzzle)) {
+          const std::string key = sliding::finalPlacementKey(*da);
+          const unsigned int moves = da->getMoves();
+          auto it = slideBestMoves.find(key);
+          if (it == slideBestMoves.end())
+            slideBestMoves.emplace(key, moves);
+          else if (moves < it->second)
+            it->second = moves;
+          else
+            countIt = false;
+        }
+        if (countIt) {
+          Solutions++;
 
-        if (jsonOutput) {
-          considerLevel(da.get());
-        } else {
-          if (printSolutions)
-            print(a.get(), puzzle);
+          if (jsonOutput) {
+            considerLevel(da.get());
+          } else {
+            if (printSolutions)
+              print(a.get(), puzzle);
 
-          if (!quiet || allProblems)
-            printf("level: %s\n", da->movesText().c_str());
+            if (!quiet || allProblems)
+              printf("level: %s\n", da->movesText().c_str());
 
-          if (printDisassemble)
-            print(da.get(), a.get(), puzzle);
+            if (printDisassemble)
+              print(da.get(), a.get(), puzzle);
+          }
         }
       }
 
@@ -591,6 +612,12 @@ int main(int argv, char* args[]) {
 
       problem_c * problem = p.getProblem(pr);
 
+      if (sliding::isSliding(*problem)) {
+        sliding::syncMaxHoles(*problem);
+        sliding::refreshStartLocks(*problem);
+        strictColors = true;
+      }
+
       auto assm = p.getGridType()->findAssembler(*problem, jsonOutput, solverType);
       if (threads > 0)
         assm->setNumThreads(threads);
@@ -654,7 +681,7 @@ int main(int argv, char* args[]) {
       asm_cb a(problem);
 
       d.reset();
-      if (disassemble)
+      if (disassemble && !sliding::isSliding(*problem))
         d = createDisassembler(*problem, checkRotations, solverType);
 
       if (solverType == SOLVER_BT2)
@@ -690,13 +717,17 @@ int main(int argv, char* args[]) {
 
       problem_c * problem = p.getProblem(pr);
 
-      d = createDisassembler(*problem, checkRotations, solverType);
+      const bool slide = sliding::isSliding(*problem);
+      if (!slide)
+        d = createDisassembler(*problem, checkRotations, solverType);
 
       for (unsigned int sol = 0; sol < problem->getNumberOfSavedSolutions(); sol++) {
 
         if (problem->getSavedSolution(sol)->getAssembly()) {
 
-          auto da = d->disassemble(problem->getSavedSolution(sol)->getAssembly());
+          auto da = slide
+              ? sliding::findSlidePath(*problem, *problem->getSavedSolution(sol)->getAssembly())
+              : d->disassemble(problem->getSavedSolution(sol)->getAssembly());
 
           if (da) {
             if (printSolutions)

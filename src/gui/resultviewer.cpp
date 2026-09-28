@@ -23,6 +23,7 @@
 
 #include "../lib/problem.h"
 #include "../lib/voxel.h"
+#include "../lib/sliding.h"
 
 ResultViewer_c::ResultViewer_c(int x, int y, int w, int h) : Fl_Box(0, 0, 10, 10), layoutable_c(x, y, w, h), puzzle(0) {
   bg = color();
@@ -46,7 +47,7 @@ void ResultViewer_c::draw(void) {
     unsigned int result = puzzle->getResultId();
 
     if (getResultShape(*puzzle)->getName().length())
-      snprintf(txt, 120, "Result: S%u - %s", result+1, getResultShape(*puzzle)->getName().c_str());
+      snprintf(txt, 120, "Result: S%u - %s", result+1, sliding::displayName(getResultShape(*puzzle)).c_str());
     else
       snprintf(txt, 19, "Result: S%u", result + 1);
 

@@ -12,8 +12,6 @@ build-*/
 GPATH
 GRTAGS
 GTAGS
-tictest
-.DS_Store
 
 # Meson subprojects (keep only .wrap files in git)
 subprojects/*
@@ -38,6 +36,8 @@ __pycache__/
 # Local generated test output
 *.stl
 puzzles/
+tictest/
+tmp/
 
 # Benchmark and profiling outputs
 bench/*.csv

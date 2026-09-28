@@ -29,9 +29,11 @@
 #include "bt2_assemble.h"
 #include "solution.h"
 #include "voxel.h"
+#include "sliding.h"
 
 #include <chrono>
 #include <memory>
+#include <string>
 
 namespace {
 
@@ -113,7 +115,13 @@ void solveThread_c::run(void){
     /* first check, if there is an assembler available with the
      * problem, if there is one take that
      */
-    const bool strictColors = (parameters & PAR_STRICT_COLORS) != 0;
+    const bool strictColors = (parameters & PAR_STRICT_COLORS) != 0
+                              || sliding::isSliding(puzzle);
+
+    if (sliding::isSliding(puzzle)) {
+      sliding::syncMaxHoles(puzzle);
+      sliding::refreshStartLocks(puzzle);
+    }
 
     /* A prepared assembler bakes colour matching into its placement matrix.
      * A different strictness, or a saved resume point from a run that did not
@@ -628,6 +636,49 @@ bool solveThread_c::assembly(std::unique_ptr<assembly_c> a) {
 
   const int _solutionAction = solutionActionFromParameters(parameters);
 
+  /* Sliding trays: Disassemble keeps a start only when it can slide to the goal. */
+  if (sliding::isSliding(puzzle)) {
+    if (!(parameters & PAR_JUST_COUNT)) {
+      if (parameters & PAR_DISASSM) {
+        std::unique_ptr<separation_c> path = sliding::findSlidePath(puzzle, *a);
+        if (path) {
+          /* Several starts can slide to the same finished picture. A search
+           * never walks in a circle, but a worse start takes more moves to
+           * reach that picture. Keep the shortest path to each ending. */
+          const std::string key = sliding::finalPlacementKey(*path);
+          const unsigned int moves = path->getMoves();
+          int longer = -1;
+          bool keep = true;
+          for (unsigned int i = 0; i < puzzle.getNumberOfSavedSolutions(); i++) {
+            const separation_c * old = puzzle.getSavedSolution(i)->getDisassembly();
+            if (!old || sliding::finalPlacementKey(*old) != key)
+              continue;
+            if (old->getMoves() <= moves)
+              keep = false;
+            else
+              longer = (int)i;
+            break;
+          }
+          if (keep) {
+            if (longer >= 0)
+              puzzle.removeSolution((unsigned int)longer);
+            unsigned long solNum = puzzle.getNumSolutions();
+            puzzle.addSolution(a.release(), path.release(),
+                               puzzle.getNumAssemblies(), solNum);
+            if (longer < 0)
+              puzzle.incNumSolutions();
+          }
+        }
+      } else {
+        puzzle.addSolution(a.release());
+      }
+    }
+    puzzle.incNumAssemblies();
+    trimSavedSolutions(SOL_DISASM);
+    applyLiveSort();
+    return true;
+  }
+
   switch(_solutionAction) {
   case SOL_COUNT_ASM:
     break;
@@ -720,7 +771,8 @@ bool solveThread_c::start(bool stop_after_prep) {
     a = (a+1) / 2;
   }
 
-  if (parameters & PAR_DISASSM)
+  /* Sliding records its own slide path and does not use the brick disassembler. */
+  if ((parameters & PAR_DISASSM) && !sliding::isSliding(puzzle))
     startDisasmWorker();
 
   return thread_c::start();

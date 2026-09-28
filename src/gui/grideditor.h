@@ -50,7 +50,9 @@ public:
     TSK_SET,
     TSK_VAR,
     TSK_RESET,
-    TSK_COLOR
+    TSK_COLOR,
+    /** Sliding: click places/clears start or goal without painting voxels. */
+    TSK_SLIDING_CLICK
   } enTask;
 
   void setTask(enTask t) { task = t; }
@@ -78,6 +80,9 @@ public:
   };
 
   void setEditType(int type) { editType = type; }
+
+  void setSlidingLabels(int mode) { slidingLabel = mode; redraw(); }
+  void setSlidingPiece(unsigned int shapeIndexPlusOne) { slidingPiece = shapeIndexPlusOne; }
 
 protected:
 
@@ -110,6 +115,10 @@ protected:
   enTask task;
   unsigned char activeTools;
   int editType;
+  /** 0 = normal, 1 = start S# labels, 2 = goal S# labels. */
+  int slidingLabel;
+  /** Shape index + 1 of the piece whose S# is stamped, or 0. */
+  unsigned int slidingPiece;
 
   bool setLayer(unsigned int zv);
   int handle(int event);
@@ -124,7 +133,7 @@ protected:
 
 public:
 
-  gridEditor_c(int x, int y, int w, int h, puzzle_c * p) : Fl_Widget(x, y, w, h), puzzle(p), state(0), currentZ(0), piecenumber(0), mX(0xFFFF), mY(0xFFFF), mZ(0xFFFF), startX(0), startY(0), markX1(0), markX2(0), markY1(0), markY2(0), inside(false), callbackReason(0), currentColor(0), task(TSK_SET), activeTools(0), editType(0) {}
+  gridEditor_c(int x, int y, int w, int h, puzzle_c * p) : Fl_Widget(x, y, w, h), puzzle(p), state(0), currentZ(0), piecenumber(0), mX(0xFFFF), mY(0xFFFF), mZ(0xFFFF), startX(0), startY(0), markX1(0), markX2(0), markY1(0), markY2(0), inside(false), callbackReason(0), currentColor(0), task(TSK_SET), activeTools(0), editType(0), slidingLabel(0), slidingPiece(0) {}
 
   // sets the z layer to edit the value is clamped to valid values
   void setZ(unsigned int z);
@@ -158,7 +167,8 @@ public:
     RS_MOUSEMOVE,     // the mouse moved, the cursor must be updated
     RS_CHANGESQUARE,  // something was edited, 3D view must be redrawn
     RS_STROKEBEGIN,   // mouse-down starting a paint stroke
-    RS_STROKEEND      // mouse-up ending a paint stroke
+    RS_STROKEEND,     // mouse-up ending a paint stroke
+    RS_SLIDING_CLICK  // Sliding start/goal click at cursor cell
   };
 
   int getReason(void) { return callbackReason; }

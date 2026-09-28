@@ -99,6 +99,14 @@ public:
     sqedit->setTask(c);
   }
 
+  void setSlidingLabels(int mode) {
+    sqedit->setSlidingLabels(mode);
+  }
+
+  void setSlidingPiece(unsigned int shapeIndexPlusOne) {
+    sqedit->setSlidingPiece(shapeIndexPlusOne);
+  }
+
   void editType(int type) {
     sqedit->setEditType(type);
   }

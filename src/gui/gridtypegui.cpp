@@ -31,8 +31,8 @@
 
 gridTypeGui_0_c::gridTypeGui_0_c(int x, int y, int w, int h, gridType_c * /*gt*/) {
 
-  new LFl_Box("In a distant future there might be parameters\n"
-      "to stretch and shear the cube into a parallelepiped\n"
+  new LFl_Box("In the distant future there might be parameters\n"
+      "for stretching the cube and slanting its sides\n"
       "but not right now!!", x, y, w, h);
 
   end();
@@ -66,6 +66,7 @@ class gridTypeInfos_c {
 };
 
 static void cb_WindowButton_stub(Fl_Widget * /*o*/, void *v) { ((Fl_Double_Window*)(v))->hide(); }
+static void cb_gridTypeSelectorOk_stub(Fl_Widget * /*o*/, void *v) { ((gridTypeSelectorWindow_c*)(v))->ok_cb(); }
 
 gridTypeParameterWindow_c::gridTypeParameterWindow_c(guiGridType_c * ggt) : LFl_Double_Window(false) {
   label("Set parameters for grid type");
@@ -90,14 +91,23 @@ void gridTypeSelectorWindow_c::select_cb(void) {
   }
 }
 
-gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(false) {
+gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(false), okPressed(false) {
 
   /* for each grid type available we need to create an instance
    * here and put it into a gridtypeinfo class and into the
    * vector. This vector will be later on the one
    * with all required information
    */
+  /* Display order. Sliding stays immediately after Brick. The enum value
+   * itself is unchanged, so saved grid-type numbers do not shift. */
+  std::vector<int> order;
+  order.push_back(gridType_c::GT_BRICKS);
+  order.push_back(gridType_c::GT_SLIDING);
   for (int i = 0; i < gridType_c::GT_NUM_GRIDS; i++)
+    if (i != gridType_c::GT_BRICKS && i != gridType_c::GT_SLIDING)
+      order.push_back(i);
+
+  for (int i : order)
     gti.push_back(std::make_unique<gridTypeInfos_c>(std::make_unique<gridType_c>(gridType_c::gridType(i))));
 
   /* from here on the code should not need changes when new grid types are added */
@@ -150,8 +160,23 @@ gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(fal
     layouter_c * l = new layouter_c(0, 2, 3, 1);
 
     LFl_Button * b = new LFl_Button("OK", 0, 0);
+    b->labelsize(20);
+    b->setPadding(36, 20);
+    b->setMinimumSize(180, 56);
     b->pitch(7);
-    b->callback(cb_WindowButton_stub, this);
+    b->stretchLeft();
+    b->callback(cb_gridTypeSelectorOk_stub, this);
+
+    LFl_Button * c = new LFl_Button("Cancel", 1, 0);
+    c->labelsize(20);
+    c->setPadding(36, 20);
+    c->setMinimumSize(180, 56);
+    c->pitch(7);
+    c->stretchLeft();
+    c->shortcut(FL_Escape);
+    c->callback(cb_WindowButton_stub, this);
+
+    (new LFl_Box(2, 0))->weight(1, 0);
 
     l->end();
   }
@@ -160,6 +185,11 @@ gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(fal
 }
 
 gridTypeSelectorWindow_c::~gridTypeSelectorWindow_c(void) = default;
+
+void gridTypeSelectorWindow_c::ok_cb(void) {
+  okPressed = true;
+  hide();
+}
 
 std::unique_ptr<gridType_c> gridTypeSelectorWindow_c::getGridType(void) {
   return std::move(gti[current]->gt);

@@ -77,6 +77,9 @@ bool voxel_0_c::transform(unsigned int nr) {
   int nsz = abs(tz)+1;
 
   std::vector<voxel_type> s(nsx*nsy*nsz, VX_EMPTY);
+  std::vector<unsigned char> g;
+  if (!goalPiece.empty())
+    g.assign(nsx*nsy*nsz, 0);
 
   unsigned int index = 0;
   for (unsigned int z = 0; z < sz; z++)
@@ -93,10 +96,18 @@ bool voxel_0_c::transform(unsigned int nr) {
 
           s[tx + nsx*(ty + nsy*tz)] = space[index];
         }
+        if (!g.empty() && index < goalPiece.size() && goalPiece[index]) {
+          tx = rotationMatrices[nr][0]*x + rotationMatrices[nr][1]*y + rotationMatrices[nr][2]*z + shx;
+          ty = rotationMatrices[nr][3]*x + rotationMatrices[nr][4]*y + rotationMatrices[nr][5]*z + shy;
+          tz = rotationMatrices[nr][6]*x + rotationMatrices[nr][7]*y + rotationMatrices[nr][8]*z + shz;
+          g[tx + nsx*(ty + nsy*tz)] = goalPiece[index];
+        }
         index++;
       }
 
   space = std::move(s);
+  if (!g.empty())
+    goalPiece = std::move(g);
 
   sx = nsx;
   sy = nsy;
@@ -212,6 +223,9 @@ bool voxel_0_c::getNeighbor(unsigned int idx, unsigned int typ, int x, int y, in
 void voxel_0_c::scale(unsigned int amount, bool grid)
 {
   std::vector<voxel_type> s2(sx*amount*sy*amount*sz*amount);
+  std::vector<unsigned char> g2;
+  if (!goalPiece.empty())
+    g2.assign(sx*amount*sy*amount*sz*amount, 0);
 
   for (unsigned int x = 0; x < sx; x++)
     for (unsigned int y = 0; y < sy; y++)
@@ -220,9 +234,15 @@ void voxel_0_c::scale(unsigned int amount, bool grid)
           for (unsigned int ay = 0; ay < amount; ay++)
             for (unsigned int az = 0; az < amount; az++)
               if (!grid)
-                s2[(x*amount+ax) + (sx*amount) * ((y*amount+ay) + (sy*amount) * (z*amount+az))] = get(x, y, z);
+              {
+                unsigned int ni = (x*amount+ax) + (sx*amount) * ((y*amount+ay) + (sy*amount) * (z*amount+az));
+                s2[ni] = get(x, y, z);
+                if (!g2.empty())
+                  g2[ni] = (unsigned char)getGoalPiece(x, y, z);
+              }
               else
               {
+                unsigned int ni = (x*amount+ax) + (sx*amount) * ((y*amount+ay) + (sy*amount) * (z*amount+az));
                 if (!isEmpty(x, y, z) &&
                       (
                         (ax == 0        && isEmpty2(x-1, y, z)) ||
@@ -236,13 +256,18 @@ void voxel_0_c::scale(unsigned int amount, bool grid)
                         ((az == 0 || az == amount-1) && (ax == 0 || ax == amount-1 || ay == 0 || ay == amount-1))
                       )
                    )
-
-                    s2[(x*amount+ax) + (sx*amount) * ((y*amount+ay) + (sy*amount) * (z*amount+az))] = get(x, y, z);
+                {
+                    s2[ni] = get(x, y, z);
+                    if (!g2.empty())
+                      g2[ni] = (unsigned char)getGoalPiece(x, y, z);
+                }
                 else
-                    s2[(x*amount+ax) + (sx*amount) * ((y*amount+ay) + (sy*amount) * (z*amount+az))] = 0;
+                    s2[ni] = 0;
               }
 
   space = std::move(s2);
+  if (!g2.empty())
+    goalPiece = std::move(g2);
 
   sx *= amount;
   sy *= amount;
@@ -288,13 +313,21 @@ bool voxel_0_c::scaleDown(unsigned char by, bool action) {
             unsigned int nsz = sz/by;
 
             std::vector<voxel_type> s2(nsx*nsy*nsz);
+            std::vector<unsigned char> g2;
+            if (!goalPiece.empty())
+              g2.assign(nsx*nsy*nsz, 0);
 
             for (unsigned int x = 0; x < nsx; x++)
               for (unsigned int y = 0; y < nsy; y++)
-                for (unsigned int z = 0; z < nsz; z++)
+                for (unsigned int z = 0; z < nsz; z++) {
                   s2[x + nsx * (y + nsy * z)] = get2(x*by, y*by, z*by);
+                  if (!g2.empty())
+                    g2[x + nsx * (y + nsy * z)] = (unsigned char)getGoalPiece(x*by, y*by, z*by);
+                }
 
             space = std::move(s2);
+            if (!g2.empty())
+              goalPiece = std::move(g2);
 
             sx = nsx;
             sy = nsy;
@@ -399,7 +432,8 @@ Polyhedron * voxel_0_c::getSTLMesh(void) const
 {
   /* the rhombic and tetra-octa grids derive from this class but are not
    * made of cubes: they have their own mesher, reached through the base */
-  if (getGridType()->getType() != gridType_c::GT_BRICKS) return voxel_c::getSTLMesh();
+  if (getGridType()->getType() != gridType_c::GT_BRICKS &&
+      getGridType()->getType() != gridType_c::GT_SLIDING) return voxel_c::getSTLMesh();
   /* the base class's defaults, in cell units: bevel 0.05, offset 0.02 */
   std::string err;
   Polyhedron * p = cubePolyhedron(*this, 0.02, 0.05, true, err);

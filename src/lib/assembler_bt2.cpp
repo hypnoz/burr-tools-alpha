@@ -26,6 +26,7 @@
 #include "voxel.h"
 #include "assembly.h"
 #include "gridtype.h"
+#include "sliding.h"
 
 #include "../tools/xml.h"
 
@@ -471,6 +472,11 @@ int assembler_bt2_c::prepare(void) {
     int v = 0;
     int c = 0;
 
+    /* A sliding tray does not have to be filled. Normal cells are optional
+     * columns, the same as variable cells, so the empty cells can be the
+     * space the pieces slide through. */
+    const bool optionalFloor = sliding::isSliding(problem);
+
     for (unsigned int i = 0; i < result->getXYZ(); i++) {
       switch(result->getState(i)) {
       case voxel_c::VX_VARIABLE:
@@ -478,8 +484,13 @@ int assembler_bt2_c::prepare(void) {
         columns[i] = getVarivoxelStart() + v++;
         break;
       case voxel_c::VX_FILLED:
-        voxelindex[1 + piecenumber + c] = i;
-        columns[i] = 1 + piecenumber + c++;
+        if (optionalFloor) {
+          voxelindex[getVarivoxelStart() + v] = i;
+          columns[i] = getVarivoxelStart() + v++;
+        } else {
+          voxelindex[1 + piecenumber + c] = i;
+          columns[i] = 1 + piecenumber + c++;
+        }
         break;
       default:
         columns[i] = 0;
@@ -723,6 +734,11 @@ assembler_bt2_c::errState assembler_bt2_c::createMatrix(bool keepMirror, bool ke
   /* count the filled and variable units */
   int res_vari = getResultShape(problem)->countState(voxel_c::VX_VARIABLE);
   int res_filled = getResultShape(problem)->countState(voxel_c::VX_FILLED) + res_vari;
+
+  /* Sliding allows the pieces to leave normal cells empty. Those cells are
+   * optional, so a shortfall against the tray is not an error. */
+  if (sliding::isSliding(problem))
+    res_vari = res_filled;
 
   varivoxelStart = 1 + piecenumber + res_filled - res_vari;
   varivoxelEnd = 1 + piecenumber + res_filled;

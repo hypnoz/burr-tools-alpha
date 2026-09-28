@@ -26,6 +26,7 @@
 #include "../lib/problem.h"
 #include "../lib/voxel.h"
 #include "../lib/assembly.h"
+#include "../lib/sliding.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -324,17 +325,29 @@ unsigned int PieceSelector::blockNumber(void) {
 void PieceSelector::getText(unsigned int block, char * text) {
 
   unsigned int start = 0;
+  const voxel_c * v = puzzle->getShape(block);
 
-  start += snprintf(text+start, 200-start, "S%u", block+1);
+  if (sliding::isStartGoalShape(v)) {
+    start += snprintf(text+start, 200-start, "S%u (START/GOAL %d)", block+1, sliding::startGoalNumber(v));
+    std::string user = sliding::startGoalUserName(v);
+    if (user.length())
+      start += snprintf(text+start, 200-start, " - %s", user.c_str());
+  } else {
+    start += snprintf(text+start, 200-start, "S%u", block+1);
 
-  if (puzzle->getShape(block)->getName().length())
-    start += snprintf(text+start, 200-start, " - %s", puzzle->getShape(block)->getName().c_str());
+    if (v->getName().length())
+      start += snprintf(text+start, 200-start, " - %s", v->getName().c_str());
+  }
 
-  if (puzzle->getShape(block)->getWeight() != 1)
-    start += snprintf(text+start, 200-start, " W(%i)", puzzle->getShape(block)->getWeight());
+  if (v->getWeight() != 1)
+    start += snprintf(text+start, 200-start, " W(%i)", v->getWeight());
 }
 
 void PieceSelector::getColor(unsigned int block, unsigned char *r,  unsigned char *g, unsigned char *b) {
+  if (sliding::isStartGoalShape(puzzle->getShape(block))) {
+    *r = *g = *b = 255;
+    return;
+  }
   *r = pieceColorRi(block);
   *g = pieceColorGi(block);
   *b = pieceColorBi(block);
@@ -387,7 +400,8 @@ void PiecesList::getText(unsigned int block, char * text) {
 
   /* first the shape name */
   if (puzzle->getPartShape(block)->getName().length())
-    len = snprintf(text, txtLen, "S%u - %s", puzzle->getShapeIdOfPart(block)+1, puzzle->getPartShape(block)->getName().c_str());
+    len = snprintf(text, txtLen, "S%u - %s", puzzle->getShapeIdOfPart(block)+1,
+                   sliding::displayName(puzzle->getPartShape(block)).c_str());
   else
     len = snprintf(text, txtLen, "S%u", puzzle->getShapeIdOfPart(block)+1);
   text += len;

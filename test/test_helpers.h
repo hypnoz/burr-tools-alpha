@@ -22,6 +22,7 @@ inline const gridType_c::gridType ALL_GRIDS[] = {
   gridType_c::GT_SPHERES,
   gridType_c::GT_RHOMBIC,
   gridType_c::GT_TETRA_OCTA,
+  gridType_c::GT_SLIDING,
 };
 
 /** a readable name, so a parametrized failure says which grid broke */
@@ -32,6 +33,7 @@ inline const char * gridName(gridType_c::gridType t) {
     case gridType_c::GT_SPHERES:          return "GT_SPHERES";
     case gridType_c::GT_RHOMBIC:          return "GT_RHOMBIC";
     case gridType_c::GT_TETRA_OCTA:       return "GT_TETRA_OCTA";
+    case gridType_c::GT_SLIDING:          return "GT_SLIDING";
     default:                              return "unknown";
   }
 }

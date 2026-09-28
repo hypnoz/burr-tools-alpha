@@ -57,6 +57,7 @@ class gridType_c {
       GT_SPHERES,                  ///< tightly packed spheres
       GT_RHOMBIC,                  ///< complicated cut cube to build rhombic dodecahedra
       GT_TETRA_OCTA,               ///< spacegrid for with tetrahedron and octrahera, also a cut cube
+      GT_SLIDING,                  ///< 2D brick tray: slide pieces from start to goal
 
       GT_NUM_GRIDS                 ///< always the last entry, the number of different grids
     } gridType;

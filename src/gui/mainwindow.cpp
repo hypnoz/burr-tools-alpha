@@ -36,6 +36,8 @@
 #include "BlockList.h"
 #include "Images.h"
 
+#include "../lib/sliding.h"
+
 #include "assertwindow.h"
 #include "togglebutton.h"
 #include "voxeleditgroup.h"
@@ -215,9 +217,13 @@ void mainWindow_c::cb_NewShape(void) {
 
   if (PcSel->getSelection() < puzzle->getNumberOfShapes()) {
     const voxel_c * v = puzzle->getShape(PcSel->getSelection());
-    PcSel->setSelection(puzzle->addShape(v->getX(), v->getY(), v->getZ()));
-  } else
-    PcSel->setSelection(puzzle->addShape(ggt->defaultSize(), ggt->defaultSize(), ggt->defaultSize()));
+    unsigned int z = sliding::isSliding(*puzzle) ? 1 : v->getZ();
+    PcSel->setSelection(puzzle->addShape(v->getX(), v->getY(), z));
+  } else {
+    unsigned int s = ggt->defaultSize();
+    unsigned int z = sliding::isSliding(*puzzle) ? 1 : s;
+    PcSel->setSelection(puzzle->addShape(s, s, z));
+  }
   pieceEdit->setZ(0);
   updateInterface();
   StatPieceInfo(PcSel->getSelection());
@@ -231,7 +237,13 @@ void mainWindow_c::cb_DeleteShape(void) {
 
   if (current < puzzle->getNumberOfShapes()) {
 
+    if (sliding::isSliding(*puzzle))
+      sliding::noteShapeRemoved(*puzzle, current);
+
     puzzle->removeShape(current);
+
+    if (sliding::isSliding(*puzzle))
+      sliding::syncSlidingProblems(*puzzle);
 
     if (puzzle->getNumberOfShapes() == 0)
       current = (unsigned int)-1;
@@ -260,7 +272,20 @@ void mainWindow_c::cb_CopyShape(void) {
 
   if (current < puzzle->getNumberOfShapes()) {
 
-    PcSel->setSelection(puzzle->addShape(puzzle->getGridType()->getVoxel(puzzle->getShape(current))));
+    unsigned int id = puzzle->addShape(puzzle->getGridType()->getVoxel(puzzle->getShape(current)));
+    voxel_c * copy = puzzle->getShape(id);
+    if (sliding::isStartGoalShape(copy)) {
+      int next = 1;
+      for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++) {
+        if (i == id) continue;
+        int n = sliding::startGoalNumber(puzzle->getShape(i));
+        if (n >= next) next = n + 1;
+      }
+      std::string user = sliding::startGoalUserName(copy);
+      copy->setName(std::string("sg:") + std::to_string(next) + ":" + user);
+      sliding::syncSlidingProblems(*puzzle);
+    }
+    PcSel->setSelection(id);
     recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
 
     updateInterface();
@@ -277,10 +302,17 @@ void mainWindow_c::cb_NameShape(void) {
 
   if (PcSel->getSelection() < puzzle->getNumberOfShapes()) {
 
-    const char * name = fl_input("Enter name for the shape", puzzle->getShape(PcSel->getSelection())->getName().c_str());
+    const char * name = fl_input("Enter name for the shape",
+        sliding::isStartGoalShape(puzzle->getShape(PcSel->getSelection()))
+          ? sliding::startGoalUserName(puzzle->getShape(PcSel->getSelection())).c_str()
+          : puzzle->getShape(PcSel->getSelection())->getName().c_str());
 
     if (name) {
-      puzzle->getShape(PcSel->getSelection())->setName(name);
+      voxel_c * sh = puzzle->getShape(PcSel->getSelection());
+      if (sliding::isStartGoalShape(sh))
+        sliding::setStartGoalUserName(sh, name);
+      else
+        sh->setName(name);
       recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
       updateInterface();
     }
@@ -298,6 +330,85 @@ void mainWindow_c::cb_WeightChange(int by) {
     recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
     updateInterface();
   }
+}
+
+void mainWindow_c::applySlidingGridMode(void) {
+  if (!pieceEdit)
+    return;
+
+  /* The voxel pen stays whatever the user picked. Start/goal only adds an
+   * S# stamp on top of that pen; it must not replace left-click with erase. */
+  if (editChoice) {
+    switch (editChoice->getSelected()) {
+      case 1: pieceEdit->editChoice(gridEditor_c::TSK_VAR); break;
+      case 2: pieceEdit->editChoice(gridEditor_c::TSK_RESET); break;
+      case 3: pieceEdit->editChoice(gridEditor_c::TSK_COLOR); break;
+      default: pieceEdit->editChoice(gridEditor_c::TSK_SET); break;
+    }
+  }
+
+  bool stamp = false;
+  if (puzzle && sliding::isSliding(*puzzle) &&
+      PcSel && PcSel->getSelection() < puzzle->getNumberOfShapes() &&
+      sliding::isStartGoalShape(puzzle->getShape(PcSel->getSelection()))) {
+    ToolTab_0 * tab = dynamic_cast<ToolTab_0*>(pieceTools->getToolTab());
+    if (tab && tab->labelEditActive()) {
+      slidingEditMode = tab->startGoalMode();
+      pieceEdit->setSlidingLabels(slidingEditMode == 0 ? 1 : 2);
+      unsigned int piece = tab->selectedPiece();
+      pieceEdit->setSlidingPiece(piece == (unsigned int)-1 ? 0 : piece + 1);
+      stamp = true;
+    }
+  }
+  if (!stamp) {
+    pieceEdit->setSlidingLabels(0);
+    pieceEdit->setSlidingPiece(0);
+  }
+  if (View3D && View3D->getView())
+    View3D->getView()->setMarkerShape(stamp ? slidingEditMode : -1);
+}
+
+static void cb_NewStartGoal_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_NewStartGoal(); }
+void mainWindow_c::cb_NewStartGoal(void) {
+  if (!puzzle || !sliding::isSliding(*puzzle))
+    return;
+  unsigned int sx = 6, sy = 6;
+  if (PcSel->getSelection() < puzzle->getNumberOfShapes()) {
+    const voxel_c * cur = puzzle->getShape(PcSel->getSelection());
+    sx = cur->getX();
+    sy = cur->getY();
+  }
+  unsigned int id = sliding::addStartGoalShape(*puzzle, sx, sy);
+  sliding::syncSlidingProblems(*puzzle);
+  changed = true;
+  activateShape(id);
+  applySlidingGridMode();
+  updateInterface();
+  StatPieceInfo(id);
+  recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
+}
+
+static void cb_DelStartGoal_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_DelStartGoal(); }
+void mainWindow_c::cb_DelStartGoal(void) {
+  unsigned int current = PcSel->getSelection();
+  if (current >= puzzle->getNumberOfShapes())
+    return;
+  if (!sliding::isStartGoalShape(puzzle->getShape(current)))
+    return;
+  sliding::noteShapeRemoved(*puzzle, current);
+  puzzle->removeShape(current);
+  sliding::syncSlidingProblems(*puzzle);
+  if (puzzle->getNumberOfShapes() == 0)
+    current = (unsigned int)-1;
+  else
+    while (current >= puzzle->getNumberOfShapes())
+      current--;
+  changed = true;
+  activateShape(current);
+  applySlidingGridMode();
+  updateInterface();
+  StatPieceInfo(current);
+  recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
 }
 
 
@@ -326,6 +437,7 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
       activateProblem(problemSelector->getSelection());
     }
     StatProblemInfo(problemSelector->getSelection());
+
     Big3DView();
     hideDebugRightPane();
     ViewSizes[currentTab] = View3D->getZoom();
@@ -373,6 +485,12 @@ static void cb_TransformPreview_stub(void* v, voxel_c* preview, unsigned int sha
 }
 void mainWindow_c::cb_TransformPiece(void) {
 
+  ToolTab_0 * tab = dynamic_cast<ToolTab_0*>(pieceTools->getToolTab());
+  if (tab && (tab->takeModeCallback() || tab->consumeTabChange())) {
+    applySlidingGridMode();
+    return;
+  }
+
   if (pieceTools->operationToAll()) {
     for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++)
       changeShape(i);
@@ -382,6 +500,7 @@ void mainWindow_c::cb_TransformPiece(void) {
 
   StatPieceInfo(PcSel->getSelection());
   activateShape(PcSel->getSelection());
+  applySlidingGridMode();
 
   recordShapeAction(shapeHistory_c::AK_TRANSFORM);
 }
@@ -524,6 +643,30 @@ void mainWindow_c::cb_pieceEdit(VoxelEditGroup_c* o) {
     if (shapeHistory)
       shapeHistory->beginStroke();
     break;
+  case gridEditor_c::RS_SLIDING_CLICK:
+    if (sliding::isSliding(*puzzle) &&
+        PcSel->getSelection() < puzzle->getNumberOfShapes() &&
+        sliding::isStartGoalShape(puzzle->getShape(PcSel->getSelection()))) {
+      ToolTab_0 * tab = dynamic_cast<ToolTab_0*>(pieceTools->getToolTab());
+      unsigned int shapeId = tab ? tab->selectedPiece() : (unsigned int)-1;
+      voxel_c * tray = puzzle->getShape(PcSel->getSelection());
+      if (shapeId < puzzle->getNumberOfShapes() &&
+          !sliding::isStartGoalShape(puzzle->getShape(shapeId))) {
+        if (sliding::toggleCellMark(tray, o->getCursorX(), o->getCursorY(), shapeId, slidingEditMode != 0)) {
+          sliding::syncSlidingProblems(*puzzle);
+          changed = true;
+          for (unsigned int p = 0; p < puzzle->getNumberOfProblems(); p++)
+            if (puzzle->getProblem(p)->resultValid() &&
+                puzzle->getProblem(p)->getResultId() == PcSel->getSelection())
+              changeProblem(p);
+        }
+      }
+      activateShape(PcSel->getSelection());
+      applySlidingGridMode();
+      updateInterface();
+      View3D->redraw();
+    }
+    break;
   case gridEditor_c::RS_CHANGESQUARE:
     if (shapeHistory)
       shapeHistory->markStrokeDirty();
@@ -533,6 +676,10 @@ void mainWindow_c::cb_pieceEdit(VoxelEditGroup_c* o) {
     else
       StatPieceInfo(PcSel->getSelection());
     changeShape(PcSel->getSelection());
+    if (sliding::isSliding(*puzzle) &&
+        PcSel->getSelection() < puzzle->getNumberOfShapes() &&
+        sliding::isStartGoalShape(puzzle->getShape(PcSel->getSelection())))
+      sliding::syncSlidingProblems(*puzzle);
     changed = true;
     break;
   case gridEditor_c::RS_STROKEEND:
@@ -639,6 +786,8 @@ void mainWindow_c::cb_ShapeExchange(int with) {
   unsigned int other = current + with;
 
   if ((current < puzzle->getNumberOfShapes()) && (other < puzzle->getNumberOfShapes())) {
+    if (sliding::isSliding(*puzzle))
+      sliding::noteShapeSwap(*puzzle, current, other);
     puzzle->exchangeShapes(current, other);
     PcSel->setSelection(other);
     recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
@@ -772,6 +921,8 @@ void mainWindow_c::cb_AddAllShapesToProblem(void) {
     // we don't add the result shape
     if (pr->resultValid() && j == pr->getResultId())
       continue;
+    if (sliding::shapeIsRequired(*pr, j))
+      continue;
 
     pr->setShapeMaximum(j, pr->getShapeMaximum(j) + 1);
     pr->setShapeMinimum(j, pr->getShapeMinimum(j) + 1);
@@ -855,7 +1006,8 @@ void mainWindow_c::cb_RemoveAllShapesFromProblem(void) {
   problem_c * pr = puzzle->getProblem(prob);
 
   for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++)
-    pr->setShapeMaximum(i, 0);
+    if (!sliding::shapeIsRequired(*pr, i))
+      pr->setShapeMaximum(i, 0);
 
   changed = true;
   PiecesCountList->redraw();
@@ -893,6 +1045,8 @@ void mainWindow_c::cb_SetAllRange(void) {
 
   for (unsigned int p = 0; p < pr->getNumberOfParts(); p++) {
     unsigned int shapeId = pr->getShapeIdOfPart(p);
+    if (sliding::shapeIsRequired(*pr, shapeId))
+      continue;
     pr->setShapeMaximum(shapeId, newMax);
     pr->setShapeMinimum(shapeId, newMin);
   }
@@ -1112,7 +1266,9 @@ void mainWindow_c::cb_BtnCont(bool prep_only) {
     return;
   }
 
-  if (SolveDisasm->value() && !(ggt->getGridType()->getCapabilities() & gridType_c::CAP_DISASSEMBLE)) {
+  if (SolveDisasm->value() &&
+      !(ggt->getGridType()->getCapabilities() & gridType_c::CAP_DISASSEMBLE) &&
+      !(puzzle && sliding::isSliding(*puzzle))) {
     fl_message("Sorry, this space grid doesn't have a disassembler (yet)!\n"
                "You must disable the disassembler first\n");
     return;
@@ -1126,6 +1282,14 @@ void mainWindow_c::cb_BtnCont(bool prep_only) {
   if (!puzzle->getProblem(prob)->resultValid()) {
     fl_message("A result shape must be defined");
     return;
+  }
+
+  if (puzzle && sliding::isSliding(*puzzle)) {
+    std::string overflow = sliding::stampOverflowMessage(*puzzle->getProblem(prob));
+    if (!overflow.empty()) {
+      fl_message("%s", overflow.c_str());
+      return;
+    }
   }
 
   bt_assert(assmThread == 0);
@@ -1190,8 +1354,18 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
 
   const bool justCount = JustCount->value() != 0;
   const bool justLevels = DropDisassemblies->value() != 0;
-  const bool canDisassemble =
+  const bool gridDisasm =
       (ggt->getGridType()->getCapabilities() & gridType_c::CAP_DISASSEMBLE) != 0;
+  /* Sliding has no brick take-apart. The checkbox still selects whether a
+   * start must slide to the goal before it is kept as a solution. */
+  const bool slidingPuzzle = puzzle && sliding::isSliding(*puzzle);
+  const bool canDisassemble = gridDisasm || slidingPuzzle;
+  const char * disasmLabel = slidingPuzzle ? "Find Solutions" : "Disassemble";
+  if (!SolveDisasm->label() || std::strcmp(SolveDisasm->label(), disasmLabel) != 0)
+    SolveDisasm->copy_label(disasmLabel);
+  SolveDisasm->tooltip(slidingPuzzle
+      ? " Keep a placement only when each marked piece can slide from its start cell to its goal cell. "
+      : " Do also try to disassemble the assembled puzzles. Only puzzles that can be disassembled will be added to solutions ");
 
   if (justCount) {
     DropDisassemblies->value(0);
@@ -1212,8 +1386,14 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
       SolveDisasm->value(0);
       SolveDisasm->deactivate();
     }
-    /* Just Levels: Check Rotations stays available. */
-    CheckRotations->activate();
+    /* Just Levels: Check Rotations stays available for grids that disassemble.
+     * Sliding has no piece-rotation take-apart. */
+    if (gridDisasm)
+      CheckRotations->activate();
+    else {
+      CheckRotations->value(0);
+      CheckRotations->deactivate();
+    }
   } else {
     JustCount->activate();
     DropDisassemblies->activate();
@@ -1225,7 +1405,13 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
       SolveDisasm->deactivate();
     }
 
-    if (SolveDisasm->value() == 0 || !canDisassemble) {
+    if (slidingPuzzle && !slidingDisasmDefaulted) {
+      SolveDisasm->value(1);
+      slidingDisasmDefaulted = true;
+    }
+
+    /* Piece rotations belong to the brick disassembler. */
+    if (SolveDisasm->value() == 0 || !gridDisasm) {
       CheckRotations->value(0);
       CheckRotations->deactivate();
     } else {
@@ -1641,6 +1827,9 @@ void mainWindow_c::cb_New(void) {
 
     while (w.visible())
       Fl::wait();
+
+    if (!w.accepted())
+      return;
 
     ReplacePuzzle(new puzzle_c(w.getGridType()));
 
@@ -2956,6 +3145,8 @@ void mainWindow_c::ReplacePuzzle(puzzle_c * NewPuzzle) {
     puzzle = NewPuzzle;
   }
 
+  slidingDisasmDefaulted = false;
+
   if (shapeHistory)
     shapeHistory->reset(puzzle);
 
@@ -3059,6 +3250,7 @@ void mainWindow_c::activateShape(unsigned int number) {
     pieceTools->setVoxelSpace(puzzle, number);
 
     PcSel->setSelection(number);
+    applySlidingGridMode();
 
   } else {
 
@@ -3391,6 +3583,25 @@ void mainWindow_c::updateInterface(void) {
 
   updateUndoRedoButtons();
 
+  const bool slidingPuzzle = sliding::isSliding(*puzzle);
+  if (colorsGroup) {
+    if (slidingPuzzle) colorsGroup->hide();
+    else colorsGroup->show();
+  }
+  if (colourAssignmentGroup) {
+    if (slidingPuzzle) colourAssignmentGroup->hide();
+    else colourAssignmentGroup->show();
+  }
+  if (colourConstraintsGroup) {
+    if (slidingPuzzle) colourConstraintsGroup->hide();
+    else colourConstraintsGroup->show();
+  }
+  if (slidingPuzzle && editChoice) {
+    /* Colour paint mode is unused; keep Walls/set as default. */
+    if (editChoice->getSelected() == 3)
+      editChoice->select(0);
+  }
+
   unsigned int prob = solutionProblem->getSelection();
 
   if (TaskSelectionTab->value() == TabPieces) {
@@ -3432,10 +3643,35 @@ void mainWindow_c::updateInterface(void) {
 
     // we can only delete shapes, when something valid is selected
     // and no assembler is running
-    if ((PcSel->getSelection() < puzzle->getNumberOfShapes()) && !assmThread) {
+    if ((PcSel->getSelection() < puzzle->getNumberOfShapes()) && !assmThread &&
+        !(slidingPuzzle && sliding::isStartGoalShape(puzzle->getShape(PcSel->getSelection())))) {
       BtnDelShape->activate();
     } else {
       BtnDelShape->deactivate();
+    }
+
+    if (BtnNewStartGoal) {
+      if (slidingPuzzle && !assmThread) BtnNewStartGoal->activate();
+      else BtnNewStartGoal->deactivate();
+    }
+    if (BtnDelStartGoal) {
+      bool sg = slidingPuzzle && PcSel->getSelection() < puzzle->getNumberOfShapes() &&
+                sliding::isStartGoalShape(puzzle->getShape(PcSel->getSelection()));
+      if (sg && !assmThread) BtnDelStartGoal->activate();
+      else BtnDelStartGoal->deactivate();
+    }
+    if (startGoalRow && ((bool)startGoalRow->visible() != slidingPuzzle)) {
+      if (slidingPuzzle) {
+        startGoalRow->show();
+        if (startGoalGap) startGoalGap->show();
+      } else {
+        startGoalRow->hide();
+        if (startGoalGap) startGoalGap->hide();
+      }
+      if (layouter_c * column = dynamic_cast<layouter_c*>(startGoalRow->parent())) {
+        column->invalidateMinSize();
+        column->resize(column->x(), column->y(), column->w(), column->h());
+      }
     }
 
     updateUndoRedoButtons();
@@ -3473,12 +3709,23 @@ void mainWindow_c::updateInterface(void) {
     problemResult->setPuzzle(pr);
 
     // problems can only be renames and copied, when something valid is selected
-    if (problemSelector->getSelection() < puzzle->getNumberOfProblems()) {
-      BtnCpyProb->activate();
-      BtnRenProb->activate();
-    } else {
+    if (slidingPuzzle) {
+      BtnNewProb->deactivate();
+      BtnDelProb->deactivate();
       BtnCpyProb->deactivate();
-      BtnRenProb->deactivate();
+      if (problemSelector->getSelection() < puzzle->getNumberOfProblems())
+        BtnRenProb->activate();
+      else
+        BtnRenProb->deactivate();
+    } else {
+      BtnNewProb->activate();
+      if (problemSelector->getSelection() < puzzle->getNumberOfProblems()) {
+        BtnCpyProb->activate();
+        BtnRenProb->activate();
+      } else {
+        BtnCpyProb->deactivate();
+        BtnRenProb->deactivate();
+      }
     }
 
     // problems can only be shifted around when the corresponding neighbour is
@@ -3520,7 +3767,7 @@ void mainWindow_c::updateInterface(void) {
 
     // problems can only be deleted, something valid is selected and the
     // assembler is not running
-    if ((problemSelector->getSelection() < puzzle->getNumberOfProblems()) && !assmThread)
+    if (!slidingPuzzle && (problemSelector->getSelection() < puzzle->getNumberOfProblems()) && !assmThread)
       BtnDelProb->activate();
     else
       BtnDelProb->deactivate();
@@ -3568,9 +3815,14 @@ void mainWindow_c::updateInterface(void) {
       BtnSetResult->activate();
 
       problem_c * pr = puzzle->getProblem(problemSelector->getSelection());
+      unsigned int selShape = shapeAssignmentSelector->getSelection();
+      bool required = slidingPuzzle && sliding::shapeIsRequired(*pr, selShape);
+
+      if (slidingPuzzle)
+        BtnSetResult->deactivate();
 
       // we can only add a shape, when it's not the result of the current problem
-      if (!pr->resultValid() || pr->getResultId() != shapeAssignmentSelector->getSelection())
+      if ((!pr->resultValid() || pr->getResultId() != selShape) && !required)
         BtnAddShape->activate();
       else
         BtnAddShape->deactivate();
@@ -3578,12 +3830,12 @@ void mainWindow_c::updateInterface(void) {
       bool found = false;
 
       for (unsigned int p = 0; p < pr->getNumberOfParts(); p++)
-        if (pr->getShapeIdOfPart(p) == shapeAssignmentSelector->getSelection()) {
+        if (pr->getShapeIdOfPart(p) == selShape) {
           found = true;
           break;
         }
 
-      if (found) {
+      if (found && !required) {
         BtnRemShape->activate();
         BtnMinZero->activate();
       } else {
@@ -3600,7 +3852,8 @@ void mainWindow_c::updateInterface(void) {
 
     // we can edit the groups, when we have a problem with at least one shape and
     // the assembler is not working on the current problem
-    if ((problemSelector->getSelection() < puzzle->getNumberOfProblems()) &&
+    if (!slidingPuzzle &&
+        (problemSelector->getSelection() < puzzle->getNumberOfProblems()) &&
         (!assmThread || (&(assmThread->getProblem()) != puzzle->getProblem(problemSelector->getSelection())))) {
       BtnGroup->activate();
     } else {
@@ -3788,13 +4041,10 @@ void mainWindow_c::updateInterface(void) {
           BtnDisasmAddAll->deactivate();
           BtnDisasmAddMissing->deactivate();
         }
-        SolveDisasm->activate();
       } else {
         BtnDisasmAdd->deactivate();
         BtnDisasmAddAll->deactivate();
         BtnDisasmAddMissing->deactivate();
-        SolveDisasm->deactivate();
-        SolveDisasm->value(0);
       }
 
       updateSolverOptionCheckboxes();
@@ -4388,10 +4638,25 @@ void mainWindow_c::CreateShapeTab(void) {
 
     o->end();
 
-    (new LFl_Box(0, 4))->setMinimumSize(0, SZ_GAP);
+    LFl_Box * gap = new LFl_Box(0, 4);
+    gap->setMinimumSize(0, SZ_GAP);
+    startGoalGap = gap;
+
+    o = new layouter_c(0, 5);
+    startGoalRow = o;
+    BtnNewStartGoal = new LFlatButton_c(0, 0, 1, 1, "New Start/Goal Positions",
+        " Add a shape that holds start and goal positions ", cb_NewStartGoal_stub, this);
+    ((LFlatButton_c*)BtnNewStartGoal)->weight(1, 0);
+    (new LFl_Box(1, 0))->setMinimumSize(SZ_GAP, 0);
+    BtnDelStartGoal = new LFlatButton_c(2, 0, 1, 1, "Delete Start/Goal Positions",
+        " Delete the selected start/goal shape ", cb_DelStartGoal_stub, this);
+    ((LFlatButton_c*)BtnDelStartGoal)->weight(1, 0);
+    o->end();
+
+    (new LFl_Box(0, 6))->setMinimumSize(0, SZ_GAP);
 
     PcSel = new PieceSelector(0, 0, 200, 200, puzzle);
-    LBlockListGroup_c * selGroup = new LBlockListGroup_c(0, 5, 1, 1, PcSel);
+    LBlockListGroup_c * selGroup = new LBlockListGroup_c(0, 7, 1, 1, PcSel);
     selGroup->callback(cb_PcSel_stub, this);
     selGroup->tooltip(" Select the shape that you want to edit ");
     selGroup->weight(1, 1);
@@ -4496,8 +4761,8 @@ void mainWindow_c::CreateShapeTab(void) {
   }
 
   {
-    layouter_c * group = new layouter_c(0, 2);
-    group->box(FL_FLAT_BOX);
+    colorsGroup = new layouter_c(0, 2);
+    colorsGroup->box(FL_FLAT_BOX);
 
     new LSeparator_c(0, 0, 1, 1, "Colors", true);
 
@@ -4523,8 +4788,8 @@ void mainWindow_c::CreateShapeTab(void) {
     colGroup->weight(1, 1);
     colGroup->setMinimumSize(30, 72);
 
-    group->weight(0, 1);
-    group->end();
+    colorsGroup->weight(0, 1);
+    colorsGroup->end();
   }
 
   tile->end();
@@ -4681,8 +4946,8 @@ void mainWindow_c::CreateProblemTab(void) {
   }
 
   {
-    layouter_c * group = new layouter_c(0, 3);
-    group->box(FL_FLAT_BOX);
+    colourAssignmentGroup = new layouter_c(0, 3);
+    colourAssignmentGroup->box(FL_FLAT_BOX);
 
     new LSeparator_c(0, 0, 1, 1, "Colour Assignment", true);
 
@@ -4692,12 +4957,12 @@ void mainWindow_c::CreateProblemTab(void) {
     colGroup->tooltip(" Select colour to add or remove from constraints ");
     colGroup->weight(1, 1);
 
-    group->end();
+    colourAssignmentGroup->end();
   }
 
   {
-    layouter_c * group = new layouter_c(0, 4);
-    group->box(FL_FLAT_BOX);
+    colourConstraintsGroup = new layouter_c(0, 4);
+    colourConstraintsGroup->box(FL_FLAT_BOX);
 
     new LSeparator_c(0, 0, 1, 1, 0, true);
 
@@ -4722,7 +4987,7 @@ void mainWindow_c::CreateProblemTab(void) {
     colGroup->tooltip(" Colour constraints for the current problem ");
     colGroup->weight(1, 1);
 
-    group->end();
+    colourConstraintsGroup->end();
   }
 
   tile->end();
@@ -5368,6 +5633,15 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   menuSTLActive = true;
   BtnUndo = 0;
   BtnRedo = 0;
+  BtnNewStartGoal = 0;
+  BtnDelStartGoal = 0;
+  startGoalRow = 0;
+  startGoalGap = 0;
+  colorsGroup = 0;
+  colourAssignmentGroup = 0;
+  colourConstraintsGroup = 0;
+  slidingEditMode = 0;
+  slidingDisasmDefaulted = false;
 
   copy_label(platform::windowTitle(0).c_str());
   user_data((void*)(this));

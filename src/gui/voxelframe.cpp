@@ -34,8 +34,11 @@
 #include "../lib/disasmtomoves.h"
 #include "../lib/solution.h"
 #include "../lib/rotationrules.h"
+#include "../lib/sliding.h"
 
 #include "../halfedge/polyhedron.h"
+
+#include <cstring>
 
 #include <math.h>
 #include <vector>
@@ -472,6 +475,87 @@ static void drawAxisLetter(const char *letter, int sx, int sy) {
   gl_draw(letter, sx - tw / 2, sy + th / 3);
 }
 
+/* Stroke letters in a 4 by 6 cell, y up. Drawn in the shape's own plane so
+ * the word turns with the piece. */
+static void strokeLetter(char ch, float ox, float oy, float z, float s) {
+  struct Seg { float x0, y0, x1, y1; };
+  const Seg * segs = nullptr;
+  int n = 0;
+
+  static const Seg S[] = {
+    {3.2f, 5.4f, 0.8f, 5.4f}, {0.8f, 5.4f, 0.8f, 3.2f}, {0.8f, 3.2f, 3.2f, 3.2f},
+    {3.2f, 3.2f, 3.2f, 0.6f}, {3.2f, 0.6f, 0.8f, 0.6f}
+  };
+  static const Seg T[] = {
+    {0.3f, 5.4f, 3.7f, 5.4f}, {2.0f, 5.4f, 2.0f, 0.6f}
+  };
+  static const Seg A[] = {
+    {0.4f, 0.6f, 2.0f, 5.4f}, {2.0f, 5.4f, 3.6f, 0.6f}, {1.05f, 2.5f, 2.95f, 2.5f}
+  };
+  static const Seg R[] = {
+    {0.6f, 0.6f, 0.6f, 5.4f}, {0.6f, 5.4f, 2.7f, 5.4f}, {2.7f, 5.4f, 3.5f, 4.5f},
+    {3.5f, 4.5f, 3.5f, 3.7f}, {3.5f, 3.7f, 2.7f, 2.9f}, {2.7f, 2.9f, 0.6f, 2.9f},
+    {1.8f, 2.9f, 3.6f, 0.6f}
+  };
+  static const Seg G[] = {
+    {3.2f, 4.5f, 2.2f, 5.4f}, {2.2f, 5.4f, 0.8f, 5.4f}, {0.8f, 5.4f, 0.6f, 4.4f},
+    {0.6f, 4.4f, 0.6f, 1.6f}, {0.6f, 1.6f, 0.8f, 0.6f}, {0.8f, 0.6f, 2.4f, 0.6f},
+    {2.4f, 0.6f, 3.3f, 1.5f}, {3.3f, 1.5f, 3.3f, 3.0f}, {3.3f, 3.0f, 1.9f, 3.0f}
+  };
+  static const Seg O[] = {
+    {0.7f, 0.8f, 0.7f, 5.2f}, {0.7f, 5.2f, 3.3f, 5.2f}, {3.3f, 5.2f, 3.3f, 0.8f},
+    {3.3f, 0.8f, 0.7f, 0.8f}
+  };
+  static const Seg L[] = {
+    {0.8f, 5.4f, 0.8f, 0.6f}, {0.8f, 0.6f, 3.4f, 0.6f}
+  };
+
+  switch (ch) {
+    case 'S': segs = S; n = 5; break;
+    case 'T': segs = T; n = 2; break;
+    case 'A': segs = A; n = 3; break;
+    case 'R': segs = R; n = 7; break;
+    case 'G': segs = G; n = 9; break;
+    case 'O': segs = O; n = 4; break;
+    case 'L': segs = L; n = 2; break;
+    default: return;
+  }
+
+  glBegin(GL_LINES);
+  for (int i = 0; i < n; i++) {
+    glVertex3f(ox + segs[i].x0 * s, oy + segs[i].y0 * s, z);
+    glVertex3f(ox + segs[i].x1 * s, oy + segs[i].y1 * s, z);
+  }
+  glEnd();
+}
+
+/* Centre the word on the shape and sit it just past the +Y edge. */
+static void drawShapeTitle(const char * title, float cx, float cy, float cz) {
+  if (!title || !title[0])
+    return;
+
+  const float cell = 4.0f;
+  const float gap = 1.15f;
+  float h = 0.95f;
+  float s = h / 6.0f;
+  int n = (int)strlen(title);
+  float total = n * cell * s + (n > 1 ? (n - 1) * gap * s : 0.0f);
+  if (cx > 0.5f && total > cx) {
+    s *= cx / total;
+    total = cx;
+  }
+
+  float x = (cx - total) * 0.5f;
+  float y = cy + 0.28f;
+  float z = cz * 0.5f;
+  float step = (cell + gap) * s;
+
+  for (const char * p = title; *p; p++) {
+    strokeLetter(*p, x, y, z, s);
+    x += step;
+  }
+}
+
 /* draws the geometry of a single shape, the surrounding state and
  * transformation must already be set up
  */
@@ -872,6 +956,19 @@ void voxelFrame_c::drawVoxelSpace() {
         glEnable(GL_BLEND);
       }
 
+      if (run == 0 && pickx < 0 && !shape->title.empty() && shape->shape) {
+        if (_useLightning) glDisable(GL_LIGHTING);
+        glColor3f(0, 0, 0);
+        GLfloat oldWidth = 1;
+        glGetFloatv(GL_LINE_WIDTH, &oldWidth);
+        glLineWidth(2.5f);
+        float tcx, tcy, tcz;
+        shape->shape->calculateSize(&tcx, &tcy, &tcz);
+        drawShapeTitle(shape->title.c_str(), tcx, tcy, tcz);
+        glLineWidth(oldWidth);
+        if (_useLightning) glEnable(GL_LIGHTING);
+      }
+
       if (run == 1)
       {
         // draw the transparent shape twice: first only its depth, then its
@@ -901,7 +998,8 @@ void voxelFrame_c::drawVoxelSpace() {
 
       // the marker should be only active, when only one shape is there
       // otherwise it's drawn for every shape
-      if ((markerType >= 0) && (mX1 <= mX2) && (mY1 <= mY2))
+      if ((markerType >= 0) && (mX1 <= mX2) && (mY1 <= mY2) &&
+          (markerShape < 0 || (int)piece == markerShape))
       {
         if (_useLightning) glDisable(GL_LIGHTING);
         glDisable(GL_BLEND);
@@ -947,6 +1045,53 @@ void voxelFrame_c::drawVoxelSpace() {
 
         if (_useLightning) glEnable(GL_LIGHTING);
         glEnable(GL_BLEND);
+      }
+
+      if (run == 0 && pickx < 0 && shape->shape && !shape->cellLabels.empty()) {
+        unsigned int lx = shape->shape->getX();
+        unsigned int ly = shape->shape->getY();
+        unsigned int lz = shape->shape->getZ();
+        struct Lab { int x, y; const char * t; };
+        std::vector<Lab> labs;
+        for (unsigned int z = 0; z < lz; z++)
+          for (unsigned int y = 0; y < ly; y++)
+            for (unsigned int x = 0; x < lx; x++) {
+              unsigned int i = x + lx * (y + ly * z);
+              if (i >= shape->cellLabels.size() || shape->cellLabels[i].empty())
+                continue;
+              if (shape->shape->getState(x, y, z) == voxel_c::VX_EMPTY)
+                continue;
+              int sxw, syw;
+              if (projectToWindow((float)x + 0.5f, (float)y + 0.5f, (float)z + 0.5f, w(), h(), &sxw, &syw))
+                labs.push_back(Lab{sxw, syw, shape->cellLabels[i].c_str()});
+            }
+        if (!labs.empty()) {
+          if (_useLightning) glDisable(GL_LIGHTING);
+          glDisable(GL_DEPTH_TEST);
+          gl_font(FL_HELVETICA_BOLD, 14);
+          glColor3f(230.0f / 255.0f, 110.0f / 255.0f, 0);
+
+          glMatrixMode(GL_PROJECTION);
+          glPushMatrix();
+          glLoadIdentity();
+          glOrtho(0, w(), h(), 0, -1, 1);
+          glMatrixMode(GL_MODELVIEW);
+          glPushMatrix();
+          glLoadIdentity();
+
+          for (const Lab & lab : labs) {
+            int tw = (int)fl_width(lab.t);
+            int th = fl_height();
+            gl_draw(lab.t, lab.x - tw / 2, lab.y + th / 3);
+          }
+
+          glPopMatrix();
+          glMatrixMode(GL_PROJECTION);
+          glPopMatrix();
+          glMatrixMode(GL_MODELVIEW);
+          glEnable(GL_DEPTH_TEST);
+          if (_useLightning) glEnable(GL_LIGHTING);
+        }
       }
 
       glPopMatrix();
@@ -1043,6 +1188,16 @@ void voxelFrame_c::setSpacePosition(unsigned int nr, float x, float y, float z, 
   shapes[nr].scale = scale;
 }
 
+void voxelFrame_c::setSpaceCellLabels(unsigned int nr, std::vector<std::string> labels) {
+  if (nr < shapes.size())
+    shapes[nr].cellLabels = std::move(labels);
+}
+
+void voxelFrame_c::setSpaceTitle(unsigned int nr, const char * title) {
+  if (nr < shapes.size() && title)
+    shapes[nr].title = title;
+}
+
 void voxelFrame_c::setDrawingMode(unsigned int nr, drawingMode mode) {
 
   if (shapes[nr].mode != mode) {
@@ -1116,6 +1271,13 @@ void voxelFrame_c::setMarker(int x1, int y1, int x2, int y2, int z, int mT) {
   redraw();
 }
 
+void voxelFrame_c::setMarkerShape(int shapeNr) {
+  if (markerShape == shapeNr)
+    return;
+  markerShape = shapeNr;
+  redraw();
+}
+
 void voxelFrame_c::hideMarker(void) {
   markerType = -1;
   redraw();
@@ -1141,9 +1303,33 @@ void voxelFrame_c::showSingleShape(const puzzle_c * puz, unsigned int shapeNum) 
 
   hideMarker();
   clearSpaces();
-  unsigned int num = addSpace(puz->getGridType()->getVoxel(puz->getShape(shapeNum)));
+  const voxel_c * src = puz->getShape(shapeNum);
 
-  setSpaceColor(num, pieceColorR(shapeNum), pieceColorG(shapeNum), pieceColorB(shapeNum), 1);
+  if (sliding::isStartGoalShape(src)) {
+    unsigned int a = addSpace(puz->getGridType()->getVoxel(src));
+    unsigned int b = addSpace(puz->getGridType()->getVoxel(src));
+    setSpaceColor(a, 1, 1, 1, 1);
+    setSpaceColor(b, 1, 1, 1, 1);
+    setSpacePosition(b, (float)src->getX() + 1.5f, 0, 0, 1);
+
+    std::vector<std::string> startL(src->getXYZ());
+    std::vector<std::string> goalL(src->getXYZ());
+    for (unsigned int i = 0; i < src->getXYZ(); i++) {
+      if (src->getState(i) == voxel_c::VX_EMPTY)
+        continue;
+      if (src->getColor(i))
+        startL[i] = std::string("S") + std::to_string(src->getColor(i));
+      if (src->getGoalPiece(i))
+        goalL[i] = std::string("S") + std::to_string(src->getGoalPiece(i));
+    }
+    setSpaceCellLabels(a, std::move(startL));
+    setSpaceCellLabels(b, std::move(goalL));
+    setSpaceTitle(a, "START");
+    setSpaceTitle(b, "GOAL");
+  } else {
+    unsigned int num = addSpace(puz->getGridType()->getVoxel(src));
+    setSpaceColor(num, pieceColorR(shapeNum), pieceColorG(shapeNum), pieceColorB(shapeNum), 1);
+  }
 
   trans = TranslateRoateScale;
   _showCoordinateSystem = true;

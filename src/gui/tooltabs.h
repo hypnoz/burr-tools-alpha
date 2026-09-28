@@ -28,6 +28,7 @@ class ChangeSize;
 class puzzle_c;
 class guiGridType_c;
 class voxel_c;
+class Fl_Hold_Browser;
 
 // the class that contains the tool tab
 class ToolTab : public LFl_Tabs {
@@ -53,6 +54,13 @@ class ToolTab_0 : public ToolTab {
 
   ChangeSize * changeSize;
   pixmapList_c pm;
+  layouter_c * startGoalTab;
+  Fl_Hold_Browser * pieceList;
+  LFl_Radio_Button * modeStart;
+  LFl_Radio_Button * modeGoal;
+  unsigned int selectedSgPiece;
+  bool modeCallbackPending;
+  Fl_Widget * shownTab;
 
 public:
 
@@ -62,7 +70,21 @@ public:
 
   void cb_size(void);
   void cb_transform(long task);
+  void cb_startGoalMode(void);
+  void selectPiece(unsigned int shapeId);
   void applyTask(voxel_c * space, long task);
+
+  /** 0 = Start, 1 = Goal. Only meaningful for a start/goal shape. */
+  int startGoalMode(void) const;
+  /** True while the Start/Goal tab itself is the selected tool tab. */
+  bool labelEditActive(void);
+  /** True once when the user has just switched tool tabs. Updates the remembered tab. */
+  bool consumeTabChange(void);
+  /** Shape index of the piece chosen in the Start/Goal list, or ~0u. */
+  unsigned int selectedPiece(void) const;
+  /** True once after a Start/Goal radio or piece-list callback. */
+  bool takeModeCallback(void);
+  void refreshPieceList(void);
 };
 
 // the class that contains the tool tab
@@ -132,6 +154,36 @@ public:
   void applyTask(voxel_c * space, long task);
 };
 
+/**
+ * Tools for the Sliding tray grid: 2D size, and Walls / Start / Goal modes.
+ * Mode changes fire do_callback with MODE_* as the long parameter.
+ */
+class ToolTab_Sliding : public ToolTab {
+
+  ChangeSize * changeSize;
+  LFl_Radio_Button * modeWalls;
+  LFl_Radio_Button * modeStart;
+  LFl_Radio_Button * modeGoal;
+
+public:
+
+  enum {
+    MODE_WALLS = 0,
+    MODE_START = 1,
+    MODE_GOAL = 2
+  };
+
+  ToolTab_Sliding(int x, int y, int w, int h);
+
+  void setVoxelSpace(puzzle_c * puz, unsigned int sh);
+
+  void cb_size(void);
+  void cb_mode(void);
+  void applyTask(voxel_c * space, long task);
+
+  int getMode(void) const;
+};
+
 class ToolTabContainer : public layouter_c {
 
   ToolTab * tt;
@@ -146,6 +198,7 @@ class ToolTabContainer : public layouter_c {
 
   void setVoxelSpace(puzzle_c * puz, unsigned int sh) { if (tt) tt->setVoxelSpace(puz, sh); }
   bool operationToAll(void) { if (tt) return tt->operationToAll(); else return false; }
+  ToolTab * getToolTab(void) { return tt; }
   void setPreviewHandler(void (*cb)(void * user, voxel_c * preview, unsigned int shapeNum), void * user) {
     previewHandler = cb;
     previewUser = user;

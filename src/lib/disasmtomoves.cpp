@@ -235,6 +235,22 @@ int disasmToMoves_c::doRecursive(const separation_c * tree, int step, float * ar
 
   bt_assert(tree);
 
+  /* A brick take-apart ends with a piece pulled off the puzzle. A slide ends
+   * with every piece still on the board, so the final state is a placement,
+   * not a separation. */
+  bool takeApart = (step >= 0) && ((unsigned int)step >= tree->getMoves());
+  if (takeApart) {
+    const state_c * end = tree->getState(tree->getMoves());
+    takeApart = false;
+    for (unsigned int i = 0; i < tree->getPieceNumber(); i++)
+      if (end->pieceRemoved(i)) {
+        takeApart = true;
+        break;
+      }
+    if (!takeApart)
+      step = (int)tree->getMoves();
+  }
+
   /* first check, if we are inside this tree node, this is the case when
    * the number of steps is between 0 and the number of steps in this node
    *
@@ -244,7 +260,7 @@ int disasmToMoves_c::doRecursive(const separation_c * tree, int step, float * ar
    *
    * in the state the removed part would be removed by 10000 units
    */
-  if ((step >= 0) && ((unsigned int)step >= tree->getMoves())) {
+  if (takeApart) {
 
     /* so, this is the path for after the current node, the first thing
      * is to find out in which directions the pieces that are removed

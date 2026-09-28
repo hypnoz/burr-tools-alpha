@@ -109,7 +109,7 @@ voxel_c::voxel_c(const voxel_c & orig) :
   gt(orig.gt), sx(orig.sx), sy(orig.sy), sz(orig.sz), voxels(orig.voxels), space(orig.space),
   bx1(orig.bx1), bx2(orig.bx2), by1(orig.by1), by2(orig.by2), bz1(orig.bz1), bz2(orig.bz2),
   doRecalc(true), symmetries(symmetryInvalid()), hx(orig.hx), hy(orig.hy), hz(orig.hz),
-  name(orig.name), weight(orig.weight),
+  name(orig.name), weight(orig.weight), goalPiece(orig.goalPiece),
   BbHsCache(9 * orig.gt->getSymmetries()->getNumTransformationsMirror(), BBHSCACHE_UNINIT) {
 }
 
@@ -117,7 +117,7 @@ voxel_c::voxel_c(const voxel_c * orig) :
   gt(orig->gt), sx(orig->sx), sy(orig->sy), sz(orig->sz), voxels(orig->voxels), space(orig->space),
   bx1(orig->bx1), bx2(orig->bx2), by1(orig->by1), by2(orig->by2), bz1(orig->bz1), bz2(orig->bz2),
   doRecalc(true), symmetries(symmetryInvalid()), hx(orig->hx), hy(orig->hy), hz(orig->hz),
-  name(orig->name), weight(orig->weight),
+  name(orig->name), weight(orig->weight), goalPiece(orig->goalPiece),
   BbHsCache(9 * orig->gt->getSymmetries()->getNumTransformationsMirror(), BBHSCACHE_UNINIT) {
 }
 
@@ -151,6 +151,8 @@ void voxel_c::recalcBoundingBox(void) {
           empty = false;
         } else {
           space[index] = 0;  // clear away all colours that might be left
+          if (index < goalPiece.size())
+            goalPiece[index] = 0;
         }
         index++;
       }
@@ -170,6 +172,12 @@ bool voxel_c::operator ==(const voxel_c & op) const {
 
   for (unsigned int i = 0; i < voxels; i++)
     if (space[i] != op.space[i])
+      return false;
+
+  if (goalPiece.size() != op.goalPiece.size())
+    return false;
+  for (unsigned int i = 0; i < goalPiece.size(); i++)
+    if (goalPiece[i] != op.goalPiece[i])
       return false;
 
   return true;
@@ -312,6 +320,9 @@ void voxel_c::resize(unsigned int nsx, unsigned int nsy, unsigned int nsz, voxel
   if (nsx == sx && nsy == sy && nsz == sz) return;
 
   std::vector<voxel_type> s2(nsx*nsy*nsz, filler);
+  std::vector<unsigned char> g2;
+  if (!goalPiece.empty())
+    g2.assign(nsx*nsy*nsz, 0);
 
   unsigned int mx = (sx < nsx) ? sx : nsx;
   unsigned int my = (sy < nsy) ? sy : nsy;
@@ -319,10 +330,15 @@ void voxel_c::resize(unsigned int nsx, unsigned int nsy, unsigned int nsz, voxel
 
   for (unsigned int x = 0; x < mx; x++)
     for (unsigned int y = 0; y < my; y++)
-      for (unsigned int z = 0; z < mz; z++)
+      for (unsigned int z = 0; z < mz; z++) {
         s2[x + nsx * (y + nsy * z)] = get(x, y, z);
+        if (!g2.empty())
+          g2[x + nsx * (y + nsy * z)] = getGoalPiece(x, y, z);
+      }
 
   space = std::move(s2);
+  if (!g2.empty())
+    goalPiece = std::move(g2);
 
   sx = nsx;
   sy = nsy;
@@ -359,16 +375,24 @@ unsigned int voxel_c::countState(int state) const {
 
 void voxel_c::translate(int dx, int dy, int dz, voxel_type filler) {
   std::vector<voxel_type> s2(sx*sy*sz, filler);
+  std::vector<unsigned char> g2;
+  if (!goalPiece.empty())
+    g2.assign(sx*sy*sz, 0);
 
   for (unsigned int x = 0; x < sx; x++)
     for (unsigned int y = 0; y < sy; y++)
       for (unsigned int z = 0; z < sz; z++)
         if (((int)x+dx >= 0) && ((int)x+dx < (int)sx) &&
             ((int)y+dy >= 0) && ((int)y+dy < (int)sy) &&
-            ((int)z+dz >= 0) && ((int)z+dz < (int)sz))
+            ((int)z+dz >= 0) && ((int)z+dz < (int)sz)) {
           s2[(x+dx)+sx*((y+dy)+sy*(z+dz))] = get(x, y, z);
+          if (!g2.empty())
+            g2[(x+dx)+sx*((y+dy)+sy*(z+dz))] = getGoalPiece(x, y, z);
+        }
 
   space = std::move(s2);
+  if (!g2.empty())
+    goalPiece = std::move(g2);
 
   // initially I thought I could just shift the bounding box, but this doesn't work
   // as off piece voxels might have been shifted out making the shape smaller
@@ -561,6 +585,28 @@ void voxel_c::copy(const voxel_c * orig) {
   name = "";
 
   weight = orig->weight;
+  goalPiece = orig->goalPiece;
+}
+
+void voxel_c::setGoalPiece(unsigned int i, unsigned int pieceId) {
+  if (i >= voxels)
+    return;
+  if (goalPiece.size() != voxels)
+    goalPiece.assign(voxels, 0);
+  goalPiece[i] = (unsigned char)pieceId;
+  if (pieceId == 0) {
+    bool any = false;
+    for (unsigned char c : goalPiece)
+      if (c) { any = true; break; }
+    if (!any)
+      goalPiece.clear();
+  }
+}
+
+bool voxel_c::hasGoalPieces(void) const {
+  for (unsigned char c : goalPiece)
+    if (c) return true;
+  return false;
 }
 
 bool voxel_c::neighbour(unsigned int p, voxel_type val) const {
@@ -672,6 +718,15 @@ void voxel_c::save(xmlWriter_c & xml) const {
   if (name.length())
     xml.newAttrib("name", name);
 
+  if (hasGoalPieces()) {
+    std::string g;
+    for (unsigned int i = 0; i < getXYZ(); i++) {
+      if (i) g += ',';
+      g += std::to_string(getGoalPiece(i));
+    }
+    xml.newAttrib("goal", g);
+  }
+
   // this might allow us to later add another format
   xml.newAttrib("type", 0);
 
@@ -759,6 +814,8 @@ voxel_c::voxel_c(xmlParser_c & pars, const gridType_c * g) : gt(g), hx(0), hy(0)
 
   name = pars.getAttributeValue("name");
 
+  std::string goalAttr = pars.getAttributeValue("goal");
+
   szStr = pars.getAttributeValue("weight");
   if (szStr != "")
     weight = atoi(szStr.c_str());
@@ -821,6 +878,26 @@ voxel_c::voxel_c(xmlParser_c & pars, const gridType_c * g) : gt(g), hx(0), hy(0)
     }
     if (idx < getXYZ())
       pars.exception("not enough voxels defined for voxelspace");
+  }
+
+  if (goalAttr.length()) {
+    goalPiece.assign(voxels, 0);
+    unsigned int gi = 0;
+    unsigned int val = 0;
+    bool inNum = false;
+    for (unsigned int pos = 0; pos <= goalAttr.length(); pos++) {
+      char ch = (pos < goalAttr.length()) ? goalAttr[pos] : ',';
+      if (ch >= '0' && ch <= '9') {
+        val = val * 10 + (unsigned int)(ch - '0');
+        inNum = true;
+      } else if (ch == ',') {
+        if (inNum && gi < goalPiece.size())
+          goalPiece[gi] = (unsigned char)val;
+        gi++;
+        val = 0;
+        inNum = false;
+      }
+    }
   }
 
   symmetries = symmetryInvalid();

@@ -23,6 +23,7 @@
 #include "bt_assert.h"
 #include "problem.h"
 #include "puzzle.h"
+#include "sliding.h"
 #include "voxel.h"
 #include "assembly.h"
 #include "gridtype.h"
@@ -383,6 +384,12 @@ int assembler_1_c::prepare(bool hasRange, unsigned int rangeMin, unsigned int ra
         holeColumns.push_back(c);
         // fall through
       case voxel_c::VX_FILLED:
+        /* Sliding does not require the tray to be filled. A normal cell may
+         * stay empty, the same as a variable cell. */
+        if (result->getState(i) == voxel_c::VX_FILLED && sliding::isSliding(problem)) {
+          min[c] = 0;
+          holeColumns.push_back(c);
+        }
         columns[i] = c++;
         break;
       default:
@@ -678,6 +685,10 @@ assembler_1_c::errState assembler_1_c::createMatrix(bool keepMirror, bool keepRo
   /* count the filled and variable units */
   unsigned int res_vari = getResultShape(problem)->countState(voxel_c::VX_VARIABLE);
   unsigned int res_filled = getResultShape(problem)->countState(voxel_c::VX_FILLED) + res_vari;
+
+  /* Sliding allows the pieces to leave normal cells empty. */
+  if (sliding::isSliding(problem))
+    res_vari = res_filled;
 
   // check if number of voxels in pieces is not bigger than
   // number of voxel in result
