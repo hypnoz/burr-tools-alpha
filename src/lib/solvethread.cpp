@@ -660,9 +660,15 @@ bool solveThread_c::assembly(std::unique_ptr<assembly_c> a) {
             break;
           }
           if (keep) {
-            if (longer >= 0)
-              puzzle.removeSolution((unsigned int)longer);
+            /* A shorter path to an ending already counted is the same solution.
+             * Reuse that solution's number. getNumSolutions() is already the
+             * count of distinct endings, so using it here shows Solution: N+1
+             * while Solutions stays at N. */
             unsigned long solNum = puzzle.getNumSolutions();
+            if (longer >= 0) {
+              solNum = puzzle.getSavedSolution((unsigned int)longer)->getSolutionNumber();
+              puzzle.removeSolution((unsigned int)longer);
+            }
             puzzle.addSolution(a.release(), path.release(),
                                puzzle.getNumAssemblies(), solNum);
             if (longer < 0)

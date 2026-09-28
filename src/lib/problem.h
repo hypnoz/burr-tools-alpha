@@ -540,10 +540,6 @@ public:
   void sortSolutionsBySolverMethod(int method);
   //@}
 
-public:
-
-  void dedupeRotatedAssemblies(void);
-
   // no copying and assigning
   problem_c(const problem_c&) = delete;
   problem_c& operator=(const problem_c&) = delete;

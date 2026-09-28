@@ -402,13 +402,18 @@ executable('burrtools', gui_src,
 catch2_dep = dependency('catch2-with-main', fallback: ['catch2', 'catch2_with_main_dep'], default_options: ['tests=false'])
 
 test_burrtools = executable('test_burrtools',
-  ['test/test_solver.cpp', 'test/test_cubemesh.cpp', 'test/test_manifold_smoke.cpp', 'test/test_minkmesh.cpp', 'test/test_bitfield.cpp', 'test/test_voxel.cpp', 'test/test_voxel_connect.cpp', 'test/test_symmetries.cpp', 'test/test_grouping.cpp', 'test/test_xml.cpp', 'test/test_roundtrip.cpp', 'test/test_disassembly.cpp', 'test/test_puzzle_model.cpp', 'test/test_grid_invariants.cpp', 'test/test_simd_exact_cover.cpp', 'test/test_sliding.cpp'],
+  ['test/test_solver.cpp', 'test/test_cubemesh.cpp', 'test/test_manifold_smoke.cpp', 'test/test_minkmesh.cpp', 'test/test_bitfield.cpp', 'test/test_voxel.cpp', 'test/test_voxel_connect.cpp', 'test/test_symmetries.cpp', 'test/test_grouping.cpp', 'test/test_xml.cpp', 'test/test_roundtrip.cpp', 'test/test_disassembly.cpp', 'test/test_puzzle_model.cpp', 'test/test_grid_invariants.cpp', 'test/test_simd_exact_cover.cpp', 'test/test_sliding.cpp', 'test/test_rotation_solvers.cpp'],
   include_directories: inc,
   link_with: libburr_core,
   dependencies: [thread_dep, zlib_dep, catch2_dep, manifold_dep],
 )
 
-test('burrtools_tests', test_burrtools, workdir: meson.project_source_root())
+# Meson's default is 30s for the whole Catch2 binary. The suite is much
+# faster than that, but a slow runner used to hit the default and SIGTERM
+# the process mid-case, which hid every test that had not started yet.
+test('burrtools_tests', test_burrtools,
+     timeout: 180,
+     workdir: meson.project_source_root())
 
 python_opt = get_option('python')
 if not python_opt.disabled()

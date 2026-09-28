@@ -81,8 +81,11 @@ void bt_assert_init();
 
 #else
 
-#define bt_assert(...) ((!(__VA_ARGS__)) ? ::bt_te(#__VA_ARGS__) : (void)0)
-#define bt_assert2(...) ((!(__VA_ARGS__)) ? ::bt_te(#__VA_ARGS__) : (void)0)
+/* Pass source_location::current() from the macro. A default argument on
+   bt_te is evaluated at the declaration on Apple Clang, so the exception
+   would name bt_assert.h instead of the caller. */
+#define bt_assert(...) ((!(__VA_ARGS__)) ? ::bt_te(#__VA_ARGS__, std::source_location::current()) : (void)0)
+#define bt_assert2(...) ((!(__VA_ARGS__)) ? ::bt_te(#__VA_ARGS__, std::source_location::current()) : (void)0)
 #define bt_assert_line(line) (::assert_log ? ::assert_log->addLine(line) : (void)0)
 
 #endif
