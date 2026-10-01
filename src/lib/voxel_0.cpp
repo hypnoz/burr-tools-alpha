@@ -433,7 +433,8 @@ Polyhedron * voxel_0_c::getSTLMesh(void) const
   /* the rhombic and tetra-octa grids derive from this class but are not
    * made of cubes: they have their own mesher, reached through the base */
   if (getGridType()->getType() != gridType_c::GT_BRICKS &&
-      getGridType()->getType() != gridType_c::GT_SLIDING) return voxel_c::getSTLMesh();
+      getGridType()->getType() != gridType_c::GT_SLIDING &&
+      getGridType()->getType() != gridType_c::GT_STACKING) return voxel_c::getSTLMesh();
   /* the base class's defaults, in cell units: bevel 0.05, offset 0.02 */
   std::string err;
   Polyhedron * p = cubePolyhedron(*this, 0.02, 0.05, true, err);

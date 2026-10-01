@@ -37,6 +37,7 @@
 #include "Images.h"
 
 #include "../lib/sliding.h"
+#include "../lib/stacking.h"
 
 #include "assertwindow.h"
 #include "togglebutton.h"
@@ -104,10 +105,14 @@
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Value_Input.H>
 #include <FL/fl_ask.H>
+#include <FL/fl_draw.H>
 #include <FL/Fl_Help_View.H>
 #pragma GCC diagnostic pop
 
 #include <fstream>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -214,6 +219,17 @@ void mainWindow_c::cb_ChangeColor(void) {
 
 static void cb_NewShape_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_NewShape(); }
 void mainWindow_c::cb_NewShape(void) {
+
+  if (puzzle && stacking::isStacking(*puzzle)) {
+    unsigned int id = stacking::addDisk(*puzzle, 1);
+    if (View3D)
+      View3D->getView()->lookFront();
+    activateShape(id);
+    updateInterface();
+    StatPieceInfo(id);
+    recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
+    return;
+  }
 
   if (PcSel->getSelection() < puzzle->getNumberOfShapes()) {
     const voxel_c * v = puzzle->getShape(PcSel->getSelection());
@@ -411,11 +427,819 @@ void mainWindow_c::cb_DelStartGoal(void) {
   recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
 }
 
+static void cb_NewRod_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_NewRod(); }
+static void cb_DeleteRod_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_DeleteRod(); }
+static void cb_CopyRod_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_CopyRod(); }
+static void cb_NameRod_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_NameRod(); }
+static void cb_RodLeft_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_RodExchange(-1); }
+static void cb_RodRight_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_RodExchange(1); }
+static void cb_RodUndo_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_RodUndo(); }
+static void cb_RodRedo_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_RodRedo(); }
+static void cb_RodSel_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_RodSel(); }
+static void cb_RodField_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_RodField(); }
+static void cb_DiskList_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_DiskList(); }
+static void cb_StackMode_stub(Fl_Widget* o, void* v) { ((mainWindow_c*)v)->cb_StackMode(o); }
+static void cb_StackRod_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_StackRod(); }
+static void cb_StackValidRelayout_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->relayoutProblemTab(); }
+static void cb_StackListSel_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_StackListSel(); }
+static void cb_ProblemRod_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_ProblemRod(); }
+
+mainWindow_c::rodSnap_c mainWindow_c::captureRodSnap(void) const {
+  rodSnap_c snap;
+  if (!puzzle)
+    return snap;
+  snap.sets.reserve(puzzle->rodSetCount());
+  for (unsigned int i = 0; i < puzzle->rodSetCount(); i++)
+    snap.sets.push_back(puzzle->getRodSet(i));
+  snap.problems.resize(puzzle->getNumberOfProblems());
+  for (unsigned int i = 0; i < puzzle->getNumberOfProblems(); i++) {
+    const problem_c * pr = puzzle->getProblem(i);
+    snap.problems[i].id = pr->getRodSetId();
+    snap.problems[i].start = pr->startStacks();
+    snap.problems[i].goal = pr->goalStacks();
+  }
+  snap.sel = rodSel ? rodSel->getSelection() : 0;
+  return snap;
+}
+
+void mainWindow_c::resetRodHistory(void) {
+  rodPast.clear();
+  rodFuture.clear();
+  if (puzzle && stacking::isStacking(*puzzle))
+    rodPast.push_back(captureRodSnap());
+}
+
+void mainWindow_c::pushRodHistory(void) {
+  if (!puzzle || !stacking::isStacking(*puzzle))
+    return;
+  rodFuture.clear();
+  rodPast.push_back(captureRodSnap());
+  if (rodPast.size() > 40)
+    rodPast.erase(rodPast.begin());
+}
+
+void mainWindow_c::restoreRodSnap(const rodSnap_c & snap) {
+  if (!puzzle)
+    return;
+  rodFieldGuard = true;
+  while (puzzle->rodSetCount() > snap.sets.size())
+    puzzle->removeRodSet(puzzle->rodSetCount() - 1);
+  while (puzzle->rodSetCount() < snap.sets.size())
+    puzzle->addRodSet();
+  for (unsigned int i = 0; i < snap.sets.size(); i++)
+    puzzle->getRodSet(i) = snap.sets[i];
+  unsigned int n = puzzle->getNumberOfProblems();
+  if (n > snap.problems.size())
+    n = (unsigned int)snap.problems.size();
+  for (unsigned int i = 0; i < n; i++) {
+    problem_c * pr = puzzle->getProblem(i);
+    pr->setRodSetId(snap.problems[i].id);
+    pr->editStart() = snap.problems[i].start;
+    pr->editGoal() = snap.problems[i].goal;
+  }
+  rodFieldGuard = false;
+  if (rodSel && puzzle->rodSetCount()) {
+    unsigned int sel = snap.sel;
+    if (sel >= puzzle->rodSetCount())
+      sel = puzzle->rodSetCount() - 1;
+    if (rodSel->getSelection() != sel)
+      rodSel->setSelection(sel);
+  }
+  loadRodFields();
+  changed = true;
+  if (rodSel) rodSel->redraw();
+  if (rodAssignSel) rodAssignSel->redraw();
+  updateInterface();
+  if (TaskSelectionTab && TaskSelectionTab->value() == TabPieces)
+    showSelectedRods();
+  else if (TabProblems && TaskSelectionTab && TaskSelectionTab->value() == TabProblems &&
+           problemSelector && problemSelector->getSelection() < puzzle->getNumberOfProblems())
+    activateProblem(problemSelector->getSelection());
+}
+
+void mainWindow_c::cb_RodUndo(void) {
+  if (rodPast.size() < 2)
+    return;
+  rodFuture.push_back(rodPast.back());
+  rodPast.pop_back();
+  restoreRodSnap(rodPast.back());
+}
+
+void mainWindow_c::cb_RodRedo(void) {
+  if (rodFuture.empty())
+    return;
+  rodPast.push_back(rodFuture.back());
+  rodFuture.pop_back();
+  restoreRodSnap(rodPast.back());
+}
+
+void mainWindow_c::loadRodFields(void) {
+  if (!rodCountInput || !puzzle)
+    return;
+  rodFieldGuard = true;
+  unsigned int sel = rodSel ? rodSel->getSelection() : (unsigned int)-1;
+  bool ok = sel < puzzle->rodSetCount();
+  if (ok) {
+    const stacking::rodSet_c & r = puzzle->getRodSet(sel);
+    rodCountInput->value(r.rodCount);
+    rodGrow->value(r.growHeight ? 1 : 0);
+    rodFixed->value(r.growHeight ? 0 : 1);
+    rodHeightInput->value(r.definedHeight);
+    if (r.growHeight) rodHeightInput->deactivate();
+    else rodHeightInput->activate();
+    rodSizeMatters->value(r.sizeMatters ? 1 : 0);
+    /* Older files used "can move over" to cancel a distance limit. */
+    rodDistance->value((r.distanceMatters && !r.canMoveOver) ? 1 : 0);
+    if (r.growHeight) rodGrow->setonly();
+    else rodFixed->setonly();
+  }
+  rodFieldGuard = false;
+}
+
+static void easeRodZoom(LView3dGroup * view) {
+  if (!view)
+    return;
+  /* The piece editor's default zoom frames one disc. A board of rods
+   * needs to sit further back so all of the pegs are in view. Leave a
+   * zoom the user has already moved. */
+  if (std::fabs(view->getZoom() - LView3dGroup::defaultZoom) < 0.15)
+    view->setZoom(2.7);
+}
+
+void mainWindow_c::showSelectedRods(void) {
+  if (!View3D || !puzzle || !rodSel || rodSel->getSelection() >= puzzle->rodSetCount()) {
+    if (View3D) View3D->getView()->showNothing();
+    return;
+  }
+  View3D->getView()->showRodSet(puzzle, rodSel->getSelection());
+  easeRodZoom(View3D);
+}
+
+void mainWindow_c::selectProblemRod(unsigned int prob) {
+  if (!rodAssignSel || !puzzle || !stacking::isStacking(*puzzle))
+    return;
+  if (prob >= puzzle->getNumberOfProblems())
+    return;
+  const problem_c * pr = puzzle->getProblem(prob);
+  if (!pr->rodSetValid())
+    return;
+  if (rodAssignSel->getSelection() != pr->getRodSetId())
+    rodAssignSel->setSelection(pr->getRodSetId());
+}
+
+void mainWindow_c::cb_NewRod(void) {
+  if (!puzzle || !stacking::isStacking(*puzzle))
+    return;
+  unsigned int id = puzzle->addRodSet();
+  changed = true;
+  if (rodSel) rodSel->setSelection(id);
+  pushRodHistory();
+  loadRodFields();
+  updateInterface();
+  showSelectedRods();
+}
+
+void mainWindow_c::cb_DeleteRod(void) {
+  if (!puzzle || !rodSel)
+    return;
+  unsigned int sel = rodSel->getSelection();
+  if (sel >= puzzle->rodSetCount())
+    return;
+  if (puzzle->rodSetCount() < 2) {
+    fl_message("Keep at least one rod set");
+    return;
+  }
+  puzzle->removeRodSet(sel);
+  if (sel >= puzzle->rodSetCount())
+    sel = puzzle->rodSetCount() - 1;
+  changed = true;
+  rodSel->setSelection(sel);
+  pushRodHistory();
+  loadRodFields();
+  updateInterface();
+  showSelectedRods();
+}
+
+void mainWindow_c::cb_CopyRod(void) {
+  if (!puzzle || !rodSel)
+    return;
+  unsigned int sel = rodSel->getSelection();
+  if (sel >= puzzle->rodSetCount())
+    return;
+  unsigned int id = puzzle->addRodSet(puzzle->getRodSet(sel));
+  changed = true;
+  rodSel->setSelection(id);
+  pushRodHistory();
+  loadRodFields();
+  updateInterface();
+  showSelectedRods();
+}
+
+void mainWindow_c::cb_NameRod(void) {
+  if (!puzzle || !rodSel)
+    return;
+  unsigned int sel = rodSel->getSelection();
+  if (sel >= puzzle->rodSetCount())
+    return;
+  const char * name = fl_input("Enter name for the rod set", puzzle->getRodSet(sel).name.c_str());
+  if (!name)
+    return;
+  puzzle->getRodSet(sel).name = name;
+  changed = true;
+  pushRodHistory();
+  rodSel->redraw();
+  if (rodAssignSel) rodAssignSel->redraw();
+  updateInterface();
+}
+
+void mainWindow_c::cb_RodExchange(int with) {
+  if (!puzzle || !rodSel)
+    return;
+  unsigned int sel = rodSel->getSelection();
+  unsigned int other = sel + with;
+  if (sel >= puzzle->rodSetCount() || other >= puzzle->rodSetCount())
+    return;
+  puzzle->exchangeRodSets(sel, other);
+  changed = true;
+  rodSel->setSelection(other);
+  pushRodHistory();
+  updateInterface();
+  showSelectedRods();
+}
+
+void mainWindow_c::cb_RodSel(void) {
+  loadRodFields();
+  if (TaskSelectionTab && TaskSelectionTab->value() == TabPieces)
+    showSelectedRods();
+  updateInterface();
+}
+
+void mainWindow_c::cb_RodField(void) {
+  if (rodFieldGuard || !puzzle || !rodSel || !rodCountInput)
+    return;
+  unsigned int sel = rodSel->getSelection();
+  if (sel >= puzzle->rodSetCount())
+    return;
+  stacking::rodSet_c & r = puzzle->getRodSet(sel);
+  unsigned int count = (unsigned int)rodCountInput->value();
+  if (count < 1) count = 1;
+  if (count > (unsigned int)STACK_ROD_BUTTONS) count = (unsigned int)STACK_ROD_BUTTONS;
+  r.rodCount = count;
+  r.growHeight = rodGrow->value() != 0;
+  unsigned int h = (unsigned int)rodHeightInput->value();
+  if (h < 1) h = 1;
+  if (h > 64) h = 64;
+  r.definedHeight = h;
+  r.sizeMatters = rodSizeMatters->value() != 0;
+  r.distanceMatters = rodDistance->value() != 0;
+  r.canMoveOver = false;
+  if (r.growHeight) rodHeightInput->deactivate();
+  else rodHeightInput->activate();
+  /* Stacks saved against the old rules can be illegal after these edits.
+   * They are kept: the Puzzle tab's validity bar reports what is wrong. */
+  for (unsigned int p = 0; p < puzzle->getNumberOfProblems(); p++) {
+    problem_c * pr = puzzle->getProblem(p);
+    if (pr->rodSetValid() && pr->getRodSetId() == sel) {
+      stacking::syncMaps(*pr);
+      /* A solution found under the old rules may not hold under these. */
+      pr->removeAllSolutions();
+    }
+  }
+  changed = true;
+  pushRodHistory();
+  if (rodSel) rodSel->redraw();
+  updateInterface();
+  refreshStackSlider();
+  if (TaskSelectionTab && TaskSelectionTab->value() == TabPieces)
+    showSelectedRods();
+  else if (TaskSelectionTab && TaskSelectionTab->value() == TabProblems)
+    refreshStackList();
+}
+
+void mainWindow_c::cb_DiskList(void) {
+  if (!diskList || !puzzle)
+    return;
+  unsigned int sel = diskList->getSelection();
+  if (sel >= puzzle->getNumberOfShapes())
+    return;
+  if (diskList->getReason() == DiskSelector::RS_SIZE) {
+    recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
+    changed = true;
+  }
+  activateShape(sel);
+  StatPieceInfo(sel);
+  updateInterface();
+}
+
+/* Full-width coloured strip that states whether the stacking on the Puzzle
+ * tab obeys its rod set. The reason wraps, so the strip asks for as many
+ * lines as the text needs at its current width. When a resize changes that
+ * line count it fires its callback, so the owner can lay the tab out again. */
+class StackValidBar_c : public Fl_Box, public layoutable_c {
+  std::string text;
+  int askedHeight;
+  static void cb_relayout(void * v) {
+    ((StackValidBar_c *)v)->do_callback();
+  }
+  int heightFor(int W) const {
+    fl_font(labelfont(), labelsize());
+    int tw = W - 12;
+    if (tw < 40)
+      tw = 40;
+    int th = 0;
+    fl_measure(text.c_str(), tw, th, 0);
+    return th + 8;
+  }
+public:
+  StackValidBar_c(int gx, int gy, int gw, int gh)
+    : Fl_Box(0, 0, 100, 20), layoutable_c(gx, gy, gw, gh), askedHeight(0) {
+    box(FL_FLAT_BOX);
+    labelcolor(FL_WHITE);
+    labelfont(FL_HELVETICA_BOLD);
+    align(FL_ALIGN_INSIDE | FL_ALIGN_WRAP | FL_ALIGN_LEFT);
+    setState(true, "");
+  }
+  ~StackValidBar_c(void) { Fl::remove_timeout(cb_relayout, this); }
+  /* True when the text changed. */
+  bool setState(bool valid, const std::string & reason) {
+    std::string t = valid ? "Valid" : "Invalid";
+    if (!reason.empty())
+      t += " - " + reason;
+    Fl_Color c = valid ? fl_rgb_color(46, 139, 87) : fl_rgb_color(192, 40, 40);
+    if (t == text && c == color())
+      return false;
+    text = t;
+    label(text.c_str());
+    color(c);
+    redraw();
+    return true;
+  }
+  virtual void getMinSize(int *width, int *height) const {
+    *width = 40;
+    *height = heightFor(w() > 40 ? w() : 200);
+  }
+  virtual void draw(void) {
+    draw_box();
+    draw_label(x() + 6, y(), w() - 12, h(), align());
+  }
+  virtual void resize(int X, int Y, int W, int H) {
+    Fl_Box::resize(X, Y, W, H);
+    int need = heightFor(W);
+    if (need != H && need != askedHeight) {
+      askedHeight = need;
+      Fl::remove_timeout(cb_relayout, this);
+      Fl::add_timeout(0, cb_relayout, this);
+    } else if (need == H) {
+      askedHeight = need;
+    }
+  }
+};
+
+/* Tick marks beside the brick editor's Z slider, turned to run under a
+ * horizontal slider. LineSpacer's horizontal branch draws with its axes
+ * swapped, so this is a corrected copy of the vertical case. */
+class RodTickBar_c : public Fl_Widget {
+  int lines;
+public:
+  RodTickBar_c(int x, int y, int w, int h) : Fl_Widget(x, y, w, h), lines(3) {
+    color(FL_BACKGROUND_COLOR);
+  }
+  void setLines(int n) {
+    if (n < 1)
+      n = 1;
+    lines = n;
+    redraw();
+  }
+  void draw(void) {
+    fl_color(color());
+    fl_rectf(x(), y(), w(), h());
+    if (lines <= 1)
+      return;
+    fl_color(FL_BLACK);
+    int gap = 4;
+    int span = w() - 2 * gap - 1;
+    if (span < 1)
+      span = 1;
+    /* Same tick width as the Entities Z slider. */
+    int thick = span / (lines - 1) / 2;
+    if (thick > 3)
+      thick = 3;
+    if (thick < 1)
+      thick = 1;
+    for (int i = 0; i < lines; i++) {
+      int xpos = x() + gap + span * i / (lines - 1);
+      fl_rectf(xpos - thick / 2, y(), thick, h());
+    }
+  }
+};
+
+/* The Entities Z control is an Fl_Slider, 15px on its short side, trough
+ * color 237, with a 5px tick strip beside it. This is that slider with
+ * FL_HOR_SLIDER and the ticks underneath, shortened for a "Rod: N" label. */
+class RodIndexBar_c : public Fl_Group, public layoutable_c {
+  Fl_Slider * slider;
+  RodTickBar_c * ticks;
+  Fl_Box * caption;
+  int rods;
+  int labelW;
+  void syncCaption(void) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "Rod: %d", value() + 1);
+    caption->copy_label(buf);
+  }
+  static void cb_slider(Fl_Widget *, void * v) {
+    ((RodIndexBar_c *)v)->syncCaption();
+    ((RodIndexBar_c *)v)->do_callback();
+  }
+public:
+  RodIndexBar_c(int gx, int gy, int gw, int gh)
+    : Fl_Group(0, 0, 120, 20), layoutable_c(gx, gy, gw, gh), rods(3) {
+    box(FL_NO_BOX);
+    fl_font(FL_HELVETICA, FL_NORMAL_SIZE);
+    int tw = 0, th = 0;
+    fl_measure("Rod: 16", tw, th, 0);
+    labelW = tw + 8;
+    caption = new Fl_Box(0, 0, labelW, 15);
+    caption->box(FL_NO_BOX);
+    caption->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    caption->copy_label("Rod: 1");
+    slider = new Fl_Slider(labelW, 0, 40, 15);
+    slider->type(FL_HOR_SLIDER);
+    slider->color((Fl_Color)237);
+    slider->selection_color(FL_WHITE);
+    slider->step(1);
+    slider->bounds(0, 2);
+    slider->value(0);
+    slider->clear_visible_focus();
+    slider->callback(cb_slider, this);
+    squareKnob();
+    ticks = new RodTickBar_c(labelW, 15, 40, 5);
+    end();
+    resizable(nullptr);
+    stretchVCenter();
+    setMinimumSize(labelW + 40, 20);
+  }
+  /* Knob length is a fraction of the track. Match the slider's height so
+   * the button stays square, as on the Entities Z slider. */
+  void squareKnob(void) {
+    if (slider->w() < 1)
+      return;
+    double frac = (double)slider->h() / (double)slider->w();
+    if (frac > 1)
+      frac = 1;
+    slider->slider_size(frac);
+  }
+  int value(void) const { return (int)(slider->value() + 0.5); }
+  void value(int v) {
+    int n = rods < 1 ? 1 : rods;
+    if (v < 0)
+      v = 0;
+    if (v >= n)
+      v = n - 1;
+    slider->value(v);
+    syncCaption();
+  }
+  void setCount(int n) {
+    if (n < 1)
+      n = 1;
+    int keep = value();
+    rods = n;
+    slider->bounds(0, n - 1);
+    if (keep >= n)
+      keep = n - 1;
+    if (keep < 0)
+      keep = 0;
+    slider->value(keep);
+    ticks->setLines(n);
+    syncCaption();
+  }
+  virtual void getMinSize(int *width, int *height) const {
+    *width = labelW + 40;
+    *height = 20;
+  }
+  virtual void resize(int X, int Y, int W, int H) {
+    Fl_Widget::resize(X, Y, W, H);
+    int sh = 15;
+    if (sh > H)
+      sh = H;
+    int lw = labelW;
+    int gap = 4;
+    if (lw + gap > W - 20)
+      lw = W - 20 - gap;
+    if (lw < 1)
+      lw = 1;
+    caption->resize(X, Y, lw, sh);
+    int sx = X + lw + gap;
+    int sw = W - (lw + gap);
+    if (sw < 1)
+      sw = 1;
+    slider->resize(sx, Y, sw, sh);
+    squareKnob();
+    int th = H - sh;
+    if (th < 0)
+      th = 0;
+    ticks->resize(sx, Y + sh, sw, th);
+  }
+};
+
+unsigned int mainWindow_c::selectedStackRod(void) const {
+  if (!stackRodBar)
+    return 0;
+  int v = stackRodBar->value();
+  if (v < 0)
+    v = 0;
+  return (unsigned int)v;
+}
+
+bool mainWindow_c::stackingBoard(problem_c * pr) {
+  return pr && pr->rodSetValid();
+}
+
+std::string mainWindow_c::placeOneDisk(problem_c * pr, unsigned int shape) {
+  unsigned int before = pr->getShapeMaximum(shape);
+  bool added = true;
+  const stacking::stackMap_c & map = stackingEditGoal ? pr->goalStacks() : pr->startStacks();
+  for (unsigned int i = 0; i < before; i++) {
+    bool used = false;
+    for (const auto & rod : map.rods)
+      for (const stacking::diskRef_c & d : rod)
+        if (d.shapeId == shape && d.instance == i)
+          used = true;
+    if (!used) {
+      added = false;
+      break;
+    }
+  }
+  if (added) {
+    pr->setShapeMaximum(shape, before + 1);
+    if (pr->getShapeMinimum(shape) == before)
+      pr->setShapeMinimum(shape, before + 1);
+  }
+  /* The rules are not enforced here: the validity bar reports a stacking
+   * that breaks them, so the user can build one step by step. */
+  std::string err = stacking::placeDisk(*pr, stackingEditGoal, shape, selectedStackRod(), false);
+  if (!err.empty() && added) {
+    pr->setShapeMaximum(shape, before);
+    if (pr->getShapeMinimum(shape) > before)
+      pr->setShapeMinimum(shape, before);
+  }
+  return err;
+}
+
+void mainWindow_c::refreshStackSlider(void) {
+  if (!stackRodBar || !puzzle)
+    return;
+  unsigned int n = 1;
+  unsigned int id = rodAssignSel ? rodAssignSel->getSelection() : 0;
+  if (id < puzzle->rodSetCount())
+    n = puzzle->getRodSet(id).rodCount;
+  if (n < 1)
+    n = 1;
+  int keep = stackRodBar->value();
+  stackRodBar->setCount((int)n);
+  if (keep >= (int)n)
+    keep = (int)n - 1;
+  if (keep < 0)
+    keep = 0;
+  stackRodBar->value(keep);
+}
+
+void mainWindow_c::refreshStackList(void) {
+  if (!rodStackList)
+    return;
+  std::vector<std::string> labels;
+  std::vector<unsigned int> shapes;
+  if (puzzle && stacking::isStacking(*puzzle) && problemSelector &&
+      problemSelector->getSelection() < puzzle->getNumberOfProblems()) {
+    problem_c * pr = puzzle->getProblem(problemSelector->getSelection());
+    const stacking::stackMap_c & map = stackingEditGoal ? pr->goalStacks() : pr->startStacks();
+    unsigned int rod = selectedStackRod();
+    if (pr->rodSetValid() && rod < map.rods.size()) {
+      const std::vector<stacking::diskRef_c> & stack = map.rods[rod];
+      for (int i = (int)stack.size() - 1; i >= 0; --i) {
+        const stacking::diskRef_c & d = stack[(unsigned int)i];
+        char txt[120];
+        const voxel_c * sh = d.shapeId < puzzle->getNumberOfShapes() ? puzzle->getShape(d.shapeId) : 0;
+        if (sh && sh->getName().length())
+          snprintf(txt, sizeof(txt), "S%u - %s", d.shapeId + 1, sh->getName().c_str());
+        else
+          snprintf(txt, sizeof(txt), "S%u", d.shapeId + 1);
+        labels.push_back(txt);
+        shapes.push_back(d.shapeId);
+      }
+    }
+  }
+  rodStackList->setStack(labels, shapes);
+  refreshStackValid();
+}
+
+static void relayoutTab(layouter_c * tab);
+
+void mainWindow_c::refreshStackValid(void) {
+  if (!stackValidBar || !puzzle || !stacking::isStacking(*puzzle))
+    return;
+  bool valid = false;
+  std::string reason;
+  if (!problemSelector || problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
+    reason = "First create a problem.";
+  } else {
+    reason = stacking::setupError(*puzzle->getProblem(problemSelector->getSelection()));
+    valid = reason.empty();
+  }
+  if (stackValidBar->setState(valid, reason))
+    relayoutProblemTab();
+}
+
+void mainWindow_c::relayoutProblemTab(void) {
+  relayoutTab(TabProblems);
+}
+
+void mainWindow_c::refreshDiskList(void) {
+  if (diskList)
+    diskList->sync();
+}
+
+void mainWindow_c::cb_StackRod(void) {
+  refreshStackList();
+  if (problemSelector && puzzle &&
+      problemSelector->getSelection() < puzzle->getNumberOfProblems())
+    activateProblem(problemSelector->getSelection());
+  updateInterface();
+}
+
+void mainWindow_c::cb_StackListSel(void) {
+  updateInterface();
+}
+
+void mainWindow_c::cb_ProblemRod(void) {
+  refreshStackSlider();
+  refreshStackList();
+  if (!puzzle || !problemSelector || !rodAssignSel)
+    return;
+  unsigned int prob = problemSelector->getSelection();
+  if (prob >= puzzle->getNumberOfProblems())
+    return;
+  problem_c * pr = puzzle->getProblem(prob);
+  unsigned int id = rodAssignSel->getSelection();
+  if (pr->rodSetValid() && pr->getRodSetId() == id)
+    activateProblem(prob);
+  else if (View3D && id < puzzle->rodSetCount()) {
+    View3D->getView()->showRodSet(puzzle, id);
+    easeRodZoom(View3D);
+  }
+}
+
+void mainWindow_c::cb_StackMode(Fl_Widget * o) {
+  if (!puzzle)
+    return;
+  stackingEditGoal = (o == stackGoalMode);
+  if (stackingEditGoal) {
+    if (stackGoalMode && !stackGoalMode->value())
+      stackGoalMode->setonly();
+  } else if (stackStartMode && !stackStartMode->value()) {
+    stackStartMode->setonly();
+  }
+  refreshStackList();
+  if (TaskSelectionTab && TaskSelectionTab->value() == TabProblems &&
+      problemSelector && problemSelector->getSelection() < puzzle->getNumberOfProblems())
+    activateProblem(problemSelector->getSelection());
+  updateInterface();
+}
+
+void mainWindow_c::syncSolverTypeMenu(void) {
+  if (!solverTypeChoice || !puzzle)
+    return;
+  bool on = stacking::isStacking(*puzzle);
+  if (on == solverMenuStacking && solverTypeChoice->size() > 0)
+    return;
+  solverMenuStacking = on;
+  int keep = solverTypeChoice->value();
+  solverTypeChoice->clear();
+  if (on) {
+    solverTypeChoice->add("Stacking Solver");
+    solverTypeChoice->value(0);
+  } else {
+    for (unsigned int i = 0; i < solverTypeCount(); i++)
+      solverTypeChoice->add(solverTypeLabel((solverType_e)i));
+    if (keep < 0 || (unsigned int)keep >= solverTypeCount())
+      keep = (int)SOLVER_CLASSIC;
+    solverTypeChoice->value(keep);
+  }
+}
+
+static void relayoutTab(layouter_c * tab) {
+  if (!tab)
+    return;
+  tab->invalidateMinSize();
+  if (tab->children() > 0) {
+    LFl_Scroll * s = dynamic_cast<LFl_Scroll *>(tab->child(0));
+    if (s)
+      s->relayout();
+  }
+  tab->redraw();
+}
+
+void mainWindow_c::syncStackingChrome(void) {
+  if (!puzzle || !TaskSelectionTab)
+    return;
+  const bool on = stacking::isStacking(*puzzle);
+
+  auto setVis = [](Fl_Widget * w, bool show) {
+    if (!w)
+      return false;
+    if ((bool)w->visible() == show)
+      return false;
+    if (show) w->show();
+    else w->hide();
+    return true;
+  };
+
+  bool relayoutEdit = false;
+  if (setVis(shapeEditColumn, !on)) relayoutEdit = true;
+  if (setVis(pieceSelGroup, !on)) relayoutEdit = true;
+  if (setVis(diskList, on)) relayoutEdit = true;
+  if (setVis(rodsPanel, on)) relayoutEdit = true;
+  if (setVis(colorsGroup, !on)) relayoutEdit = true;
+  if (relayoutEdit)
+    relayoutTab(TabPieces);
+  if (on)
+    refreshDiskList();
+
+  bool relayoutProb = false;
+  if (setVis(rodAssignGroup, on)) relayoutProb = true;
+  if (setVis(stackSliderRow, on)) relayoutProb = true;
+  if (setVis(stackModeRow, on)) relayoutProb = true;
+  if (setVis(piecesCountGroup, !on)) relayoutProb = true;
+  if (rodStackList && setVis(rodStackList->parent(), on)) relayoutProb = true;
+  if (setVis(stackOrderSep, on)) relayoutProb = true;
+  if (setVis(stackValidRow, on)) relayoutProb = true;
+  if (setVis(problemButtonRule, !on)) relayoutProb = true;
+  if (BtnSetResult) {
+    const char * lab = on ? "Set Start/Goal Rods" : "Set Result";
+    if (!BtnSetResult->label() || strcmp(BtnSetResult->label(), lab) != 0) {
+      BtnSetResult->label(lab);
+      int tw = 0, th = 0;
+      BtnSetResult->measure_label(tw, th);
+      static_cast<LFlatButton_c*>(BtnSetResult)->setMinimumSize(tw + 20, th + 8);
+      BtnSetResult->redraw();
+      relayoutProb = true;
+    }
+  }
+  if (relayoutProb)
+    relayoutTab(TabProblems);
+  if (on) {
+    refreshStackSlider();
+    refreshStackList();
+  }
+
+  if (BtnSetResult) {
+    BtnSetResult->tooltip(on
+        ? " Set the selected rod set as this problem's board "
+        : " Set selected shape as result ");
+  }
+  if (BtnProbShapeLeft && BtnProbShapeRight) {
+    BtnProbShapeLeft->tooltip(on
+        ? " Move the selected disc up the rod "
+        : " Exchange current shape with previous shape ");
+    BtnProbShapeRight->tooltip(on
+        ? " Move the selected disc down the rod "
+        : " Exchange current shape with next shape ");
+  }
+
+  if (on && BtnNewRod && rodSel) {
+    unsigned int sel = rodSel->getSelection();
+    unsigned int n = puzzle->rodSetCount();
+    bool ok = sel < n && !assmThread;
+    if (!assmThread) BtnNewRod->activate();
+    else BtnNewRod->deactivate();
+    if (ok && n > 1) BtnDelRod->activate();
+    else BtnDelRod->deactivate();
+    if (ok) {
+      BtnCpyRod->activate();
+      BtnRenRod->activate();
+    } else {
+      BtnCpyRod->deactivate();
+      BtnRenRod->deactivate();
+    }
+    if (ok && sel > 0) BtnRodLeft->activate();
+    else BtnRodLeft->deactivate();
+    if (ok && sel + 1 < n) BtnRodRight->activate();
+    else BtnRodRight->deactivate();
+    if (!assmThread && rodPast.size() >= 2) BtnRodUndo->activate();
+    else BtnRodUndo->deactivate();
+    if (!assmThread && !rodFuture.empty()) BtnRodRedo->activate();
+    else BtnRodRedo->deactivate();
+  }
+
+  syncSolverTypeMenu();
+}
+
 
 static void cb_TaskSelectionTab_stub(Fl_Widget* o, void* v) { ((mainWindow_c*)v)->cb_TaskSelectionTab((Fl_Tabs*)o); }
 void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
 
   if (o->value() == TabPieces) {
+    relayoutTab(TabPieces);
     activateShape(PcSel->getSelection());
     StatPieceInfo(PcSel->getSelection());
     if (!shapeEditorWithBig3DView)
@@ -428,6 +1252,7 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
       View3D->setZoom(ViewSizes[0]);
     currentTab = 0;
   } else if(o->value() == TabProblems) {
+    relayoutTab(TabProblems);
 
     // make sure the selector has a valid problem selected, when there is one
     if (puzzle->getNumberOfProblems() && (problemSelector->getSelection() >= puzzle->getNumberOfProblems()))
@@ -435,6 +1260,7 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
 
     if (problemSelector->getSelection() < puzzle->getNumberOfProblems()) {
       activateProblem(problemSelector->getSelection());
+      selectProblemRod(problemSelector->getSelection());
     }
     StatProblemInfo(problemSelector->getSelection());
 
@@ -445,6 +1271,7 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
       View3D->setZoom(ViewSizes[1]);
     currentTab = 1;
   } else if(o->value() == TabSolve) {
+    relayoutTab(TabSolve);
 
     attachSolverPane(TabSolve);
 
@@ -607,6 +1434,16 @@ void mainWindow_c::cb_ColSel(LBlockListGroup_c* grp) {
   switch(reason) {
   case PieceSelector::RS_CHANGEDSELECTION:
     pieceEdit->setColor(colorSelector->getSelection());
+    if (puzzle && stacking::isStacking(*puzzle) &&
+        PcSel->getSelection() < puzzle->getNumberOfShapes()) {
+      voxel_c * disk = puzzle->getShape(PcSel->getSelection());
+      unsigned int color = colorSelector->getSelection();
+      for (unsigned int i = 0; i < disk->getXYZ(); i++) {
+        if (disk->getState(i) != voxel_c::VX_EMPTY)
+          disk->setColor(i, color);
+      }
+      recordShapeAction(shapeHistory_c::AK_STRUCTURAL);
+    }
     updateInterface();
     activateShape(PcSel->getSelection());
     break;
@@ -621,6 +1458,7 @@ void mainWindow_c::cb_ProbSel(LBlockListGroup_c* grp) {
   case PieceSelector::RS_CHANGEDSELECTION:
     updateInterface();
     activateProblem(problemSelector->getSelection());
+    selectProblemRod(problemSelector->getSelection());
     StatProblemInfo(problemSelector->getSelection());
     break;
   }
@@ -800,6 +1638,33 @@ static void cb_ProbShapeRight_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)
 void mainWindow_c::cb_ProbShapeExchange(int with) {
 
   unsigned int p = problemSelector->getSelection();
+
+  if (stacking::isStacking(*puzzle) && rodStackList) {
+    problem_c * pr = puzzle->getProblem(p);
+    if (!stackingBoard(pr))
+      return;
+    const stacking::stackMap_c & map = stackingEditGoal ? pr->goalStacks() : pr->startStacks();
+    unsigned int rod = selectedStackRod();
+    if (rod >= map.rods.size() || map.rods[rod].empty())
+      return;
+    unsigned int display = rodStackList->getSelection();
+    if (display >= map.rods[rod].size())
+      display = 0;
+    unsigned int index = (unsigned int)map.rods[rod].size() - 1 - display;
+    int delta = -with;
+    if (!stacking::moveDisk(*pr, stackingEditGoal, rod, index, delta))
+      return;
+    changed = true;
+    pushRodHistory();
+    refreshStackList();
+    int next = (int)index + delta;
+    if (next >= 0 && rodStackList)
+      rodStackList->setSelection((unsigned int)map.rods[rod].size() - 1 - (unsigned int)next);
+    activateProblem(p);
+    updateInterface();
+    return;
+  }
+
   unsigned int s = shapeAssignmentSelector->getSelection();
 
   problem_c * pr = puzzle->getProblem(p);
@@ -836,6 +1701,23 @@ void mainWindow_c::cb_ShapeToResult(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
     fl_message("First create a problem");
+    return;
+  }
+
+  if (stacking::isStacking(*puzzle)) {
+    if (!rodAssignSel || rodAssignSel->getSelection() >= puzzle->rodSetCount())
+      return;
+    unsigned int prob = problemSelector->getSelection();
+    problem_c * pr = puzzle->getProblem(prob);
+    pr->setRodSetId(rodAssignSel->getSelection());
+    stacking::syncMaps(*pr);
+    if (problemResult)
+      problemResult->setPuzzle(pr);
+    changed = true;
+    pushRodHistory();
+    activateProblem(prob);
+    StatProblemInfo(prob);
+    updateInterface();
     return;
   }
 
@@ -887,10 +1769,32 @@ void mainWindow_c::cb_AddShapeToProblem(void) {
 
   unsigned int prob = problemSelector->getSelection();
 
+  problem_c * pr = puzzle->getProblem(prob);
+
+  if (stacking::isStacking(*puzzle) && !stackingBoard(pr)) {
+    StatusLine->setText("Choose a rod set with Set Start/Goal Rods");
+    return;
+  }
+
   changed = true;
   PiecesCountList->redraw();
 
-  problem_c * pr = puzzle->getProblem(prob);
+  if (stacking::isStacking(*puzzle)) {
+    std::string err = placeOneDisk(pr, shape);
+    if (!err.empty()) {
+      StatusLine->setText(err.c_str());
+      return;
+    }
+    StatusLine->setText("");
+    pushRodHistory();
+    refreshStackList();
+    if (rodStackList)
+      rodStackList->setSelection(0);
+    activateProblem(prob);
+    updateInterface();
+    StatProblemInfo(prob);
+    return;
+  }
 
   // first see, if there is already a selected shape inside
   pr->setShapeMaximum(shape, pr->getShapeMaximum(shape) + 1);
@@ -911,10 +1815,51 @@ void mainWindow_c::cb_AddAllShapesToProblem(void) {
 
   unsigned int prob = problemSelector->getSelection();
 
+  problem_c * pr = puzzle->getProblem(prob);
+
+  if (stacking::isStacking(*puzzle)) {
+    if (!stackingBoard(pr)) {
+      StatusLine->setText("Choose a rod set with Set Start/Goal Rods");
+      return;
+    }
+    /* Largest first, so a size rule can still stack them on one rod. */
+    std::vector<unsigned int> shapes;
+    shapes.reserve(puzzle->getNumberOfShapes());
+    for (unsigned int j = 0; j < puzzle->getNumberOfShapes(); j++)
+      shapes.push_back(j);
+    std::stable_sort(shapes.begin(), shapes.end(), [&](unsigned int a, unsigned int b) {
+      const voxel_c * sa = puzzle->getShape(a);
+      const voxel_c * sb = puzzle->getShape(b);
+      unsigned int za = sa ? sa->getDiskSize() : 0;
+      unsigned int zb = sb ? sb->getDiskSize() : 0;
+      return za > zb;
+    });
+    std::string err;
+    bool placed = false;
+    for (unsigned int shape : shapes) {
+      err = placeOneDisk(pr, shape);
+      if (!err.empty())
+        break;
+      placed = true;
+    }
+    StatusLine->setText(err.c_str());
+    if (placed) {
+      changed = true;
+      PiecesCountList->redraw();
+      pushRodHistory();
+      refreshStackList();
+      if (rodStackList)
+        rodStackList->setSelection(0);
+    }
+    activateProblem(prob);
+    PcVis->setPuzzle(puzzle->getProblem(solutionProblem->getSelection()));
+    updateInterface();
+    StatProblemInfo(prob);
+    return;
+  }
+
   changed = true;
   PiecesCountList->redraw();
-
-  problem_c * pr = puzzle->getProblem(prob);
 
   for (unsigned int j = 0; j < puzzle->getNumberOfShapes(); j++) {
 
@@ -950,6 +1895,34 @@ void mainWindow_c::cb_RemoveShapeFromProblem(void) {
   unsigned int prob = problemSelector->getSelection();
 
   problem_c * pr = puzzle->getProblem(prob);
+
+  if (stacking::isStacking(*puzzle)) {
+    if (!stackingBoard(pr))
+      return;
+    const stacking::stackMap_c & map = stackingEditGoal ? pr->goalStacks() : pr->startStacks();
+    unsigned int rod = selectedStackRod();
+    if (rod >= map.rods.size() || map.rods[rod].empty()) {
+      StatusLine->setText("That rod is empty");
+      return;
+    }
+    unsigned int display = rodStackList ? rodStackList->getSelection() : 0;
+    if (display >= map.rods[rod].size())
+      display = 0;
+    stacking::diskRef_c disk = map.rods[rod][map.rods[rod].size() - 1 - display];
+    stacking::dropInstance(*pr, disk.shapeId, disk.instance);
+    if (pr->getShapeMinimum(disk.shapeId) > 0)
+      pr->setShapeMinimum(disk.shapeId, pr->getShapeMinimum(disk.shapeId) - 1);
+    if (pr->getShapeMaximum(disk.shapeId) > 0)
+      pr->setShapeMaximum(disk.shapeId, pr->getShapeMaximum(disk.shapeId) - 1);
+    StatusLine->setText("");
+    changed = true;
+    pushRodHistory();
+    refreshStackList();
+    activateProblem(prob);
+    StatProblemInfo(prob);
+    updateInterface();
+    return;
+  }
 
   if (pr->getShapeMinimum(shape) > 0) pr->setShapeMinimum(shape, pr->getShapeMinimum(shape)-1);
   if (pr->getShapeMaximum(shape) > 0) pr->setShapeMaximum(shape, pr->getShapeMaximum(shape)-1);
@@ -1001,9 +1974,33 @@ void mainWindow_c::cb_RemoveAllShapesFromProblem(void) {
   }
 
   unsigned int prob = problemSelector->getSelection();
-  changeProblem(prob);
-
   problem_c * pr = puzzle->getProblem(prob);
+
+  /* Start and Goal share the piece counts. Clearing counts drops discs
+   * from both maps, so only the map being edited is emptied. */
+  if (stacking::isStacking(*puzzle)) {
+    stacking::stackMap_c & map = stackingEditGoal ? pr->editGoal() : pr->editStart();
+    bool any = false;
+    for (auto & rod : map.rods) {
+      if (rod.empty())
+        continue;
+      rod.clear();
+      any = true;
+    }
+    if (any) {
+      changeProblem(prob);
+      changed = true;
+      pushRodHistory();
+    }
+    StatusLine->setText("");
+    refreshStackList();
+    activateProblem(prob);
+    updateInterface();
+    StatProblemInfo(prob);
+    return;
+  }
+
+  changeProblem(prob);
 
   for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++)
     if (!sliding::shapeIsRequired(*pr, i))
@@ -1260,15 +2257,18 @@ static void cb_BtnCont_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_
 void mainWindow_c::cb_BtnCont(bool prep_only) {
 
   unsigned int prob = solutionProblem->getSelection();
+  const bool stackingPuzzle = puzzle && stacking::isStacking(*puzzle);
 
-  if (!(ggt->getGridType()->getCapabilities() & gridType_c::CAP_ASSEMBLE)) {
+  if (!stackingPuzzle &&
+      !(ggt->getGridType()->getCapabilities() & gridType_c::CAP_ASSEMBLE)) {
     fl_message("Sorry, this space grid doesn't have an assembler (yet)!");
     return;
   }
 
   if (SolveDisasm->value() &&
       !(ggt->getGridType()->getCapabilities() & gridType_c::CAP_DISASSEMBLE) &&
-      !(puzzle && sliding::isSliding(*puzzle))) {
+      !(puzzle && sliding::isSliding(*puzzle)) &&
+      !stackingPuzzle) {
     fl_message("Sorry, this space grid doesn't have a disassembler (yet)!\n"
                "You must disable the disassembler first\n");
     return;
@@ -1279,7 +2279,24 @@ void mainWindow_c::cb_BtnCont(bool prep_only) {
     return;
   }
 
-  if (!puzzle->getProblem(prob)->resultValid()) {
+  if (stackingPuzzle) {
+    problem_c * pr = puzzle->getProblem(prob);
+    if (!pr->rodSetValid()) {
+      fl_message("Choose a rod set with Set Start/Goal Rods");
+      return;
+    }
+    if (SolveDisasm->value() == 0 && JustCount->value() == 0) {
+      fl_message("Turn on Find Solutions");
+      return;
+    }
+    std::string err = stacking::setupError(*pr);
+    if (!err.empty()) {
+      fl_message("%s", err.c_str());
+      return;
+    }
+    for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++)
+      stacking::ensureHotspot(puzzle->getShape(i));
+  } else if (!puzzle->getProblem(prob)->resultValid()) {
     fl_message("A result shape must be defined");
     return;
   }
@@ -1359,11 +2376,14 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
   /* Sliding has no brick take-apart. The checkbox still selects whether a
    * start must slide to the goal before it is kept as a solution. */
   const bool slidingPuzzle = puzzle && sliding::isSliding(*puzzle);
-  const bool canDisassemble = gridDisasm || slidingPuzzle;
-  const char * disasmLabel = slidingPuzzle ? "Find Solutions" : "Disassemble";
+  const bool stackingPuzzle = puzzle && stacking::isStacking(*puzzle);
+  const bool canDisassemble = gridDisasm || slidingPuzzle || stackingPuzzle;
+  const char * disasmLabel = (slidingPuzzle || stackingPuzzle) ? "Find Solutions" : "Disassemble";
   if (!SolveDisasm->label() || std::strcmp(SolveDisasm->label(), disasmLabel) != 0)
     SolveDisasm->copy_label(disasmLabel);
-  SolveDisasm->tooltip(slidingPuzzle
+  SolveDisasm->tooltip(stackingPuzzle
+      ? " Search for a shortest sequence of rod transfers from the start stacking to the goal. "
+      : slidingPuzzle
       ? " Keep a placement only when each marked piece can slide from its start cell to its goal cell. "
       : " Do also try to disassemble the assembled puzzles. Only puzzles that can be disassembled will be added to solutions ");
 
@@ -1409,6 +2429,10 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
       SolveDisasm->value(1);
       slidingDisasmDefaulted = true;
     }
+    if (stackingPuzzle && !stackingDisasmDefaulted) {
+      SolveDisasm->value(1);
+      stackingDisasmDefaulted = true;
+    }
 
     /* Piece rotations belong to the brick disassembler. */
     if (SolveDisasm->value() == 0 || !gridDisasm) {
@@ -1441,6 +2465,21 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
     CompleteRotations->activate();
     KeepMirrors->activate();
     KeepRotations->activate();
+  }
+
+  if (stackingPuzzle) {
+    CheckRotations->value(0);
+    CheckRotations->deactivate();
+    DropDisassemblies->value(0);
+    DropDisassemblies->deactivate();
+    CompleteRotations->value(0);
+    CompleteRotations->deactivate();
+    KeepMirrors->value(0);
+    KeepMirrors->deactivate();
+    KeepRotations->value(0);
+    KeepRotations->deactivate();
+    StrictColors->value(0);
+    StrictColors->deactivate();
   }
 }
 
@@ -1771,7 +2810,9 @@ void mainWindow_c::cb_3dClick(void) {
         View3D->getView()->h()-Fl::event_y(),
         &shape, 0, 0)) {
 
-      if (shape >= 2)
+      /* Brick views reserve the first two spaces. A stacking view's
+       * spaces are discs and pegs, and shape-2 is not a part index. */
+      if (puzzle && !stacking::isStacking(*puzzle) && shape >= 2)
         shapeAssignmentSelector->setSelection(puzzle->getProblem(problemSelector->getSelection())->getShapeIdOfPart(shape-2));
     }
   } else if (TaskSelectionTab->value() == TabSolve) {
@@ -3121,6 +4162,8 @@ void mainWindow_c::ReplacePuzzle(puzzle_c * NewPuzzle) {
   // inform everybody
   colorSelector->setPuzzle(NewPuzzle);
   PcSel->setPuzzle(NewPuzzle);
+  if (diskList)
+    diskList->setPuzzle(NewPuzzle);
   pieceEdit->setPuzzle(NewPuzzle, 0);
   problemSelector->setPuzzle(NewPuzzle);
   colorAssignmentSelector->setPuzzle(NewPuzzle);
@@ -3146,9 +4189,22 @@ void mainWindow_c::ReplacePuzzle(puzzle_c * NewPuzzle) {
   }
 
   slidingDisasmDefaulted = false;
+  stackingDisasmDefaulted = false;
+  if (rodSel)
+    rodSel->setPuzzle(puzzle);
+  if (rodAssignSel)
+    rodAssignSel->setPuzzle(puzzle);
+  resetRodHistory();
 
   if (shapeHistory)
     shapeHistory->reset(puzzle);
+
+  if (View3D)
+    View3D->getView()->setStackingView(stacking::isStacking(*puzzle));
+
+  /* Opening a file often leaves the same rod selected, so the list does
+   * not notify. The radios and checkboxes still have to match the file. */
+  loadRodFields();
 
   notesInput->value(puzzle->getComment().c_str());
   setNotesButtonsEnabled(false);
@@ -3250,6 +4306,8 @@ void mainWindow_c::activateShape(unsigned int number) {
     pieceTools->setVoxelSpace(puzzle, number);
 
     PcSel->setSelection(number);
+    if (diskList)
+      diskList->setSelection(number);
     applySlidingGridMode();
 
   } else {
@@ -3264,10 +4322,17 @@ void mainWindow_c::activateShape(unsigned int number) {
 
 void mainWindow_c::activateProblem(unsigned int prob) {
 
-  if (prob < puzzle->getNumberOfProblems())
-    View3D->getView()->showProblem(puzzle, prob, shapeAssignmentSelector->getSelection());
-  else
+  if (prob < puzzle->getNumberOfProblems()) {
+    if (stacking::isStacking(*puzzle)) {
+      View3D->getView()->showStacking(puzzle->getProblem(prob), stackingEditGoal);
+      easeRodZoom(View3D);
+    } else
+      View3D->getView()->showProblem(puzzle, prob, shapeAssignmentSelector->getSelection());
+  } else
     View3D->getView()->showNothing();
+
+  if (puzzle && stacking::isStacking(*puzzle))
+    refreshStackList();
 
   SolutionEmpty = true;
 }
@@ -3309,22 +4374,31 @@ void mainWindow_c::activateSolution(unsigned int prob, unsigned int num) {
     setMovesRotationsMetrics(MovesMetric, RotationsMetric, disassemblyMetrics);
 
     if (pr->getSavedSolution(num)->getDisassembly()) {
+      const separation_c * sep = pr->getSavedSolution(num)->getDisassembly();
+      const bool stackingSol = stacking::isStacking(*puzzle);
       SolutionAnim->activate();
-      SolutionAnim->range(0, pr->getSavedSolution(num)->getDisassembly()->sumSteps());
+      SolutionAnim->range(0, sep->sumSteps());
 
       SolutionsInfo->value(pr->getNumberOfSavedSolutions());
 
-      char levelText[50];
-      int len = snprintf(levelText, 50, "%i (", pr->getSavedSolution(num)->getDisassembly()->sumSteps());
-      snprintf(levelText + len, 50-len, "%s", pr->getSavedSolution(num)->getDisassembly()->movesText().c_str());
-      levelText[strlen(levelText)+1] = 0;
-      levelText[strlen(levelText)] = ')';
+      if (stackingSol) {
+        char levelText[32];
+        snprintf(levelText, sizeof(levelText), "%u", stacking::logicalMoves(*sep));
+        MovesInfo->value(levelText);
+        MovesMetric->value(levelText);
+      } else {
+        char levelText[50];
+        int len = snprintf(levelText, 50, "%i (", sep->sumSteps());
+        snprintf(levelText + len, 50-len, "%s", sep->movesText().c_str());
+        levelText[strlen(levelText)+1] = 0;
+        levelText[strlen(levelText)] = ')';
+        MovesInfo->value(levelText);
+      }
 
-      MovesInfo->value(levelText);
-
-      disassemble = new disasmToMoves_c(pr->getSavedSolution(num)->getDisassembly(),
-                                      2*getResultShape(*pr)->getBiggestDimension(),
-                                      pr->getNumberOfPieces());
+      unsigned int animSize = stackingSol
+          ? stacking::boardSpan(*pr)
+          : 2 * getResultShape(*pr)->getBiggestDimension();
+      disassemble = new disasmToMoves_c(sep, animSize, pr->getNumberOfPieces());
       disassemble->setStep(SolutionAnim->value(), config.useBlendedRemoving(), true);
 
       if (prob < puzzle->getNumberOfProblems()) View3D->getView()->showAssembly(puzzle->getProblem(prob), num);
@@ -3584,16 +4658,18 @@ void mainWindow_c::updateInterface(void) {
   updateUndoRedoButtons();
 
   const bool slidingPuzzle = sliding::isSliding(*puzzle);
+  const bool stackingPuzzle = stacking::isStacking(*puzzle);
+  syncStackingChrome();
   if (colorsGroup) {
-    if (slidingPuzzle) colorsGroup->hide();
+    if (slidingPuzzle || stackingPuzzle) colorsGroup->hide();
     else colorsGroup->show();
   }
   if (colourAssignmentGroup) {
-    if (slidingPuzzle) colourAssignmentGroup->hide();
+    if (slidingPuzzle || stackingPuzzle) colourAssignmentGroup->hide();
     else colourAssignmentGroup->show();
   }
   if (colourConstraintsGroup) {
-    if (slidingPuzzle) colourConstraintsGroup->hide();
+    if (slidingPuzzle || stackingPuzzle) colourConstraintsGroup->hide();
     else colourConstraintsGroup->show();
   }
   if (slidingPuzzle && editChoice) {
@@ -3747,6 +4823,27 @@ void mainWindow_c::updateInterface(void) {
 
       problem_c * pr = puzzle->getProblem(p);
 
+      if (stackingPuzzle) {
+        /* The stack list shows the top disc first. Up needs a disc above
+         * the selection, down a disc below it. */
+        unsigned int depth = 0;
+        if (stackingBoard(pr)) {
+          const stacking::stackMap_c & map = stackingEditGoal ? pr->goalStacks() : pr->startStacks();
+          unsigned int rod = selectedStackRod();
+          if (rod < map.rods.size())
+            depth = (unsigned int)map.rods[rod].size();
+        }
+        unsigned int display = rodStackList ? rodStackList->getSelection() : (unsigned int)-1;
+        if (display < depth && display > 0)
+          BtnProbShapeLeft->activate();
+        else
+          BtnProbShapeLeft->deactivate();
+        if (display + 1 < depth)
+          BtnProbShapeRight->activate();
+        else
+          BtnProbShapeRight->deactivate();
+      } else {
+
       for (current = 0; current < pr->getNumberOfParts(); current++)
         if (pr->getShapeIdOfPart(current) == s)
           break;
@@ -3759,6 +4856,7 @@ void mainWindow_c::updateInterface(void) {
         BtnProbShapeRight->activate();
       else
         BtnProbShapeRight->deactivate();
+      }
 
     } else {
       BtnProbShapeRight->deactivate();
@@ -3852,7 +4950,7 @@ void mainWindow_c::updateInterface(void) {
 
     // we can edit the groups, when we have a problem with at least one shape and
     // the assembler is not working on the current problem
-    if (!slidingPuzzle &&
+    if (!slidingPuzzle && !stackingPuzzle &&
         (problemSelector->getSelection() < puzzle->getNumberOfProblems()) &&
         (!assmThread || (&(assmThread->getProblem()) != puzzle->getProblem(problemSelector->getSelection())))) {
       BtnGroup->activate();
@@ -3864,11 +4962,51 @@ void mainWindow_c::updateInterface(void) {
         (!assmThread || (&(assmThread->getProblem()) != puzzle->getProblem(problemSelector->getSelection())))) {
       BtnAddAll->activate();
       BtnRemAll->activate();
-      BtnSetAllRange->activate();
+      if (stackingPuzzle)
+        BtnSetAllRange->deactivate();
+      else
+        BtnSetAllRange->activate();
     } else {
       BtnAddAll->deactivate();
       BtnRemAll->deactivate();
       BtnSetAllRange->deactivate();
+    }
+
+    if (stackingPuzzle) {
+      bool busy = assmThread && problemSelector->getSelection() < puzzle->getNumberOfProblems() &&
+                  (&(assmThread->getProblem()) == puzzle->getProblem(problemSelector->getSelection()));
+      if (!busy && problemSelector->getSelection() < puzzle->getNumberOfProblems() &&
+          rodAssignSel && rodAssignSel->getSelection() < puzzle->rodSetCount())
+        BtnSetResult->activate();
+      else
+        BtnSetResult->deactivate();
+      BtnMinZero->deactivate();
+
+      bool hasBoard = !busy &&
+          problemSelector->getSelection() < puzzle->getNumberOfProblems() &&
+          puzzle->getProblem(problemSelector->getSelection())->rodSetValid();
+      if (stackRodBar) {
+        if (hasBoard) stackRodBar->activate();
+        else stackRodBar->deactivate();
+      }
+      if (stackStartMode) {
+        if (hasBoard) stackStartMode->activate();
+        else stackStartMode->deactivate();
+      }
+      if (stackGoalMode) {
+        if (hasBoard) stackGoalMode->activate();
+        else stackGoalMode->deactivate();
+      }
+      if (!hasBoard) {
+        BtnProbShapeLeft->deactivate();
+        BtnProbShapeRight->deactivate();
+        BtnAddShape->deactivate();
+        BtnRemShape->deactivate();
+        BtnAddAll->deactivate();
+        BtnRemAll->deactivate();
+        BtnSetAllRange->deactivate();
+        BtnGroup->deactivate();
+      }
     }
 
   } else {
@@ -3882,6 +5020,12 @@ void mainWindow_c::updateInterface(void) {
         (prob < puzzle->getNumberOfProblems()) &&
         (&(assmThread->getProblem()) == puzzle->getProblem(prob)))
       finished = assmThread->getProgress(asmFrac);
+    /* Stacking has no assembler, so getFinished() stays 0 after the search.
+     * A finished search is the whole job. */
+    else if (prob < puzzle->getNumberOfProblems() &&
+             stacking::isStacking(*puzzle) &&
+             puzzle->getProblem(prob)->getSolveState() == SS_SOLVED)
+      finished = 1;
 
     if (prob < puzzle->getNumberOfProblems()) {
 
@@ -4045,6 +5189,17 @@ void mainWindow_c::updateInterface(void) {
         BtnDisasmAdd->deactivate();
         BtnDisasmAddAll->deactivate();
         BtnDisasmAddMissing->deactivate();
+      }
+
+      if (stackingPuzzle) {
+        BtnDisasmDel->deactivate();
+        BtnDisasmDelAll->deactivate();
+        BtnDisasmAdd->deactivate();
+        BtnDisasmAddAll->deactivate();
+        BtnDisasmAddMissing->deactivate();
+        BtnDelDisasm->deactivate();
+        BtnPlacement->deactivate();
+        BtnMovement->deactivate();
       }
 
       updateSolverOptionCheckboxes();
@@ -4266,7 +5421,20 @@ void mainWindow_c::updateInterface(void) {
         }
 
         // if we have a result and at least one piece, we can give it a try
-        if ((pr->getNumberOfPieces() > 0) && (pr->resultValid())) {
+        bool hasResult = stacking::isStacking(*puzzle) ? pr->rodSetValid() : pr->resultValid();
+        /* A stacking the Puzzle tab's bar marks Invalid cannot be solved. */
+        bool stackOk = true;
+        if (stacking::isStacking(*puzzle)) {
+          std::string why = stacking::setupError(*pr);
+          stackOk = why.empty();
+          if (stackOk) {
+            BtnStart->copy_tooltip(" Start new solving process, removing old result ");
+          } else {
+            BtnStart->copy_tooltip((" Fix the puzzle on the Puzzle tab first: " + why + " ").c_str());
+            BtnCont->deactivate();
+          }
+        }
+        if ((pr->getNumberOfPieces() > 0) && hasResult && stackOk) {
           BtnStart->activate();
           if (BtnPrepare) BtnPrepare->activate();
         } else {
@@ -4326,8 +5494,11 @@ void mainWindow_c::update(void) {
     if ((assmThread->currentAction() == solveThread_c::ACT_PAUSING) ||
         (assmThread->currentAction() == solveThread_c::ACT_FINISHED)) {
 
+      std::string stackingNote = assmThread->getStackingNote();
       delete assmThread;
       assmThread = 0;
+      if (!stackingNote.empty())
+        fl_message("%s", stackingNote.c_str());
 
     } else if (assmThread->currentAction() == solveThread_c::ACT_ERROR) {
 
@@ -4656,10 +5827,108 @@ void mainWindow_c::CreateShapeTab(void) {
     (new LFl_Box(0, 6))->setMinimumSize(0, SZ_GAP);
 
     PcSel = new PieceSelector(0, 0, 200, 200, puzzle);
-    LBlockListGroup_c * selGroup = new LBlockListGroup_c(0, 7, 1, 1, PcSel);
-    selGroup->callback(cb_PcSel_stub, this);
-    selGroup->tooltip(" Select the shape that you want to edit ");
-    selGroup->weight(1, 1);
+    pieceSelGroup = new LBlockListGroup_c(0, 7, 1, 1, PcSel);
+    pieceSelGroup->callback(cb_PcSel_stub, this);
+    pieceSelGroup->tooltip(" Select the shape that you want to edit ");
+    pieceSelGroup->weight(1, 1);
+
+    diskList = new DiskSelector(0, 7, 1, 1, puzzle);
+    diskList->callback(cb_DiskList_stub, this);
+    diskList->tooltip(" Select a disc and set its size ");
+    diskList->weight(1, 1);
+    diskList->hide();
+
+    (new LFl_Box(0, 8))->setMinimumSize(0, SZ_GAP);
+
+    rodsPanel = new layouter_c(0, 9);
+    rodsPanel->weight(1, 0);
+    rodsPanel->hide();
+    {
+      new LSeparator_c(0, 0, 1, 1, "Rods", false);
+
+      layouter_c * o = new layouter_c(0, 1);
+      BtnNewRod = new LFlatButton_c(0, 0, 1, 1, "New", " Add another rod set ", cb_NewRod_stub, this);
+      ((LFlatButton_c*)BtnNewRod)->weight(1, 0);
+      (new LFl_Box(1, 0))->setMinimumSize(SZ_GAP, 0);
+      BtnDelRod = new LFlatButton_c(2, 0, 1, 1, "Delete", " Delete the selected rod set ", cb_DeleteRod_stub, this);
+      ((LFlatButton_c*)BtnDelRod)->weight(1, 0);
+      (new LFl_Box(3, 0))->setMinimumSize(SZ_GAP, 0);
+      BtnCpyRod = new LFlatButton_c(4, 0, 1, 1, "Copy", " Copy the selected rod set ", cb_CopyRod_stub, this);
+      ((LFlatButton_c*)BtnCpyRod)->weight(1, 0);
+      (new LFl_Box(5, 0))->setMinimumSize(SZ_GAP, 0);
+      BtnRenRod = new LFlatButton_c(6, 0, 1, 1, "Label", " Name the selected rod set ", cb_NameRod_stub, this);
+      ((LFlatButton_c*)BtnRenRod)->weight(1, 0);
+      (new LFl_Box(7, 0))->setMinimumSize(SZ_GAP, 0);
+      BtnRodUndo = new LFlatButton_c(8, 0, 1, 1, "Undo", " Undo the last rod change ", cb_RodUndo_stub, this);
+      ((LFlatButton_c*)BtnRodUndo)->weight(1, 0);
+      o->end();
+
+      (new LFl_Box(0, 2))->setMinimumSize(0, SZ_GAP);
+
+      o = new layouter_c(0, 3);
+      BtnRodLeft = new LFlatButton_c(0, 0, 1, 1, "@-14->", " Exchange with the previous rod set ", cb_RodLeft_stub, this);
+      ((LFlatButton_c*)BtnRodLeft)->weight(1, 0);
+      (new LFl_Box(1, 0))->setMinimumSize(SZ_GAP, 0);
+      BtnRodRight = new LFlatButton_c(2, 0, 1, 1, "@-16->", " Exchange with the next rod set ", cb_RodRight_stub, this);
+      ((LFlatButton_c*)BtnRodRight)->weight(1, 0);
+      (new LFl_Box(3, 0))->setMinimumSize(SZ_GAP, 0);
+      BtnRodRedo = new LFlatButton_c(4, 0, 1, 1, "Redo", " Redo the last undone rod change ", cb_RodRedo_stub, this);
+      ((LFlatButton_c*)BtnRodRedo)->weight(1, 0);
+      o->end();
+
+      (new LFl_Box(0, 4))->setMinimumSize(0, SZ_GAP);
+
+      rodSel = new RodSelector(0, 0, 200, 200, puzzle);
+      LBlockListGroup_c * rodGroup = new LBlockListGroup_c(0, 5, 1, 1, rodSel);
+      rodGroup->callback(cb_RodSel_stub, this);
+      rodGroup->tooltip(" Select the rod set to edit ");
+      rodGroup->weight(1, 0);
+      rodGroup->setMinimumSize(220, 168);
+
+      layouter_c * rules = new layouter_c(0, 6);
+      rules->weight(0, 0);
+      int y = 0;
+      LFl_Box * rodsLabel = new LFl_Box("How many rods", 0, y, 1, 1);
+      rodsLabel->stretchVCenter();
+      rodCountInput = new LFl_Value_Input(1, y, 1, 1);
+      rodCountInput->bounds(1, STACK_ROD_BUTTONS);
+      rodCountInput->step(1);
+      rodCountInput->value(3);
+      rodCountInput->when(FL_WHEN_RELEASE | FL_WHEN_ENTER_KEY);
+      rodCountInput->tooltip(" Pegs on this board ");
+      rodCountInput->stretchVCenter();
+      rodCountInput->callback(cb_RodField_stub, this);
+
+      y += 2;
+      /* Consecutive radio buttons, so only one of these can be on. */
+      rodGrow = new LFl_Radio_Button("Grow to the height of all pieces", 0, y, 2, 1);
+      rodGrow->tooltip(" A rod can hold every disc in the problem ");
+      rodGrow->callback(cb_RodField_stub, this);
+      y++;
+      rodFixed = new LFl_Radio_Button("Defined height", 0, y, 1, 1);
+      rodFixed->tooltip(" A rod is full at this disc count ");
+      rodFixed->callback(cb_RodField_stub, this);
+      rodHeightInput = new LFl_Value_Input(1, y, 1, 1);
+      rodHeightInput->bounds(1, 64);
+      rodHeightInput->step(1);
+      rodHeightInput->value(8);
+      rodHeightInput->when(FL_WHEN_RELEASE | FL_WHEN_ENTER_KEY);
+      rodHeightInput->stretchVCenter();
+      rodHeightInput->callback(cb_RodField_stub, this);
+      rodGrow->setonly();
+
+      y += 2;
+      rodSizeMatters = new LFl_Check_Button("Disc size matters - no large on small", 0, y, 2, 1);
+      rodSizeMatters->tooltip(" A disc may not be placed on a disc with a smaller size number. Equal numbers may stack. ");
+      rodSizeMatters->callback(cb_RodField_stub, this);
+
+      y++;
+      rodDistance = new LFl_Check_Button("Disc can only move over 1 rod", 0, y, 2, 1);
+      rodDistance->tooltip(" When checked, a disc may move only to a neighboring rod. When unchecked, a disc may move to any rod. ");
+      rodDistance->callback(cb_RodField_stub, this);
+      rules->end();
+    }
+    rodsPanel->end();
 
     group->weight(0, 4);
     group->end();
@@ -4667,6 +5936,7 @@ void mainWindow_c::CreateShapeTab(void) {
 
   {
     layouter_c * group = new layouter_c(0, 1);
+    shapeEditColumn = group;
     group->box(FL_FLAT_BOX);
 
     new LSeparator_c(0, 0, 1, 1, "Edit", true);
@@ -4675,9 +5945,11 @@ void mainWindow_c::CreateShapeTab(void) {
     pieceTools->callback(cb_TransformPiece_stub, this);
     pieceTools->setPreviewHandler(cb_TransformPreview_stub, this);
 
-    (new LFl_Box(0, 2, 1, 1))->setMinimumSize(0, 5);
+    voxelToolGap = new LFl_Box(0, 2, 1, 1);
+    voxelToolGap->setMinimumSize(0, 5);
 
     layouter_c * o2 = new layouter_c(0, 3, 1, 1);
+    voxelPenRow = o2;
 
     editChoice = new ButtonGroup_c(0, 0, 1, 1);
 
@@ -4748,13 +6020,38 @@ void mainWindow_c::CreateShapeTab(void) {
 
     o2->end();
 
-    (new LFl_Box(0, 4, 1, 1))->setMinimumSize(0, 5);
+    voxelEditGap = new LFl_Box(0, 4, 1, 1);
+    voxelEditGap->setMinimumSize(0, 5);
 
     pieceEdit = new VoxelEditGroup_c(0, 5, 1, 1, puzzle, ggt);
     pieceEdit->callback(cb_pieceEdit_stub, this);
     pieceEdit->end();
     pieceEdit->editType(gridEditor_c::EDT_RUBBER);
     pieceEdit->weight(0, 1);
+
+    discTabs = new LFl_Tabs(0, 6, 1, 1);
+    discTabs->weight(0, 1);
+    discTabs->hide();
+    {
+      layouter_c * disc = new layouter_c();
+      disc->label("Disc");
+      discInfo = new LFl_Box("The 3D view shows this disc. It is one voxel thick.", 0, 0, 1, 1);
+      discInfo->align(FL_ALIGN_INSIDE | FL_ALIGN_TOP_LEFT | FL_ALIGN_WRAP);
+      discInfo->weight(1, 1);
+      disc->end();
+
+      layouter_c * sz = new layouter_c();
+      sz->label("Size");
+      (new LFl_Box("Size", 0, 0, 1, 1))->tooltip(" Rank compared by the size rule, and the radius of the disc ");
+      diskSizeInput = new LFl_Value_Input(1, 0, 1, 1);
+      diskSizeInput->bounds(1, 64);
+      diskSizeInput->step(1);
+      diskSizeInput->value(1);
+      diskSizeInput->when(FL_WHEN_RELEASE | FL_WHEN_ENTER_KEY);
+      diskSizeInput->tooltip(" The same number always builds the same disc ");
+      sz->end();
+    }
+    discTabs->end();
 
     group->weight(0, 4);
     group->end();
@@ -4857,9 +6154,7 @@ void mainWindow_c::CreateProblemTab(void) {
     layouter_c * group = new layouter_c(0, 1);
     group->box(FL_FLAT_BOX);
 
-    new LSeparator_c(0, 0, 1, 1, "Piece Assignment", true);
-
-    layouter_c * o = new layouter_c(0, 1);
+    layouter_c * o = new layouter_c(0, 0);
 
     problemResult = new ResultViewer_c(0, 0, 1, 1);
     problemResult->tooltip(" The result shape for the current problem ");
@@ -4876,13 +6171,51 @@ void mainWindow_c::CreateProblemTab(void) {
 
     o->end();
 
-    (new LFl_Box(0, 2))->setMinimumSize(0, SZ_GAP);
+    (new LFl_Box(0, 1))->setMinimumSize(0, SZ_GAP);
+
+    rodAssignGroup = new layouter_c(0, 2);
+    rodAssignGroup->weight(1, 1);
+    rodAssignGroup->hide();
+    new LSeparator_c(0, 0, 1, 1, "Rods", false);
+    rodAssignSel = new RodSelector(0, 0, 100, 100, puzzle);
+    {
+      LBlockListGroup_c * rodGroup = new LBlockListGroup_c(0, 1, 1, 1, rodAssignSel);
+      rodGroup->callback(cb_ProblemRod_stub, this);
+      rodGroup->tooltip(" Rod sets that can be this problem's board ");
+      rodGroup->weight(1, 1);
+    }
+    rodAssignGroup->end();
+
+    new LSeparator_c(0, 3, 1, 1, "Pieces", true);
 
     shapeAssignmentSelector = new PieceSelector(0, 0, 100, 100, puzzle);
-    LBlockListGroup_c * shapeGroup = new LBlockListGroup_c(0, 3, 1, 1, shapeAssignmentSelector);
+    LBlockListGroup_c * shapeGroup = new LBlockListGroup_c(0, 4, 1, 1, shapeAssignmentSelector);
     shapeGroup->callback(cb_ShapeSel_stub, this);
     shapeGroup->tooltip(" Select a shape to set as result or to add or remove from problem ");
     shapeGroup->weight(1, 1);
+
+    (new LFl_Box(0, 5))->setMinimumSize(0, SZ_GAP);
+
+    stackSliderRow = new layouter_c(0, 6);
+    stackSliderRow->hide();
+    {
+      stackRodBar = new RodIndexBar_c(0, 0, 1, 1);
+      stackRodBar->weight(1, 0);
+      stackRodBar->tooltip(" Select which rod in the chosen rod set to stack discs on ");
+      stackRodBar->callback(cb_StackRod_stub, this);
+    }
+    stackSliderRow->end();
+
+    stackModeRow = new layouter_c(0, 7);
+    stackModeRow->hide();
+    stackStartMode = new LFl_Radio_Button("Start", 0, 0, 1, 1);
+    stackStartMode->tooltip(" Order the discs that start on the selected rod, bottom to top ");
+    stackStartMode->callback(cb_StackMode_stub, this);
+    stackGoalMode = new LFl_Radio_Button("Goal", 1, 0, 1, 1);
+    stackGoalMode->tooltip(" Order the discs the solver must reach on the selected rod ");
+    stackGoalMode->callback(cb_StackMode_stub, this);
+    stackStartMode->setonly();
+    stackModeRow->end();
 
     group->end();
   }
@@ -4891,12 +6224,18 @@ void mainWindow_c::CreateProblemTab(void) {
     layouter_c * group = new layouter_c(0, 2);
     group->box(FL_FLAT_BOX);
 
-    new LSeparator_c(0, 0, 1, 1, 0, true);
+    stackOrderSep = new LSeparator_c(0, 0, 1, 1, "Stack Order", true);
+    stackOrderSep->hide();
+    problemButtonRule = new LSeparator_c(0, 0, 1, 1, 0, true);
 
     {
       layouter_c * o = new layouter_c(0, 1);
       int xp = 0;
 
+      BtnProbShapeLeft = new LFlatButton_c(xp++, 0, 1, 1, "@-18->", " Move the selected disc up the rod ", cb_ProbShapeLeft_stub, this);
+      (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
+      BtnProbShapeRight = new LFlatButton_c(xp++, 0, 1, 1, "@-12->", " Move the selected disc down the rod ", cb_ProbShapeRight_stub, this);
+      (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
       BtnAddShape = new LFlatButton_c(xp++, 0, 1, 1, "+1", " Add another one of the selected shape ", cb_AddShapeToProblem_stub, this);
       ((LFlatButton_c*)BtnAddShape)->weight(1, 0);
       (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
@@ -4908,10 +6247,6 @@ void mainWindow_c::CreateProblemTab(void) {
       (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
       BtnRemAll = new LFlatButton_c(xp++, 0, 1, 1, "Clear All", " Remove all pieces ", cb_RemoveAllShapesFromProblem_stub, this);
       ((LFlatButton_c*)BtnRemAll)->weight(1, 0);
-      (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
-      BtnProbShapeLeft = new LFlatButton_c(xp++, 0, 1, 1, "@-14->", " Exchange current shape with previous shape ", cb_ProbShapeLeft_stub, this);
-      (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
-      BtnProbShapeRight = new LFlatButton_c(xp++, 0, 1, 1, "@-16->", " Exchange current shape with next shape ", cb_ProbShapeRight_stub, this);
 
       o->end();
     }
@@ -4934,13 +6269,32 @@ void mainWindow_c::CreateProblemTab(void) {
       o->end();
     }
 
-    (new LFl_Box(0, 4))->setMinimumSize(0, SZ_GAP);
+    {
+      layouter_c * o = new layouter_c(0, 4);
+      (new LFl_Box(0, 0))->setMinimumSize(0, SZ_GAP);
+      stackValidRow = new layouter_c(0, 1);
+      stackValidRow->hide();
+      stackValidBar = new StackValidBar_c(0, 0, 1, 1);
+      stackValidBar->weight(1, 0);
+      stackValidBar->tooltip(" Whether the start and goal stackings obey the rod set's rules ");
+      stackValidBar->callback(cb_StackValidRelayout_stub, this);
+      (new LFl_Box(0, 1))->setMinimumSize(0, SZ_GAP);
+      stackValidRow->end();
+      o->end();
+    }
 
     PiecesCountList = new PiecesList(0, 0, 100, 100);
-    LBlockListGroup_c * shapeGroup = new LBlockListGroup_c(0, 5, 1, 1, PiecesCountList);
-    shapeGroup->callback(cb_PiecesClicked_stub, this);
-    shapeGroup->tooltip(" Show which shapes are used in the current problem and how often they are used, can be used to select shapes ");
-    shapeGroup->weight(1, 1);
+    piecesCountGroup = new LBlockListGroup_c(0, 5, 1, 1, PiecesCountList);
+    piecesCountGroup->callback(cb_PiecesClicked_stub, this);
+    piecesCountGroup->tooltip(" Show which shapes are used in the current problem and how often they are used, can be used to select shapes ");
+    piecesCountGroup->weight(1, 1);
+
+    rodStackList = new RodStackList(0, 0, 100, 100);
+    LBlockListGroup_c * stackGroup = new LBlockListGroup_c(0, 6, 1, 1, rodStackList);
+    stackGroup->tooltip(" Discs on the selected rod, top of the list is the top of the stack ");
+    stackGroup->callback(cb_StackListSel_stub, this);
+    stackGroup->weight(1, 1);
+    stackGroup->hide();
 
     group->end();
   }
@@ -5642,6 +6996,44 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   colourConstraintsGroup = 0;
   slidingEditMode = 0;
   slidingDisasmDefaulted = false;
+  stackingDisasmDefaulted = false;
+  solverMenuStacking = false;
+  TabRods = 0;
+  shapeEditColumn = 0;
+  voxelPenRow = 0;
+  voxelToolGap = 0;
+  voxelEditGap = 0;
+  discTabs = 0;
+  discInfo = 0;
+  diskSizeInput = 0;
+  diskSizeGuard = false;
+  rodSel = 0;
+  rodAssignSel = 0;
+  rodAssignGroup = 0;
+  rodCountInput = 0;
+  rodGrow = 0;
+  rodFixed = 0;
+  rodHeightInput = 0;
+  rodSizeMatters = 0;
+  rodDistance = 0;
+  rodFieldGuard = false;
+  BtnNewRod = BtnDelRod = BtnCpyRod = BtnRenRod = 0;
+  BtnRodLeft = BtnRodRight = BtnRodUndo = BtnRodRedo = 0;
+  pieceSelGroup = 0;
+  diskList = 0;
+  rodsPanel = 0;
+  stackStartMode = 0;
+  stackGoalMode = 0;
+  stackRodBar = 0;
+  stackSliderRow = 0;
+  stackModeRow = 0;
+  rodStackList = 0;
+  piecesCountGroup = 0;
+  stackOrderSep = 0;
+  problemButtonRule = 0;
+  stackValidRow = 0;
+  stackValidBar = 0;
+  stackingEditGoal = false;
 
   copy_label(platform::windowTitle(0).c_str());
   user_data((void*)(this));
@@ -5828,6 +7220,9 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   ViewSizes[0] = -1;
   ViewSizes[1] = -1;
   ViewSizes[2] = -1;
+  ViewSizes[3] = -1;
+  resetRodHistory();
+  loadRodFields();
 
   /* Saved size is restored, but a previous session may have left a tiny
    * window. Floor at the default so the app does not open cramped. */

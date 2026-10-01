@@ -702,12 +702,23 @@ void LFl_Scroll::getMinSize(int *width, int *height) const {
     *height = getMinHeight();
 }
 
+void LFl_Scroll::relayout(void) {
+  relayoutRequested = true;
+  lay->invalidateMinSize();
+  resize(x(), y(), w(), h());
+  redraw();
+}
+
 void LFl_Scroll::resize(int x, int y, int w, int h) {
 
   /* Same viewport: do not relayout. Fl_Scroll moves `lay` when the
-   * user scrolls; rebuilding it here would snap the content back. */
-  if (x == this->x() && y == this->y() && w == this->w() && h == this->h())
+   * user scrolls; rebuilding it here would snap the content back.
+   * relayout() sets the flag when children were shown or hidden and
+   * the viewport itself did not change. */
+  if (!relayoutRequested && x == this->x() && y == this->y() && w == this->w() && h == this->h())
     return;
+  relayoutRequested = false;
+  lay->invalidateMinSize();
 
   int prefW, prefH;
   lay->getMinSize(&prefW, &prefH);

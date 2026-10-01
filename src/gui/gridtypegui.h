@@ -90,6 +90,9 @@ class gridTypeSelectorWindow_c : public LFl_Double_Window {
     /* currently selected grid type from the vector above */
     unsigned int current;
 
+    LFl_Box * typeDescription;
+    LFl_Frame * parameterFrame;
+
     /* true only when the user confirms with OK */
     bool okPressed;
 

@@ -33,6 +33,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <string>
 #include <thread>
 #include <time.h>
 #include <vector>
@@ -333,6 +334,14 @@ public:
   }
 
   void run(void) override;
+
+  /** Empty unless the stacking search stopped without a path. */
+  const std::string & getStackingNote(void) const { return stackingNote; }
+
+private:
+
+  void runStacking(void);
+  std::string stackingNote;
 
 private:
 

@@ -25,8 +25,13 @@
 
 #include "Layouter.h"
 #include "../lib/solvethread.h"
+#include "../lib/stacking.h"
+
+#include <vector>
 
 class VoxelEditGroup_c;
+class RodIndexBar_c;
+class StackValidBar_c;
 class ChangeSize;
 class ToolTab;
 class puzzle_c;
@@ -38,9 +43,12 @@ class layouter_c;
 
 class PieceSelector;
 class ProblemSelector;
+class RodSelector;
 class ColorSelector;
 class ResultViewer_c;
 class PiecesList;
+class RodStackList;
+class DiskSelector;
 class PieceVisibility;
 class ColorConstraintsEdit;
 class ToolTabContainer;
@@ -91,6 +99,7 @@ class mainWindow_c : public LFl_Double_Window {
 
   Fl_Tabs *TaskSelectionTab;
   layouter_c *TabPieces;
+  layouter_c *TabRods;
   Fl_Group *MinSizeSelector;
 
   PieceSelector * PcSel;
@@ -104,6 +113,10 @@ class mainWindow_c : public LFl_Double_Window {
   ColorConstraintsEdit * colconstrList;
 
   layouter_c *TabProblems;
+
+  LBlockListGroup_c * pieceSelGroup;
+  DiskSelector * diskList;
+  layouter_c * rodsPanel;
 
   ToolTabContainer * pieceTools;
   ButtonGroup_c *editChoice;
@@ -166,8 +179,72 @@ class mainWindow_c : public LFl_Double_Window {
 
   /** Sliding starts with Disassemble checked. Later clicks are kept. */
   bool slidingDisasmDefaulted;
+  /** Stacking starts with Find Solutions checked. Later clicks are kept. */
+  bool stackingDisasmDefaulted;
+  /** Solver Type menu is showing only Stacking Solver. */
+  bool solverMenuStacking;
 
   void applySlidingGridMode(void);
+
+  layouter_c * shapeEditColumn;
+  layouter_c * voxelPenRow;
+  LFl_Box * voxelToolGap;
+  LFl_Box * voxelEditGap;
+  LFl_Tabs * discTabs;
+  LFl_Box * discInfo;
+  LFl_Value_Input * diskSizeInput;
+  bool diskSizeGuard;
+
+  RodSelector * rodSel;
+  RodSelector * rodAssignSel;
+  layouter_c * rodAssignGroup;
+  LFl_Value_Input * rodCountInput;
+  LFl_Radio_Button * rodGrow;
+  LFl_Radio_Button * rodFixed;
+  LFl_Value_Input * rodHeightInput;
+  LFl_Check_Button * rodSizeMatters;
+  LFl_Check_Button * rodDistance;
+  bool rodFieldGuard;
+
+  FlatButton *BtnNewRod, *BtnDelRod, *BtnCpyRod, *BtnRenRod, *BtnRodLeft, *BtnRodRight, *BtnRodUndo, *BtnRodRedo;
+
+  static const int STACK_ROD_BUTTONS = 16;
+  LFl_Radio_Button * stackStartMode;
+  LFl_Radio_Button * stackGoalMode;
+  RodIndexBar_c * stackRodBar;
+  layouter_c * stackSliderRow;
+  layouter_c * stackModeRow;
+  RodStackList * rodStackList;
+  LBlockListGroup_c * piecesCountGroup;
+  Fl_Widget * stackOrderSep;
+  Fl_Widget * problemButtonRule;
+  /* Green or red bar under min=0: whether the start and goal obey the rod set. */
+  layouter_c * stackValidRow;
+  StackValidBar_c * stackValidBar;
+  bool stackingEditGoal;
+
+  struct rodSnap_c {
+    std::vector<stacking::rodSet_c> sets;
+    struct pm_c {
+      unsigned int id = 0xFFFFFFFFu;
+      stacking::stackMap_c start;
+      stacking::stackMap_c goal;
+    };
+    std::vector<pm_c> problems;
+    unsigned int sel = 0;
+  };
+  std::vector<rodSnap_c> rodPast;
+  std::vector<rodSnap_c> rodFuture;
+
+  void syncStackingChrome(void);
+  void syncSolverTypeMenu(void);
+  void loadRodFields(void);
+  void showSelectedRods(void);
+  void selectProblemRod(unsigned int prob);
+  rodSnap_c captureRodSnap(void) const;
+  void restoreRodSnap(const rodSnap_c & snap);
+  void resetRodHistory(void);
+  void pushRodHistory(void);
 
   Fl_Choice * solverTypeChoice;
   Fl_Choice * sortMethod;
@@ -181,9 +258,8 @@ class mainWindow_c : public LFl_Double_Window {
   FlatButton *BtnDisasmDel, *BtnDisasmDelAll, *BtnDisasmAdd, *BtnDisasmAddAll, *BtnDisasmAddMissing;
   FlatButton *BtnExportSolutionSTL;
 
-  // the zoom levels for all 3 tabs independent, so that the problem
-  // tab can have a wider view
-  double ViewSizes[3];
+  // zoom for Entities, Puzzle, Solver, and Rods
+  double ViewSizes[4];
   int currentTab;
 
   bool tryToLoad(const char *fname, bool * reportedError = 0);
@@ -191,6 +267,14 @@ class mainWindow_c : public LFl_Double_Window {
 
   void CreateShapeTab(void);
   void CreateProblemTab(void);
+  void refreshDiskList(void);
+  void refreshStackSlider(void);
+  void refreshStackList(void);
+  void refreshStackValid(void);
+  unsigned int selectedStackRod(void) const;
+  bool stackingBoard(problem_c * pr);
+  /* Reserve one unused copy and place it on the rod selected on the Puzzle tab. */
+  std::string placeOneDisk(problem_c * pr, unsigned int shape);
   void CreateSolveTab(void);
   void CreateDebugTab(void);
   void attachSolverPane(Fl_Group *tab);
@@ -272,6 +356,21 @@ public:
   void cb_WeightChange(int by);
   void cb_NewStartGoal(void);
   void cb_DelStartGoal(void);
+  void cb_NewRod(void);
+  void cb_DeleteRod(void);
+  void cb_CopyRod(void);
+  void cb_NameRod(void);
+  void cb_RodExchange(int with);
+  void cb_RodUndo(void);
+  void cb_RodRedo(void);
+  void cb_RodSel(void);
+  void cb_RodField(void);
+  void cb_DiskList(void);
+  void cb_StackMode(Fl_Widget * o);
+  void cb_StackRod(void);
+  void cb_ProblemRod(void);
+  void relayoutProblemTab(void);
+  void cb_StackListSel(void);
   void cb_Undo(void);
   void cb_Redo(void);
 

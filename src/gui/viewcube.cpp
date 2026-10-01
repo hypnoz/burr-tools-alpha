@@ -154,6 +154,9 @@ void viewCube_c::snapToPart(Part p, rotater_c * rot) const {
     return;
   float n[3], m[9];
   partLook(p, n);
+  /* World up, the same rule as the home Front view. An edge whose home
+   * direction is left-right stays horizontal; one that stands up stays
+   * vertical. A corner points straight out with that same fixed roll. */
   lookMatrix(n[0], n[1], n[2], m);
   rot->setRotation(m);
 }
@@ -336,8 +339,8 @@ static int buildPolys(PickPoly * polys) {
   /* faces: +X -X +Y -Y +Z -Z */
   addPoly(polys, &n, viewCube_c::FACE_PX, 4,  o,-i,-i,  o, i,-i,  o, i, i,  o,-i, i);
   addPoly(polys, &n, viewCube_c::FACE_NX, 4, -o,-i, i, -o, i, i, -o, i,-i, -o,-i,-i);
-  addPoly(polys, &n, viewCube_c::FACE_PY, 4, -i, o,-i,  i, o,-i,  i, o, i, -i, o, i);
-  addPoly(polys, &n, viewCube_c::FACE_NY, 4, -i,-o, i,  i,-o, i,  i,-o,-i, -i,-o,-i);
+  addPoly(polys, &n, viewCube_c::FACE_PY, 4, -i, o,-i, -i, o, i,  i, o, i,  i, o,-i);
+  addPoly(polys, &n, viewCube_c::FACE_NY, 4, -i,-o, i, -i,-o,-i,  i,-o,-i,  i,-o, i);
   addPoly(polys, &n, viewCube_c::FACE_PZ, 4, -i,-i, o,  i,-i, o,  i, i, o, -i, i, o);
   addPoly(polys, &n, viewCube_c::FACE_NZ, 4,  i,-i,-o, -i,-i,-o, -i, i,-o,  i, i,-o);
 
@@ -352,10 +355,10 @@ static int buildPolys(PickPoly * polys) {
   addPoly(polys, &n, viewCube_c::EDGE_PX_NZ, 4,  o,-i,-i,  i,-i,-o,  i, i,-o,  o, i,-i);
   addPoly(polys, &n, viewCube_c::EDGE_NX_NZ, 4, -i,-i,-o, -o,-i,-i, -o, i,-i, -i, i,-o);
 
-  addPoly(polys, &n, viewCube_c::EDGE_PX_PY, 4,  i, o,-i,  o, i,-i,  o, i, i,  i, o, i);
-  addPoly(polys, &n, viewCube_c::EDGE_NX_PY, 4, -o, i,-i, -i, o,-i, -i, o, i, -o, i, i);
-  addPoly(polys, &n, viewCube_c::EDGE_PX_NY, 4,  o,-i,-i,  i,-o,-i,  i,-o, i,  o,-i, i);
-  addPoly(polys, &n, viewCube_c::EDGE_NX_NY, 4, -i,-o,-i, -o,-i,-i, -o,-i, i, -i,-o, i);
+  addPoly(polys, &n, viewCube_c::EDGE_PX_PY, 4,  i, o,-i,  i, o, i,  o, i, i,  o, i,-i);
+  addPoly(polys, &n, viewCube_c::EDGE_NX_PY, 4, -o, i,-i, -o, i, i, -i, o, i, -i, o,-i);
+  addPoly(polys, &n, viewCube_c::EDGE_PX_NY, 4,  o,-i,-i,  o,-i, i,  i,-o, i,  i,-o,-i);
+  addPoly(polys, &n, viewCube_c::EDGE_NX_NY, 4, -i,-o,-i, -i,-o, i, -o,-i, i, -o,-i,-i);
 
   /* corners +++ +-+ etc. */
   addPoly(polys, &n, viewCube_c::CORNER_PPP, 3,  i, i, o,  o, i, i,  i, o, i);
@@ -493,7 +496,10 @@ viewCube_c::Action viewCube_c::handle(int event, rotater_c * rot, int winW, int 
     pressY = my;
     dragging = false;
     tracking = true;
-    if (!isNavPart(h) && rot)
+    /* Edge and corner clicks snap that feature to the front. The window
+     * arcball pivots on the full view, so a click in this corner would
+     * throw the feature away. */
+    if (!isNavPart(h) && h < EDGE_PY_PZ && rot)
       rot->click((float)mx, (float)my);
     return ACT_REDRAW;
   }
@@ -507,7 +513,7 @@ viewCube_c::Action viewCube_c::handle(int event, rotater_c * rot, int winW, int 
       if (dx*dx + dy*dy > kDragPx * kDragPx)
         dragging = true;
     }
-    if (pressPart != PART_HOME && !isNavPart(pressPart) && rot && dragging) {
+    if (pressPart >= FACE_PX && pressPart < EDGE_PY_PZ && rot && dragging) {
       rot->drag((float)mx, (float)my);
       hover = hitTest(mx, my, rot, winW, winH);
       return ACT_REDRAW;
@@ -538,12 +544,16 @@ viewCube_c::Action viewCube_c::handle(int event, rotater_c * rot, int winW, int 
       }
       return ACT_REDRAW;
     }
-    if (rot)
-      rot->clack((float)mx, (float)my);
-    if (!dragging && pressPart >= FACE_PX && pressPart <= CORNER_NNN)
+    if (pressPart >= EDGE_PY_PZ && pressPart <= CORNER_NNN) {
       snapToPart(pressPart, rot);
-    else if (dragging)
-      snapNearest(rot);
+    } else {
+      if (rot)
+        rot->clack((float)mx, (float)my);
+      if (!dragging && pressPart >= FACE_PX && pressPart <= CORNER_NNN)
+        snapToPart(pressPart, rot);
+      else if (dragging)
+        snapNearest(rot);
+    }
     pressPart = PART_NONE;
     dragging = false;
     hover = hitTest(mx, my, rot, winW, winH);

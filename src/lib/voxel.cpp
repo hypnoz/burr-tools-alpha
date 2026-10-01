@@ -84,7 +84,7 @@
 #define BBHSCACHE_NOT_DEF -30001
 
 voxel_c::voxel_c(unsigned int x, unsigned int y, unsigned int z, const gridType_c * g, voxel_type init) :
-  gt(g), sx(x), sy(y), sz(z), voxels(x*y*z), space(voxels, init), hx(0), hy(0), hz(0), weight(1),
+  gt(g), sx(x), sy(y), sz(z), voxels(x*y*z), space(voxels, init), hx(0), hy(0), hz(0), weight(1), diskSize(0),
   BbHsCache(9 * g->getSymmetries()->getNumTransformationsMirror(), BBHSCACHE_UNINIT) {
 
   bt_assert(gt);
@@ -109,7 +109,7 @@ voxel_c::voxel_c(const voxel_c & orig) :
   gt(orig.gt), sx(orig.sx), sy(orig.sy), sz(orig.sz), voxels(orig.voxels), space(orig.space),
   bx1(orig.bx1), bx2(orig.bx2), by1(orig.by1), by2(orig.by2), bz1(orig.bz1), bz2(orig.bz2),
   doRecalc(true), symmetries(symmetryInvalid()), hx(orig.hx), hy(orig.hy), hz(orig.hz),
-  name(orig.name), weight(orig.weight), goalPiece(orig.goalPiece),
+  name(orig.name), weight(orig.weight), diskSize(orig.diskSize), goalPiece(orig.goalPiece),
   BbHsCache(9 * orig.gt->getSymmetries()->getNumTransformationsMirror(), BBHSCACHE_UNINIT) {
 }
 
@@ -117,7 +117,7 @@ voxel_c::voxel_c(const voxel_c * orig) :
   gt(orig->gt), sx(orig->sx), sy(orig->sy), sz(orig->sz), voxels(orig->voxels), space(orig->space),
   bx1(orig->bx1), bx2(orig->bx2), by1(orig->by1), by2(orig->by2), bz1(orig->bz1), bz2(orig->bz2),
   doRecalc(true), symmetries(symmetryInvalid()), hx(orig->hx), hy(orig->hy), hz(orig->hz),
-  name(orig->name), weight(orig->weight), goalPiece(orig->goalPiece),
+  name(orig->name), weight(orig->weight), diskSize(orig->diskSize), goalPiece(orig->goalPiece),
   BbHsCache(9 * orig->gt->getSymmetries()->getNumTransformationsMirror(), BBHSCACHE_UNINIT) {
 }
 
@@ -585,6 +585,7 @@ void voxel_c::copy(const voxel_c * orig) {
   name = "";
 
   weight = orig->weight;
+  diskSize = orig->diskSize;
   goalPiece = orig->goalPiece;
 }
 
@@ -718,6 +719,9 @@ void voxel_c::save(xmlWriter_c & xml) const {
   if (name.length())
     xml.newAttrib("name", name);
 
+  if (diskSize)
+    xml.newAttrib("diskSize", diskSize);
+
   if (hasGoalPieces()) {
     std::string g;
     for (unsigned int i = 0; i < getXYZ(); i++) {
@@ -760,7 +764,7 @@ void voxel_c::save(xmlWriter_c & xml) const {
   xml.endTag("voxel");
 }
 
-voxel_c::voxel_c(xmlParser_c & pars, const gridType_c * g) : gt(g), hx(0), hy(0), hz(0), weight(1)
+voxel_c::voxel_c(xmlParser_c & pars, const gridType_c * g) : gt(g), hx(0), hy(0), hz(0), weight(1), diskSize(0)
 {
   pars.require(xmlParser_c::START_TAG, "voxel");
 
@@ -819,6 +823,10 @@ voxel_c::voxel_c(xmlParser_c & pars, const gridType_c * g) : gt(g), hx(0), hy(0)
   szStr = pars.getAttributeValue("weight");
   if (szStr != "")
     weight = atoi(szStr.c_str());
+
+  szStr = pars.getAttributeValue("diskSize");
+  if (szStr != "")
+    diskSize = (unsigned int)atoi(szStr.c_str());
 
   space.assign(voxels, 0);
 

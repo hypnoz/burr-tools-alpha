@@ -71,15 +71,19 @@ class part_c {
 
 problem_c::problem_c(puzzle_c & puz) :
   puzzle(puz), result(0xFFFFFFFF), goalShape(0xFFFFFFFF),
+  rodSetId(0xFFFFFFFF),
   solutionsWithRotations(false),
   solveState(SS_UNSOLVED), numAssemblies(0),
   numSolutions(0), usedTime(0), maxHoles(0xFFFFFFFF)
-{}
+{
+}
 
 problem_c::~problem_c(void) = default;
 
 problem_c::problem_c(const problem_c * orig, puzzle_c & puz) :
   puzzle(puz), result(orig->result), goalShape(orig->goalShape),
+  rodSetId(orig->rodSetId),
+  startMap(orig->startMap), goalMap(orig->goalMap),
   solutionsWithRotations(false),
   solveState(SS_UNSOLVED), numAssemblies(0), numSolutions(0), usedTime(0)
 {
@@ -173,6 +177,8 @@ void problem_c::save(xmlWriter_c & xml) const
     xml.endTag("goal");
   }
 
+  stacking::saveProblem(*this, xml);
+
   xml.newTag("bitmap");
   for (std::set<uint32_t>::iterator i = colorConstraints.begin(); i != colorConstraints.end(); ++i)
   {
@@ -214,6 +220,7 @@ void problem_c::save(xmlWriter_c & xml) const
 
 problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0xFFFFFFFF),
   goalShape(0xFFFFFFFF),
+  rodSetId(0xFFFFFFFF),
   solutionsWithRotations(false)
 {
   pars.require(xmlParser_c::START_TAG, "problem");
@@ -429,6 +436,10 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
 
       pars.require(xmlParser_c::END_TAG, "bitmap");
     }
+    else if (pars.getName() == "stacking")
+    {
+      stacking::loadProblem(*this, pars);
+    }
     else if (pars.getName() == "assembler")
     {
       str = pars.getAttributeValue("version");
@@ -492,6 +503,8 @@ void problem_c::removeShape(unsigned short idx) {
     result--;
   if (goalShape != 0xFFFFFFFF && goalShape > idx)
     goalShape--;
+
+  stacking::noteShapeRemoved(*this, idx);
 }
 
 void problem_c::exchangeShapes(unsigned int shapeId1, unsigned int shapeId2) {
@@ -505,6 +518,8 @@ void problem_c::exchangeShapes(unsigned int shapeId1, unsigned int shapeId2) {
   for (unsigned int i = 0; i < parts.size(); i++)
     if (parts[i]->shapeId == shapeId1) parts[i]->shapeId = shapeId2;
     else if (parts[i]->shapeId == shapeId2) parts[i]->shapeId = shapeId1;
+
+  stacking::noteShapeSwap(*this, shapeId1, shapeId2);
 }
 
 void problem_c::allowPlacement(unsigned int pc, unsigned int res) {
@@ -760,7 +775,7 @@ void problem_c::setShapeMaximum(unsigned int shape, unsigned int count)
         }
 
         parts.erase(parts.begin()+id);
-
+        stacking::trimStacks(*this);
         return;
       }
 
@@ -800,6 +815,7 @@ void problem_c::setShapeMaximum(unsigned int shape, unsigned int count)
       if (parts[id]->max < parts[id]->min)
         setShapeMinimum(shape, count);
 
+      stacking::trimStacks(*this);
       return;
     }
     pieceIdx += parts[id]->max;
@@ -813,6 +829,11 @@ void problem_c::setShapeMaximum(unsigned int shape, unsigned int count)
     for (unsigned int s = 0; s < solutions.size(); s++)
       solutions[s]->addNonPlacedPieces(pieceIdx, count);
   }
+  stacking::trimStacks(*this);
+}
+
+bool problem_c::rodSetValid(void) const {
+  return rodSetId < puzzle.rodSetCount();
 }
 
 unsigned int problem_c::getShapeMinimum(unsigned int shape) const {

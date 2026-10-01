@@ -42,6 +42,8 @@ class VoxelEditGroup_c : public Fl_Group, public layoutable_c {
   Fl_Slider * zselect;
   LineSpacer * space;
 
+  void squareZKnob(void);
+
 public:
 
   VoxelEditGroup_c(int x, int y, int w, int h, puzzle_c * puzzle, const guiGridType_c * ggt);
@@ -49,6 +51,7 @@ public:
   void newGridType(const guiGridType_c * ggt, puzzle_c * puzzle);
 
   void draw();
+  void resize(int x, int y, int w, int h);
 
   void cb_Zselect(Fl_Slider* o);
 
@@ -112,7 +115,7 @@ public:
   }
 
   virtual void getMinSize(int *width, int *height) const {
-    *width = 40;
+    *width = 75;
     *height = 160;
   }
 };

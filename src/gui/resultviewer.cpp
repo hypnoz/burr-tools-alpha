@@ -22,8 +22,10 @@
 #include "piececolor.h"
 
 #include "../lib/problem.h"
+#include "../lib/puzzle.h"
 #include "../lib/voxel.h"
 #include "../lib/sliding.h"
+#include "../lib/stacking.h"
 
 ResultViewer_c::ResultViewer_c(int x, int y, int w, int h) : Fl_Box(0, 0, 10, 10), layoutable_c(x, y, w, h), puzzle(0) {
   bg = color();
@@ -37,6 +39,27 @@ void ResultViewer_c::setPuzzle(problem_c * p) {
 }
 
 void ResultViewer_c::draw(void) {
+  if (puzzle && stacking::isStacking(puzzle->getPuzzle())) {
+    static char stackTxt[160];
+    if (!puzzle->rodSetValid()) {
+      label("No Start/Goal Rods");
+      color(bg);
+      labelcolor(fl_rgb_color(255, 0, 0));
+    } else {
+      unsigned int id = puzzle->getRodSetId();
+      const stacking::rodSet_c & board = puzzle->getPuzzle().getRodSet(id);
+      if (board.name.length())
+        snprintf(stackTxt, sizeof(stackTxt), "Result: R%u - %s", id + 1, board.name.c_str());
+      else
+        snprintf(stackTxt, sizeof(stackTxt), "Result: R%u", id + 1);
+      color(fl_rgb_color(70, 110, 150));
+      labelcolor(fl_rgb_color(255, 255, 255));
+      label(stackTxt);
+    }
+    Fl_Box::draw();
+    return;
+  }
+
   if (!puzzle || !puzzle->resultValid()) {
     label("No Result");
     color(bg);

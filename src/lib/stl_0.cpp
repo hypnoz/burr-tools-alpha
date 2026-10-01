@@ -74,7 +74,8 @@ Polyhedron * stlExporter_0_c::getMesh(const voxel_c & v) const
   double scale_z = (cube_scale_z > Epsilon) ? cube_scale_z : cube_scale;
 
   if (v.getGridType()->getType() == gridType_c::GT_BRICKS ||
-      v.getGridType()->getType() == gridType_c::GT_SLIDING)
+      v.getGridType()->getType() == gridType_c::GT_SLIDING ||
+      v.getGridType()->getType() == gridType_c::GT_STACKING)
     return getCubeMesh(v, scale_y, scale_z);
   if (minkMesh::handles(v))
     return getMinkowskiMesh(v, scale_y, scale_z);

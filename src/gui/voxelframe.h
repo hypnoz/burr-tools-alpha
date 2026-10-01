@@ -38,6 +38,7 @@ class voxel_c;
 class puzzle_c;
 class problem_c;
 class assembly_c;
+class gridType_c;
 class piecePositions_c;
 
 class rotater_c;
@@ -137,6 +138,10 @@ class voxelFrame_c : public Fl_Gl_Window {
     void showOwnedVoxel(voxel_c * vx, unsigned int colorIndex);
     void showColors(const puzzle_c * puz, colorMode mode);
     void showAssembly(const problem_c * puz, unsigned int solNum);
+    /** Pegs of one rod set, with no discs. */
+    void showRodSet(const puzzle_c * puz, unsigned int rodSet);
+    /** Discs of the start or goal stacking, plus the pegs they sit on. */
+    void showStacking(const problem_c * puz, bool goal);
     void updatePositions(piecePositions_c *shifting);
     void updatePositionsOverlap(piecePositions_c *shifting);
     void dimStaticPieces(piecePositions_c *shifting);
@@ -179,6 +184,10 @@ class voxelFrame_c : public Fl_Gl_Window {
 
     void setHomeCallback(Fl_Callback * cb, void * user) { homeCb = cb; homeUser = user; }
     void resetViewRotation(void);
+    /** Front for other puzzle types. The Top–Front edge while a stacking view is active. */
+    void lookFront(void);
+    /** Stacking opens on the viewcube edge between Top and Front. */
+    void setStackingView(bool on);
 
   private:
 
@@ -191,6 +200,18 @@ class voxelFrame_c : public Fl_Gl_Window {
 
     unsigned int addSpace(const voxel_c * vx);
     void clearSpaces(void);
+    /** Piece spaces the move slider drives. ~0u keeps the old "skip the last marker" rule. */
+    unsigned int drivenSpaces = ~0u;
+    unsigned int addPeg(const gridType_c * gt, int x, unsigned int height);
+    void addRodBase(const gridType_c * gt, int x0, int x1);
+    void showStackingAssembly(const problem_c * puz, unsigned int solNum);
+    /** Draw discs and pegs turned 90° about X so a disc lies flat and pegs stand up. */
+    void tiltPlates(void);
+    bool stackingPlate = false;
+    /** Home and the first view use the Top–Front edge while this is set. */
+    bool stackingHome = false;
+    bool userRotated = false;
+    void applyDefaultRotation(void);
 
     void setSpaceColor(unsigned int nr, float r, float g, float b, float a);
     void setSpaceColor(unsigned int nr, float a);

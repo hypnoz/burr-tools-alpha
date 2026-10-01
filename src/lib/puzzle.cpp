@@ -92,6 +92,7 @@
 
 puzzle_c::puzzle_c(const puzzle_c * orig)
   : gt(std::make_unique<gridType_c>(*orig->gt)),
+    rodSets(orig->rodSets),
     comment(orig->comment),
     commentPopup(orig->commentPopup) {
 
@@ -107,8 +108,14 @@ puzzle_c::puzzle_c(const puzzle_c * orig)
 
 puzzle_c::~puzzle_c(void) = default;
 
-puzzle_c::puzzle_c(gridType_c * g) : gt(g), commentPopup(false) { }
-puzzle_c::puzzle_c(std::unique_ptr<gridType_c> g) : gt(std::move(g)), commentPopup(false) { }
+puzzle_c::puzzle_c(gridType_c * g) : gt(g), commentPopup(false) {
+  if (gt && gt->getType() == gridType_c::GT_STACKING)
+    rodSets.push_back(stacking::rodSet_c());
+}
+puzzle_c::puzzle_c(std::unique_ptr<gridType_c> g) : gt(std::move(g)), commentPopup(false) {
+  if (gt && gt->getType() == gridType_c::GT_STACKING)
+    rodSets.push_back(stacking::rodSet_c());
+}
 
 unsigned int puzzle_c::addColor(unsigned char r, unsigned char g, unsigned char b) {
   bt_assert(colors.size() < 63);  // only 63 colours are allowed, colour 0 is special
@@ -196,6 +203,8 @@ void puzzle_c::save(xmlWriter_c & xml) const
   for (unsigned int i = 0; i < shapes.size(); i++)
     shapes[i]->save(xml);
   xml.endTag("shapes");
+
+  stacking::saveRodSets(*this, xml);
 
   xml.newTag("problems");
   for (unsigned int i = 0; i < problems.size(); i++)
@@ -312,6 +321,10 @@ puzzle_c::puzzle_c(xmlParser_c & pars)
 
       pars.require(xmlParser_c::END_TAG, "shapes");
     }
+    else if (pars.getName() == "rodSets")
+    {
+      stacking::loadRodSets(*this, pars);
+    }
     else if (pars.getName() == "problems")
     {
       do
@@ -357,6 +370,9 @@ puzzle_c::puzzle_c(xmlParser_c & pars)
   } while (true);
 
   pars.require(xmlParser_c::END_TAG, "puzzle");
+
+  if (gt && gt->getType() == gridType_c::GT_STACKING && rodSets.empty())
+    rodSets.push_back(stacking::rodSet_c());
 }
 
 unsigned int puzzle_c::addShape(voxel_c * p) {
@@ -397,6 +413,40 @@ void puzzle_c::exchangeShapes(unsigned int s1, unsigned int s2) {
 
   for (unsigned int i = 0; i < problems.size(); i++)
     problems[i]->exchangeShapes(s1, s2);
+}
+
+unsigned int puzzle_c::addRodSet(const stacking::rodSet_c & set) {
+  rodSets.push_back(set);
+  return (unsigned int)rodSets.size() - 1;
+}
+
+unsigned int puzzle_c::addRodSet(void) {
+  return addRodSet(stacking::rodSet_c());
+}
+
+void puzzle_c::removeRodSet(unsigned int idx) {
+  bt_assert(idx < rodSets.size());
+  for (unsigned int i = 0; i < problems.size(); i++) {
+    unsigned int id = problems[i]->getRodSetId();
+    if (id == idx)
+      problems[i]->clearRodSet();
+    else if (id != 0xFFFFFFFF && id > idx)
+      problems[i]->setRodSetId(id - 1);
+  }
+  rodSets.erase(rodSets.begin() + idx);
+}
+
+void puzzle_c::exchangeRodSets(unsigned int a, unsigned int b) {
+  bt_assert(a < rodSets.size());
+  bt_assert(b < rodSets.size());
+  std::swap(rodSets[a], rodSets[b]);
+  for (unsigned int i = 0; i < problems.size(); i++) {
+    unsigned int id = problems[i]->getRodSetId();
+    if (id == a)
+      problems[i]->setRodSetId(b);
+    else if (id == b)
+      problems[i]->setRodSetId(a);
+  }
 }
 
 void puzzle_c::adoptShapes(const std::vector<voxel_c*> & newShapes) {

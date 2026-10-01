@@ -26,6 +26,7 @@
  */
 
 #include "bt_assert.h"
+#include "stacking.h"
 
 #include <stdint.h>
 #include <vector>
@@ -72,6 +73,9 @@ private:
    * highest part
    */
   std::vector<uint32_t> colors;
+
+  /** Stacking boards. Empty for every other grid type. */
+  std::vector<stacking::rodSet_c> rodSets;
 
   /**
    * some information about the puzzle
@@ -226,6 +230,17 @@ public:
   bool getCommentPopup(void) const { return commentPopup; }
   /** set or reset comment popup flag */
   void setCommentPopup(bool val) { commentPopup = val; }
+  //@}
+
+  /** \name stacking rod sets */
+  //@{
+  unsigned int addRodSet(const stacking::rodSet_c & set);
+  unsigned int addRodSet(void);
+  void removeRodSet(unsigned int idx);
+  void exchangeRodSets(unsigned int a, unsigned int b);
+  unsigned int rodSetCount(void) const { return (unsigned int)rodSets.size(); }
+  const stacking::rodSet_c & getRodSet(unsigned int idx) const { bt_assert(idx < rodSets.size()); return rodSets[idx]; }
+  stacking::rodSet_c & getRodSet(unsigned int idx) { bt_assert(idx < rodSets.size()); return rodSets[idx]; }
   //@}
 
 public:

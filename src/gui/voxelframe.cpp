@@ -35,6 +35,7 @@
 #include "../lib/solution.h"
 #include "../lib/rotationrules.h"
 #include "../lib/sliding.h"
+#include "../lib/stacking.h"
 
 #include "../halfedge/polyhedron.h"
 
@@ -836,6 +837,7 @@ void voxelFrame_c::drawVoxelSpace() {
         glTranslatef(shape->x, shape->y, shape->z);
         glScalef(shape->scale, shape->scale, shape->scale);
         rotater->addTransform();
+        tiltPlates();
         if (shape->shape)
         {
           float cx, cy, cz;
@@ -845,6 +847,7 @@ void voxelFrame_c::drawVoxelSpace() {
         break;
       case TranslateRoateScale:
         rotater->addTransform();
+        tiltPlates();
         glTranslatef(shape->x, shape->y, shape->z);
         if (shape->shape)
         {
@@ -856,6 +859,7 @@ void voxelFrame_c::drawVoxelSpace() {
         break;
       case CenterTranslateRoateScale:
         rotater->addTransform();
+        tiltPlates();
         glTranslatef(shape->x - hx, shape->y - hy, shape->z - hz);
         glTranslatef(-centerX, -centerY, -centerZ);
         if (shape->animAngle != 0) {
@@ -883,23 +887,43 @@ void voxelFrame_c::drawVoxelSpace() {
         float cx, cy, cz;
         shape->shape->calculateSize(&cx, &cy, &cz);
 
+        /* Voxel axes, from the min corner. Stacking draws plates with a
+         * -90° X tilt, which the view cube does not share: voxel (x,y,z)
+         * becomes world (x,z,-y). The triad follows that world frame. */
+        float ox = -1, oy = -1, oz = -1;
+        float xx = cx + 1, xy = -1, xz = -1;
+        float yx = -1, yy = cy + 1, yz = -1;
+        float zx = -1, zy = -1, zz = cz + 1;
+        float lx = cx + 1.15f, ly = -1, lz = -1;
+        float mx = -1, my = cy + 1.15f, mz = -1;
+        float nx = -1, ny = -1, nz = cz + 1.15f;
+        if (stackingPlate) {
+          ox = -1;        oy = cy + 1; oz = -1;
+          xx = cx + 1;    xy = cy + 1; xz = -1;
+          yx = -1;        yy = cy + 1; yz = cz + 1;
+          zx = -1;        zy = -1;     zz = -1;
+          lx = cx + 1.15f; ly = cy + 1;    lz = -1;
+          mx = -1;         my = cy + 1;    mz = cz + 1.15f;
+          nx = -1;         ny = -1.15f;    nz = -1;
+        }
+
         const bool ana = (colors == anaglyphColor || colors == anaglyphColorL);
         if (ana) {
-          glColor3f(0.3, 0.3, 0.3); glVertex3f(-1, -1, -1); glVertex3f(cx+1, -1, -1);
-          glColor3f(0.6, 0.6, 0.6); glVertex3f(-1, -1, -1); glVertex3f(-1, cy+1, -1);
-          glColor3f(0.1, 0.1, 0.1); glVertex3f(-1, -1, -1); glVertex3f(-1, -1, cz+1);
+          glColor3f(0.3, 0.3, 0.3); glVertex3f(ox, oy, oz); glVertex3f(xx, xy, xz);
+          glColor3f(0.6, 0.6, 0.6); glVertex3f(ox, oy, oz); glVertex3f(yx, yy, yz);
+          glColor3f(0.1, 0.1, 0.1); glVertex3f(ox, oy, oz); glVertex3f(zx, zy, zz);
         } else {
-          glColor3f(1, 0,    0); glVertex3f(-1, -1, -1); glVertex3f(cx+1, -1, -1);
-          glColor3f(0, 0.75, 0); glVertex3f(-1, -1, -1); glVertex3f(-1, cy+1, -1);
-          glColor3f(0, 0,    1); glVertex3f(-1, -1, -1); glVertex3f(-1, -1, cz+1);
+          glColor3f(1, 0,    0); glVertex3f(ox, oy, oz); glVertex3f(xx, xy, xz);
+          glColor3f(0, 0.75, 0); glVertex3f(ox, oy, oz); glVertex3f(yx, yy, yz);
+          glColor3f(0, 0,    1); glVertex3f(ox, oy, oz); glVertex3f(zx, zy, zz);
         }
         glEnd();
 
         if (pickx < 0) {
           int xS, xT, yS, yT, zS, zT;
-          bool xOk = projectToWindow(cx + 1.15f, -1, -1, w(), h(), &xS, &xT);
-          bool yOk = projectToWindow(-1, cy + 1.15f, -1, w(), h(), &yS, &yT);
-          bool zOk = projectToWindow(-1, -1, cz + 1.15f, w(), h(), &zS, &zT);
+          bool xOk = projectToWindow(lx, ly, lz, w(), h(), &xS, &xT);
+          bool yOk = projectToWindow(mx, my, mz, w(), h(), &yS, &yT);
+          bool zOk = projectToWindow(nx, ny, nz, w(), h(), &zS, &zT);
 
           glDisable(GL_DEPTH_TEST);
           glDisable(GL_TEXTURE_2D);
@@ -1147,6 +1171,7 @@ void voxelFrame_c::clearSpaces(void) {
   }
 
   shapes.clear();
+  drivenSpaces = ~0u;
   clearDebugRotationCells();
 }
 
@@ -1284,6 +1309,7 @@ void voxelFrame_c::hideMarker(void) {
 }
 
 void voxelFrame_c::showNothing(void) {
+  stackingPlate = false;
   clearSpaces();
 }
 
@@ -1301,6 +1327,7 @@ void voxelFrame_c::setInsideVisible(bool on)
 
 void voxelFrame_c::showSingleShape(const puzzle_c * puz, unsigned int shapeNum) {
 
+  stackingPlate = false;
   hideMarker();
   clearSpaces();
   const voxel_c * src = puz->getShape(shapeNum);
@@ -1333,6 +1360,10 @@ void voxelFrame_c::showSingleShape(const puzzle_c * puz, unsigned int shapeNum) 
 
   trans = TranslateRoateScale;
   _showCoordinateSystem = true;
+  stackingPlate = src && (src->getDiskSize() > 0 || stacking::isStacking(*puz));
+  stackingHome = stackingPlate;
+  if (!userRotated)
+    applyDefaultRotation();
 
   redraw();
 }
@@ -1392,6 +1423,9 @@ void voxelFrame_c::showMesh(Polyhedron * poly)
 
   i.list = 0;
   i.pickPoly = 0;
+  i.animAngle = 0;
+  i.animAxisX = i.animAxisY = i.animAxisZ = 0;
+  i.animPivotX = i.animPivotY = i.animPivotZ = 0;
 
   shapes.push_back(i);
 
@@ -1403,6 +1437,8 @@ void voxelFrame_c::showMesh(Polyhedron * poly)
 
 void voxelFrame_c::showProblem(const puzzle_c * puz, unsigned int problem, unsigned int selShape) {
 
+  stackingPlate = false;
+  stackingHome = false;
   hideMarker();
   clearSpaces();
 
@@ -1519,8 +1555,280 @@ void voxelFrame_c::showColors(const puzzle_c * puz, colorMode mode) {
   redraw();
 }
 
+static void diskTint(const puzzle_c & puz, const voxel_c * src,
+                      unsigned int shapeId, unsigned int inst,
+                      float *r, float *g, float *b) {
+  unsigned int col = 0;
+  if (src) {
+    for (unsigned int i = 0; i < src->getXYZ(); i++) {
+      if (src->getState(i) != voxel_c::VX_EMPTY && src->getColor(i)) {
+        col = src->getColor(i);
+        break;
+      }
+    }
+  }
+  if (col > 0 && col <= puz.colorNumber()) {
+    unsigned char cr, cg, cb;
+    puz.getColor(col - 1, &cr, &cg, &cb);
+    *r = cr / 255.0f;
+    *g = cg / 255.0f;
+    *b = cb / 255.0f;
+    return;
+  }
+  *r = pieceColorR(shapeId, inst);
+  *g = pieceColorG(shapeId, inst);
+  *b = pieceColorB(shapeId, inst);
+}
+
+void voxelFrame_c::tiltPlates(void) {
+  if (!stackingPlate)
+    return;
+  /* -90° about X, in model space: voxel +Z (the stack) becomes screen +Y.
+   * A disc that is one voxel thick in Z lies flat, so Front shows a plate. */
+  glRotatef(-90.0f, 1.0f, 0.0f, 0.0f);
+}
+
+void voxelFrame_c::applyDefaultRotation(void) {
+  if (!rotater)
+    return;
+  if (stackingHome && viewCube)
+    viewCube->snapToPart(viewCube_c::EDGE_PY_PZ, rotater);
+  else
+    rotater->resetRotation();
+}
+
+void voxelFrame_c::lookFront(void) {
+  userRotated = false;
+  applyDefaultRotation();
+  redraw();
+}
+
+void voxelFrame_c::setStackingView(bool on) {
+  stackingHome = on;
+  if (!on)
+    return;
+  userRotated = false;
+  applyDefaultRotation();
+  redraw();
+}
+
+unsigned int voxelFrame_c::addPeg(const gridType_c * gt, int x, unsigned int height) {
+  if (height < 1)
+    height = 1;
+  voxel_c * rod = gt->getVoxel(1, 1, height, voxel_c::VX_EMPTY);
+  for (unsigned int z = 0; z < height; z++)
+    rod->set(0, 0, z, voxel_c::VX_FILLED);
+  rod->setHotspot(0, 0, 0);
+  unsigned int n = addSpace(rod);
+  setSpacePosition(n, (float)x, 0, 0, 1);
+  setSpaceColor(n, 0.55f, 0.55f, 0.58f, 1);
+  return n;
+}
+
+void voxelFrame_c::addRodBase(const gridType_c * gt, int x0, int x1) {
+  if (x1 < x0) {
+    int t = x0;
+    x0 = x1;
+    x1 = t;
+  }
+  unsigned int w = (unsigned int)(x1 - x0 + 1);
+  if (w < 1)
+    w = 1;
+  /* One voxel below the pegs, so the footing does not sit inside a disc. */
+  voxel_c * bar = gt->getVoxel(w, 1, 1, voxel_c::VX_EMPTY);
+  for (unsigned int x = 0; x < w; x++)
+    bar->set(x, 0, 0, voxel_c::VX_FILLED);
+  bar->setHotspot(0, 0, 0);
+  unsigned int n = addSpace(bar);
+  setSpacePosition(n, (float)x0, 0, -1, 1);
+  setSpaceColor(n, 0.55f, 0.55f, 0.58f, 1);
+}
+
+void voxelFrame_c::showRodSet(const puzzle_c * puz, unsigned int rodSet) {
+  if (curAssembly) {
+    delete curAssembly;
+    curAssembly = 0;
+  }
+  curProblem = 0;
+  shapeOrients.clear();
+  hideMarker();
+  clearSpaces();
+
+  if (!puz || rodSet >= puz->rodSetCount()) {
+    redraw();
+    return;
+  }
+
+  const stacking::rodSet_c & board = puz->getRodSet(rodSet);
+  unsigned int height = board.growHeight ? 5 : board.definedHeight;
+  if (height < 1)
+    height = 1;
+  int maxR = 1;
+  for (unsigned int i = 0; i < puz->getNumberOfShapes(); i++) {
+    int r = (int)puz->getShape(i)->getDiskSize();
+    if (r > maxR)
+      maxR = r;
+  }
+  int spacing = 2 * maxR + 1;
+  const gridType_c * gt = puz->getGridType();
+  for (unsigned int r = 0; r < board.rodCount; r++)
+    addPeg(gt, (int)r * spacing, height);
+  if (board.rodCount > 0)
+    addRodBase(gt, 0, (int)(board.rodCount - 1) * spacing);
+
+  drivenSpaces = 0;
+  stacking::boardLayout_c lay;
+  lay.rodHeight = height;
+  lay.rodX.resize(board.rodCount);
+  for (unsigned int r = 0; r < board.rodCount; r++)
+    lay.rodX[r] = (int)r * spacing;
+  {
+    float cx = 0;
+    if (!lay.rodX.empty())
+      cx = 0.5f * (float)(lay.rodX.front() + lay.rodX.back());
+    setCenter(cx, 0, 0.5f * (float)lay.rodHeight);
+  }
+  trans = CenterTranslateRoateScale;
+  _showCoordinateSystem = false;
+  stackingPlate = true;
+  stackingHome = true;
+  if (!userRotated)
+    applyDefaultRotation();
+  redraw();
+}
+
+void voxelFrame_c::showStacking(const problem_c * puz, bool goal) {
+  if (curAssembly) {
+    delete curAssembly;
+    curAssembly = 0;
+  }
+  curProblem = 0;
+  shapeOrients.clear();
+  hideMarker();
+  clearSpaces();
+
+  if (!puz || !puz->rodSetValid()) {
+    redraw();
+    return;
+  }
+
+  stacking::boardLayout_c lay = stacking::layoutBoard(*puz, goal);
+  const gridType_c * gt = puz->getPuzzle().getGridType();
+  unsigned int piece = 0;
+  unsigned int shown = 0;
+  for (unsigned int p = 0; p < puz->getNumberOfParts(); p++) {
+    const voxel_c * src = puz->getPartShape(p);
+    for (unsigned int q = 0; q < puz->getPartMaximum(p); q++, piece++) {
+      if (piece >= lay.disks.size() || !lay.disks[piece].placed)
+        continue;
+      voxel_c * vx = gt->getVoxel(src);
+      stacking::ensureHotspot(vx);
+      unsigned int num = addSpace(vx);
+      setSpacePosition(num, lay.disks[piece].x, lay.disks[piece].y, lay.disks[piece].z, 1);
+      float r, g, b;
+      diskTint(puz->getPuzzle(), src, puz->getShapeIdOfPart(p), q, &r, &g, &b);
+      setSpaceColor(num, r, g, b, 1);
+      shown++;
+    }
+  }
+  drivenSpaces = shown;
+  for (unsigned int r = 0; r < lay.rodCount && r < lay.rodX.size(); r++)
+    addPeg(gt, lay.rodX[r], lay.rodHeight);
+  if (!lay.rodX.empty())
+    addRodBase(gt, lay.rodX.front(), lay.rodX.back());
+
+  {
+    float cx = 0;
+    if (!lay.rodX.empty())
+      cx = 0.5f * (float)(lay.rodX.front() + lay.rodX.back());
+    setCenter(cx, 0, 0.5f * (float)lay.rodHeight);
+  }
+  trans = CenterTranslateRoateScale;
+  _showCoordinateSystem = false;
+  stackingPlate = true;
+  stackingHome = true;
+  if (!userRotated)
+    applyDefaultRotation();
+  redraw();
+}
+
+void voxelFrame_c::showStackingAssembly(const problem_c * puz, unsigned int solNum) {
+  if (curAssembly) {
+    delete curAssembly;
+    curAssembly = 0;
+  }
+  curProblem = 0;
+  shapeOrients.clear();
+  hideMarker();
+  clearSpaces();
+
+  if (!puz || solNum >= puz->getNumberOfSavedSolutions() || !puz->rodSetValid()) {
+    redraw();
+    return;
+  }
+
+  curProblem = puz;
+  curAssembly = new assembly_c(puz->getSavedSolution(solNum)->getAssembly());
+  const assembly_c * assm = curAssembly;
+  stacking::boardLayout_c lay = stacking::layoutBoard(*puz, false);
+  const gridType_c * gt = puz->getPuzzle().getGridType();
+
+  unsigned int piece = 0;
+  for (unsigned int p = 0; p < puz->getNumberOfParts(); p++) {
+    const voxel_c * src = puz->getPartShape(p);
+    for (unsigned int q = 0; q < puz->getPartMaximum(p); q++, piece++) {
+      voxel_c * vx = gt->getVoxel(src);
+      stacking::ensureHotspot(vx);
+      unsigned int num = addSpace(vx);
+      if (assm->isPlaced(piece)) {
+        bt_assert2(vx->transform(assm->getTransformation(piece)));
+        setSpacePosition(num, assm->getX(piece), assm->getY(piece), assm->getZ(piece), 1);
+        float r, g, b;
+        diskTint(puz->getPuzzle(), src, puz->getShapeIdOfPart(p), q, &r, &g, &b);
+        setSpaceColor(num, r, g, b, 1);
+      } else {
+        setSpacePosition(num, 0, 0, 0, 1);
+        setSpaceColor(num, 0);
+      }
+      if (shapeOrients.size() <= num)
+        shapeOrients.resize(num + 1, 0);
+      shapeOrients[num] = assm->isPlaced(piece) ? assm->getTransformation(piece) : 0;
+    }
+  }
+
+  /* Pegs are added after the discs so the move slider does not slide them. */
+  drivenSpaces = piece;
+  for (unsigned int r = 0; r < lay.rodCount && r < lay.rodX.size(); r++)
+    addPeg(gt, lay.rodX[r], lay.rodHeight);
+  if (!lay.rodX.empty())
+    addRodBase(gt, lay.rodX.front(), lay.rodX.back());
+
+  {
+    float cx = 0;
+    if (!lay.rodX.empty())
+      cx = 0.5f * (float)(lay.rodX.front() + lay.rodX.back());
+    setCenter(cx, 0, 0.5f * (float)lay.rodHeight);
+  }
+  trans = CenterTranslateRoateScale;
+  _showCoordinateSystem = false;
+  stackingPlate = true;
+  stackingHome = true;
+  if (!userRotated)
+    applyDefaultRotation();
+  redraw();
+}
+
 void voxelFrame_c::showAssembly(const problem_c * puz, unsigned int solNum) {
 
+  bt_assert(puz);
+
+  if (stacking::isStacking(puz->getPuzzle())) {
+    showStackingAssembly(puz, solNum);
+    return;
+  }
+
+  stackingPlate = false;
+  stackingHome = false;
   bt_assert(puz->resultValid());
 
   if (curAssembly) {
@@ -1750,7 +2058,13 @@ void voxelFrame_c::showPlacement(const problem_c * puz, unsigned int piece, unsi
 
 void voxelFrame_c::updatePositions(piecePositions_c *shifting) {
 
-  for (unsigned int p = 0; p < shapes.size()-1; p++) {
+  unsigned int limit = drivenSpaces;
+  if (limit == ~0u)
+    limit = shapes.empty() ? 0 : (unsigned int)shapes.size() - 1;
+  if (limit > shapes.size())
+    limit = (unsigned int)shapes.size();
+
+  for (unsigned int p = 0; p < limit; p++) {
 
     float ang = 0, ax = 0, ay = 0, az = 0, px = 0, py = 0, pz = 0;
     bool animRot = shifting->getRotationAnim(p, &ang, &ax, &ay, &az, &px, &py, &pz);
@@ -2502,14 +2816,17 @@ int voxelFrame_c::handle(int event) {
 
     viewCube_c::Action a = viewCube->handle(event, rotater, w(), h());
     if (a == viewCube_c::ACT_HOME) {
+      userRotated = false;
       if (homeCb)
         homeCb(this, homeUser);
       else
-        rotater->resetRotation();
+        applyDefaultRotation();
       redraw();
       return 1;
     }
     if (a == viewCube_c::ACT_REDRAW) {
+      if (event == FL_DRAG || event == FL_RELEASE)
+        userRotated = true;
       redraw();
       return 1;
     }
@@ -2531,6 +2848,7 @@ int voxelFrame_c::handle(int event) {
 
   case FL_DRAG:
 
+    userRotated = true;
     rotater->drag(Fl::event_x(), Fl::event_y());
     redraw();
 
@@ -2554,8 +2872,7 @@ int voxelFrame_c::handle(int event) {
 }
 
 void voxelFrame_c::resetViewRotation(void) {
-  if (rotater)
-    rotater->resetRotation();
+  applyDefaultRotation();
   redraw();
 }
 

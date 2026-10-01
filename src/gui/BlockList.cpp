@@ -27,6 +27,16 @@
 #include "../lib/voxel.h"
 #include "../lib/assembly.h"
 #include "../lib/sliding.h"
+#include "../lib/stacking.h"
+
+#include <FL/Fl_Scroll.H>
+#include <FL/Fl_Int_Input.H>
+#include <FL/Fl_Button.H>
+#include <FL/Fl_Box.H>
+#include <FL/fl_ask.H>
+
+#include <cstdlib>
+#include <cstring>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -377,6 +387,41 @@ void ProblemSelector::getColor(unsigned int block, unsigned char *r,  unsigned c
   *r = pieceColorRi(block);
   *g = pieceColorGi(block);
   *b = pieceColorBi(block);
+}
+
+void RodSelector::push(unsigned int block) {
+  if (getSelection() == block) {
+    do_callback(RS_CHANGEDSELECTION);
+    return;
+  }
+  SelectableTextList::push(block);
+}
+
+void RodSelector::setPuzzle(const puzzle_c *pz) {
+  bt_assert(pz);
+  puzzle = pz;
+  if (pz->rodSetCount())
+    setSelection(0);
+  else
+    setSelection((unsigned int)-1);
+}
+
+unsigned int RodSelector::blockNumber(void) {
+  return puzzle->rodSetCount();
+}
+
+void RodSelector::getText(unsigned int block, char * text) {
+  const stacking::rodSet_c & rod = puzzle->getRodSet(block);
+  if (rod.name.empty())
+    snprintf(text, 200, "R%u", block + 1);
+  else
+    snprintf(text, 200, "R%u - %s", block + 1, rod.name.c_str());
+}
+
+void RodSelector::getColor(unsigned int /*block*/, unsigned char *r,  unsigned char *g, unsigned char *b) {
+  *r = 70;
+  *g = 110;
+  *b = 150;
 }
 
 void PiecesList::setPuzzle(const problem_c *pz) {
@@ -871,4 +916,304 @@ void ColorConstraintsEdit::setPuzzle(puzzle_c *pz, unsigned int prob) {
     problem = prob;
     setSelection(0);
   }
+}
+
+void RodStackList::blockSize(unsigned int block, unsigned int *w, unsigned int *h) {
+  SelectableTextList::blockSize(block, w, h);
+  /* One disc per row. A block as wide as the list wraps onto the next line. */
+  if (this->w() > (int)*w)
+    *w = (unsigned int)this->w();
+}
+
+void RodStackList::getText(unsigned int block, char * text) {
+  if (block >= labels.size()) {
+    text[0] = 0;
+    return;
+  }
+  snprintf(text, 200, "%s", labels[block].c_str());
+}
+
+void RodStackList::getColor(unsigned int block, unsigned char *r, unsigned char *g, unsigned char *b) {
+  unsigned int shape = block < shapes.size() ? shapes[block] : 0;
+  *r = pieceColorRi(shape);
+  *g = pieceColorGi(shape);
+  *b = pieceColorBi(shape);
+}
+
+struct DiskNameButton : public Fl_Button, public layoutable_c {
+  DiskSelector * owner;
+  unsigned int index;
+  DiskNameButton(int gx, int gy, DiskSelector * o, unsigned int i)
+    : Fl_Button(0, 0, 0, 0), layoutable_c(gx, gy, 1, 1), owner(o), index(i) {
+    stretchVCenter();
+  }
+  void getMinSize(int *w, int *h) const {
+    *w = 0;
+    *h = 0;
+    fl_font(labelfont(), labelsize());
+    fl_measure(label(), *w, *h);
+    if (*w < 48) *w = 48;
+    *w += 8;
+    *h += 8;
+    if (*h < 22) *h = 22;
+  }
+};
+
+struct DiskDeltaButton : public Fl_Button, public layoutable_c {
+  DiskSelector * owner;
+  unsigned int index;
+  int dir;
+  DiskDeltaButton(int gx, int gy, const char * lab, DiskSelector * o, unsigned int i, int d)
+    : Fl_Button(0, 0, 0, 0, lab), layoutable_c(gx, gy, 1, 1), owner(o), index(i), dir(d) {
+    stretchVCenter();
+    setMinimumSize(26, 22);
+  }
+  void getMinSize(int *w, int *h) const {
+    *w = 26;
+    *h = 22;
+  }
+};
+
+struct DiskSizeInput : public Fl_Int_Input, public layoutable_c {
+  DiskSelector * owner;
+  unsigned int index;
+  DiskSizeInput(int gx, int gy, DiskSelector * o, unsigned int i)
+    : Fl_Int_Input(0, 0, 0, 0), layoutable_c(gx, gy, 1, 1), owner(o), index(i) {
+    stretchVCenter();
+    setMinimumSize(48, 22);
+  }
+  void getMinSize(int *w, int *h) const {
+    *w = 48;
+    *h = 22;
+  }
+};
+
+static void cb_disk_name(Fl_Widget * w, void *) {
+  DiskNameButton * b = (DiskNameButton *)w;
+  b->owner->onName(b->index);
+}
+
+static void cb_disk_delta(Fl_Widget * w, void *) {
+  DiskDeltaButton * b = (DiskDeltaButton *)w;
+  b->owner->onDelta(b->index, b->dir);
+}
+
+static void cb_disk_size(Fl_Widget * w, void *) {
+  DiskSizeInput * b = (DiskSizeInput *)w;
+  b->owner->onSize(b->index);
+}
+
+DiskSelector::DiskSelector(int x, int y, int w, int h, puzzle_c * p)
+  : Fl_Group(0, 0, 220, 168), layoutable_c(x, y, w, h),
+    puzzle(p), scroll(0), body(0), selection(0), reason(0), guard(false) {
+  box(FL_NO_BOX);
+  scroll = new Fl_Scroll(0, 0, 220, 168);
+  scroll->type(Fl_Scroll::VERTICAL);
+  scroll->box(FL_DOWN_BOX);
+  body = new layouter_c(0, 0, 1, 1);
+  body->box(FL_NO_BOX);
+  body->end();
+  scroll->end();
+  end();
+  resizable(nullptr);
+  setMinimumSize(220, 168);
+  rebuild();
+}
+
+void DiskSelector::setPuzzle(puzzle_c * pz) {
+  puzzle = pz;
+  selection = 0;
+  rebuild();
+}
+
+void DiskSelector::setSelection(unsigned int num) {
+  selection = num;
+  highlight();
+}
+
+void DiskSelector::sync(void) {
+  unsigned int n = puzzle ? puzzle->getNumberOfShapes() : 0;
+  if (n != rows.size()) {
+    rebuild();
+    return;
+  }
+  guard = true;
+  for (unsigned int i = 0; i < n; i++) {
+    const voxel_c * v = puzzle->getShape(i);
+    char txt[200];
+    int start = 0;
+    start += snprintf(txt + start, sizeof(txt) - start, "S%u", i + 1);
+    if (v->getName().length())
+      start += snprintf(txt + start, sizeof(txt) - start, " - %s", v->getName().c_str());
+    const char * curLab = rows[i].name->label();
+    if (!curLab || strcmp(curLab, txt) != 0)
+      rows[i].name->copy_label(txt);
+    if (Fl::focus() != rows[i].size) {
+      unsigned int sz = v->getDiskSize();
+      if (sz < 1) sz = 1;
+      char num[16];
+      snprintf(num, sizeof(num), "%u", sz);
+      const char * curSz = rows[i].size->value();
+      if (!curSz || strcmp(curSz, num) != 0)
+        rows[i].size->value(num);
+    }
+  }
+  guard = false;
+  highlight();
+}
+
+void DiskSelector::highlight(void) {
+  const Fl_Color hi = fl_rgb_color(186, 214, 242);
+  for (unsigned int i = 0; i < rows.size(); i++) {
+    bool on = i == selection;
+    rows[i].name->color(fltkPieceColor(i));
+    rows[i].name->labelcolor(contrastPieceColor(i));
+    rows[i].name->box(FL_UP_BOX);
+    if (rows[i].row) {
+      rows[i].row->box(on ? FL_FLAT_BOX : FL_NO_BOX);
+      rows[i].row->color(hi);
+      rows[i].row->redraw();
+    }
+    rows[i].name->redraw();
+  }
+}
+
+void DiskSelector::resize(int X, int Y, int W, int H) {
+  Fl_Widget::resize(X, Y, W, H);
+  if (!scroll || !body)
+    return;
+  scroll->Fl_Widget::resize(X, Y, W, H);
+  int bw = 0, bh = 0;
+  body->invalidateMinSize();
+  body->getMinSize(&bw, &bh);
+  if (bh < 1)
+    bh = 1;
+  int sb = scroll->scrollbar_size();
+  if (sb < 12)
+    sb = 12;
+  int frame = 4;
+  int maxScroll = bh + frame - H;
+  if (maxScroll < 0)
+    maxScroll = 0;
+  int saved = scroll->yposition();
+  if (saved > maxScroll)
+    saved = maxScroll;
+  if (saved < 0)
+    saved = 0;
+  bool need = maxScroll > 0;
+  int inner = W - frame - (need ? sb : 0);
+  if (inner < 40)
+    inner = 40;
+  /* Place the list at the top, then let the scroll offset move it.
+   * scroll_to only shifts children when the stored offset changes, so
+   * clear that offset before positioning. */
+  scroll->scroll_to(0, 0);
+  body->resize(X + 2, Y + 2, inner, bh);
+  scroll->scroll_to(0, saved);
+  scroll->redraw();
+}
+
+void DiskSelector::rebuild(void) {
+  rows.clear();
+  if (!body)
+    return;
+  Fl_Group *prev = Fl_Group::current();
+  body->begin();
+  while (body->children() > 0) {
+    Fl_Widget * c = body->child(body->children() - 1);
+    body->remove(c);
+    delete c;
+  }
+  unsigned int n = puzzle ? puzzle->getNumberOfShapes() : 0;
+  for (unsigned int i = 0; i < n; i++) {
+    layouter_c * row = new layouter_c(0, (int)i);
+    row->weight(1, 0);
+    row->box(FL_NO_BOX);
+    DiskNameButton * name = new DiskNameButton(0, 0, this, i);
+    name->box(FL_UP_BOX);
+    name->weight(1, 0);
+    name->callback(cb_disk_name);
+    LFl_Box * lab = new LFl_Box("size:", 1, 0);
+    lab->stretchVCenter();
+    lab->align(FL_ALIGN_INSIDE | FL_ALIGN_LEFT);
+    DiskSizeInput * inp = new DiskSizeInput(2, 0, this, i);
+    inp->when(FL_WHEN_RELEASE | FL_WHEN_ENTER_KEY);
+    inp->callback(cb_disk_size);
+    (new LFl_Box(3, 0))->setMinimumSize(4, 0);
+    DiskDeltaButton * plus = new DiskDeltaButton(4, 0, "+", this, i, +1);
+    plus->callback(cb_disk_delta);
+    (new LFl_Box(5, 0))->setMinimumSize(4, 0);
+    DiskDeltaButton * minus = new DiskDeltaButton(6, 0, "-", this, i, -1);
+    minus->callback(cb_disk_delta);
+    row->end();
+    Row rec;
+    rec.row = row;
+    rec.name = name;
+    rec.size = inp;
+    rec.index = i;
+    rows.push_back(rec);
+  }
+  body->end();
+  Fl_Group::current(prev);
+  if (selection >= n && n > 0)
+    selection = n - 1;
+  sync();
+  if (w() > 1 && h() > 1)
+    resize(x(), y(), w(), h());
+}
+
+void DiskSelector::applySize(unsigned int index, unsigned int size) {
+  if (!puzzle || index >= puzzle->getNumberOfShapes())
+    return;
+  stacking::generateDisk(puzzle->getShape(index), size);
+  selection = index;
+  reason = RS_SIZE;
+  guard = true;
+  char num[16];
+  snprintf(num, sizeof(num), "%u", size);
+  if (index < rows.size())
+    rows[index].size->value(num);
+  guard = false;
+  highlight();
+  do_callback();
+}
+
+void DiskSelector::onName(unsigned int index) {
+  selection = index;
+  reason = RS_SELECT;
+  highlight();
+  do_callback();
+}
+
+void DiskSelector::onDelta(unsigned int index, int dir) {
+  if (!puzzle || index >= puzzle->getNumberOfShapes())
+    return;
+  unsigned int sz = puzzle->getShape(index)->getDiskSize();
+  if (sz < 1)
+    sz = 1;
+  if (dir > 0) {
+    if (sz >= 100)
+      return;
+    sz++;
+  } else {
+    if (sz <= 1)
+      return;
+    sz--;
+  }
+  applySize(index, sz);
+}
+
+void DiskSelector::onSize(unsigned int index) {
+  if (guard || index >= rows.size())
+    return;
+  const char * text = rows[index].size->value();
+  char * end = 0;
+  long v = text ? strtol(text, &end, 10) : 0;
+  bool bad = !text || !*text || !end || *end || v < 1 || v > 100;
+  if (bad) {
+    fl_message("An invalid size was entered, please pick a value between 1-100.");
+    applySize(index, 1);
+    return;
+  }
+  applySize(index, (unsigned int)v);
 }

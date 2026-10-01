@@ -22,6 +22,7 @@
 #define __BLOCKLIST_H__
 
 #include "../lib/bt_assert.h"
+#include "Layouter.h"
 
 #include <vector>
 
@@ -281,6 +282,30 @@ public:
   virtual void getColor(unsigned int block, unsigned char *r,  unsigned char *g, unsigned char *b);
 };
 
+/** One board (rod set), labeled R1, R2, ... */
+class RodSelector : public SelectableTextList {
+
+private:
+
+  const puzzle_c * puzzle;
+
+public:
+
+  RodSelector(int x, int y, int w, int h, const puzzle_c * p) :
+    SelectableTextList(x, y, w, h),
+    puzzle(p)
+  { bt_assert(p); }
+
+  /* Clicking the rod that is already selected still notifies, so the
+   * 3D view can switch to that board. */
+  virtual void push(unsigned int block);
+
+  void setPuzzle(const puzzle_c *pz);
+  virtual unsigned int blockNumber(void);
+  virtual void getText(unsigned int block, char * text);
+  virtual void getColor(unsigned int block, unsigned char *r,  unsigned char *g, unsigned char *b);
+};
+
 /**
  * a blocklist that show the pieces of a problem and additional information
  * for each piece
@@ -429,6 +454,86 @@ public:
   }
 
   bool GetSortByResult(void) { return sortByResult; }
+};
+
+/**
+ * Ordered discs on one rod. The first entry is the top of the stack.
+ */
+class RodStackList : public SelectableTextList {
+
+private:
+
+  std::vector<std::string> labels;
+  std::vector<unsigned int> shapes;
+
+public:
+
+  RodStackList(int x, int y, int w, int h) : SelectableTextList(x, y, w, h) {}
+
+  void setStack(const std::vector<std::string> & text, const std::vector<unsigned int> & shapeIds) {
+    labels = text;
+    shapes = shapeIds;
+    redraw();
+  }
+
+  virtual unsigned int blockNumber(void) { return (unsigned int)labels.size(); }
+  virtual void blockSize(unsigned int block, unsigned int *w, unsigned int *h);
+  virtual void getText(unsigned int block, char * text);
+  virtual void getColor(unsigned int block, unsigned char *r, unsigned char *g, unsigned char *b);
+};
+
+class Fl_Button;
+class Fl_Int_Input;
+class Fl_Scroll;
+
+/**
+ * One row per disc inside a fixed box. Extra discs scroll inside the box
+ * so the rod controls below stay where they are.
+ */
+class DiskSelector : public Fl_Group, public layoutable_c {
+
+public:
+
+  enum { RS_SELECT = 1, RS_SIZE = 2 };
+
+  DiskSelector(int x, int y, int w, int h, puzzle_c * p);
+
+  void setPuzzle(puzzle_c * pz);
+  void sync(void);
+  unsigned int getSelection(void) const { return selection; }
+  void setSelection(unsigned int num);
+  int getReason(void) const { return reason; }
+
+  void onName(unsigned int index);
+  void onDelta(unsigned int index, int dir);
+  void onSize(unsigned int index);
+
+  virtual void resize(int x, int y, int w, int h);
+  virtual void getMinSize(int *width, int *height) const {
+    *width = 220;
+    *height = 168;
+  }
+
+private:
+
+  puzzle_c * puzzle;
+  Fl_Scroll * scroll;
+  layouter_c * body;
+  unsigned int selection;
+  int reason;
+  bool guard;
+
+  struct Row {
+    layouter_c * row;
+    Fl_Button * name;
+    Fl_Int_Input * size;
+    unsigned int index;
+  };
+  std::vector<Row> rows;
+
+  void rebuild(void);
+  void highlight(void);
+  void applySize(unsigned int index, unsigned int size);
 };
 
 #endif

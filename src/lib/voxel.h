@@ -144,6 +144,12 @@ protected:
   int weight;
 
   /**
+   * Radius of a stacking disc, in voxels. 0 means this shape is not a disc.
+   * The shape is always one voxel thick. The same number is the same disc.
+   */
+  unsigned int diskSize;
+
+  /**
    * Per-voxel goal piece id (shape index + 1) used by Sliding start/goal
    * trays. Empty when the shape has no goal marks. Start marks use the
    * normal colour channel.
@@ -730,6 +736,10 @@ public:
 
   int getWeight(void) const { return weight; } ///< get the weight of this space
   void setWeight(int w) { weight = w; }        ///< set the weight of this space
+
+  /** Stacking disc radius. 0 when this shape is not a generated disc. */
+  unsigned int getDiskSize(void) const { return diskSize; }
+  void setDiskSize(unsigned int s) { diskSize = s; }
 
   /**
    * Return if a given coordinate is valid to use.

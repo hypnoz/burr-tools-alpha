@@ -27,6 +27,7 @@
 
 #include <FL/Fl_Pixmap.H>
 #include <FL/Fl_Multiline_Output.H>
+#include <FL/fl_draw.H>
 
 #include <math.h>
 
@@ -54,9 +55,15 @@ class LineSpacer : Fl_Widget {
 
       if (vertical) {
 
+        /* 3px ticks read better than hairlines. Thin them when the stops
+         * are close, so neighbouring ticks never run together. */
+        int span = h()-2*gap-1;
+        int thick = span / (lines-1) / 2;
+        if (thick > 3) thick = 3;
+        if (thick < 1) thick = 1;
         for (int i = 0; i < lines; i++) {
-          int ypos = y()+ gap + (h()-2*gap-1)*i/(lines-1);
-          fl_line(x(), ypos, x()+w()-1, ypos);
+          int ypos = y()+ gap + span*i/(lines-1);
+          fl_rectf(x(), ypos - thick/2, w(), thick);
         }
 
       } else {
@@ -77,12 +84,47 @@ class LineSpacer : Fl_Widget {
 
 };
 
+/* "Front" / "Z Layer" / "Back", turned 90° counter-clockwise so the words
+ * read upward along the Z slider. */
+class ZAxisLabel_c : public Fl_Widget {
+public:
+  ZAxisLabel_c(int x, int y, int w, int h) : Fl_Widget(x, y, w, h) {
+    color(FL_BACKGROUND_COLOR);
+  }
+  void draw(void) {
+    fl_color(color());
+    fl_rectf(x(), y(), w(), h());
+    fl_font(FL_HELVETICA, FL_NORMAL_SIZE);
+    fl_color(FL_FOREGROUND_COLOR);
+    fl_push_clip(x(), y(), w(), h());
+
+    int frontW = (int)fl_width("Front");
+    int backW = (int)fl_width("Back");
+    int midW = (int)fl_width("Z Layer");
+    int pad = 3;
+    int top = y() + pad;
+    int bottom = y() + h() - pad;
+    /* Glyphs sit to the left of the baseline after the turn. */
+    int bx = x() + w() - fl_descent() - 1;
+
+    fl_draw(90, "Front", bx, top + frontW);
+    fl_draw(90, "Back", bx, bottom);
+
+    int gapTop = top + frontW;
+    int gapBot = bottom - backW;
+    int mid = (gapTop + gapBot) / 2;
+    fl_draw(90, "Z Layer", bx, mid + midW / 2);
+
+    fl_pop_clip();
+  }
+};
+
 static void cb_VoxelEditGroupZselect_stub(Fl_Widget* o, void* v) { static_cast<VoxelEditGroup_c*>(v)->cb_Zselect(static_cast<Fl_Slider*>(o)); }
 static void cb_VoxelEditGroupSqedit_stub(Fl_Widget* /*o*/, void* v) { static_cast<VoxelEditGroup_c*>(v)->cb_Sqedit(); }
 
 VoxelEditGroup_c::VoxelEditGroup_c(int x, int y, int w, int h, puzzle_c * puzzle, const guiGridType_c * ggt) : Fl_Group(0, 0, 300, 300), layoutable_c(x, y, w, h) {
 
-  setShrinkMinSize(40, 80);
+  setShrinkMinSize(65, 80);
   shrinkPrio(128, 0);
 
   x = 0;
@@ -90,33 +132,59 @@ VoxelEditGroup_c::VoxelEditGroup_c(int x, int y, int w, int h, puzzle_c * puzzle
   w = 300;
   h = 300;
 
-  zselect = new Fl_Slider(x, y, 15, h);
+  const int labelW = 22;
+  const int axisW = 5;
+  new ZAxisLabel_c(x, y, labelW, h);
+
+  int sx = x + labelW;
+  zselect = new Fl_Slider(sx, y, 15, h);
   zselect->tooltip(" Select Z Plane ");
   zselect->color((Fl_Color)237);
+  zselect->selection_color(FL_WHITE);
   zselect->step(1);
   zselect->callback(cb_VoxelEditGroupZselect_stub, this);
   zselect->clear_visible_focus();
+  squareZKnob();
 
-  space = new LineSpacer(x+15, y, 5, h, 4);
+  space = new LineSpacer(sx + 15, y, 5, h, 4);
 
+  /* A few pixels of air between the ticks and the green Z axis. */
+  const int tickGap = 3;
+  int gx = sx + 20 + tickGap;
   {
-    Fl_Box* o = new Fl_Box(x+25, y, 5, h-5);
+    Fl_Box* o = new Fl_Box(gx, y, axisW, h - 5);
     o->box(FL_FLAT_BOX);
     o->color(fl_rgb_color(0, 192, 0));
   }
   {
-    Fl_Box* o = new Fl_Box(x+25, y+h-5, w-25, 5);
+    Fl_Box* o = new Fl_Box(gx, y + h - 5, w - gx, 5);
     o->box(FL_FLAT_BOX);
     o->color((Fl_Color)1);
   }
 
-  sqedit = ggt->getGridEditor(x+35, y, w-35, h-10, puzzle);
+  sqedit = ggt->getGridEditor(gx + 10, y, w - (gx + 10), h - 10, puzzle);
   sqedit->tooltip(" Fill and empty voxels ");
   sqedit->box(FL_NO_BOX);
   sqedit->callback(cb_VoxelEditGroupSqedit_stub, this);
   sqedit->clear_visible_focus();
 
   resizable(sqedit);
+}
+
+void VoxelEditGroup_c::squareZKnob(void) {
+  if (!zselect || zselect->h() < 1)
+    return;
+  /* Knob length is a fraction of the track. Match the slider's width
+   * so the button stays square as the editor is resized. */
+  double frac = (double)zselect->w() / (double)zselect->h();
+  if (frac > 1)
+    frac = 1;
+  zselect->slider_size(frac);
+}
+
+void VoxelEditGroup_c::resize(int X, int Y, int W, int H) {
+  Fl_Group::resize(X, Y, W, H);
+  squareZKnob();
 }
 
 void VoxelEditGroup_c::newGridType(const guiGridType_c * ggt, puzzle_c * puzzle) {

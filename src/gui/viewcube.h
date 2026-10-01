@@ -44,6 +44,8 @@ class viewCube_c {
 
     Action handle(int event, rotater_c * rot, int winW, int winH);
 
+    void snapToPart(Part p, rotater_c * rot) const;
+
     bool contains(int x, int y, int winW, int winH) const;
     bool isTracking(void) const { return tracking; }
 
@@ -57,7 +59,6 @@ class viewCube_c {
     void houseRect(const Overlay & o, int *x, int *y, int *s) const;
 
     Part hitTest(int mx, int my, rotater_c * rot, int winW, int winH) const;
-    void snapToPart(Part p, rotater_c * rot) const;
     void snapNearest(rotater_c * rot) const;
     void lookMatrix(float nx, float ny, float nz, float m[9]) const;
     void partLook(Part p, float n[3]) const;

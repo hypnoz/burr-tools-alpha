@@ -26,6 +26,7 @@
  */
 #include "assembler.h"
 #include "bt_assert.h"
+#include "stacking.h"
 
 #include <stdint.h>
 #include <atomic>
@@ -92,6 +93,12 @@ private:
    * Sliding goal map shape index, or 0xFFFFFFFF when unused.
    */
   unsigned int goalShape;
+
+  /** Stacking board, or 0xFFFFFFFF when this problem has none. */
+  unsigned int rodSetId;
+
+  stacking::stackMap_c startMap;
+  stacking::stackMap_c goalMap;
 
   /**
    * (some of) the found solutions. Not all or even none might be
@@ -258,6 +265,16 @@ public:
   unsigned int getGoalId(void) const;
   const voxel_c * getGoalShape(void) const;
   voxel_c * getGoalShape(void);
+
+  /** Stacking board selected with Set Result. */
+  void setRodSetId(unsigned int id) { rodSetId = id; }
+  void clearRodSet(void) { rodSetId = 0xFFFFFFFF; }
+  bool rodSetValid(void) const;
+  unsigned int getRodSetId(void) const { return rodSetId; }
+  const stacking::stackMap_c & startStacks(void) const { return startMap; }
+  const stacking::stackMap_c & goalStacks(void) const { return goalMap; }
+  stacking::stackMap_c & editStart(void) { return startMap; }
+  stacking::stackMap_c & editGoal(void) { return goalMap; }
 
   //@}
 
@@ -481,6 +498,9 @@ public:
    * After that call no more modifications are possible, no more addSOlution, incNumAssemblies and so on.
    * */
   void finishedSolving(void) { solveState = SS_SOLVED; }
+
+  /** Stacking search does not build an assembler. Counts still require SS_SOLVING. */
+  void markSolving(void) { solveState = SS_SOLVING; }
 
   /** transfer the problem into the unknown state */
   void makeUnknown(void);

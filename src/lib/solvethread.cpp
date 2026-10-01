@@ -30,6 +30,7 @@
 #include "solution.h"
 #include "voxel.h"
 #include "sliding.h"
+#include "stacking.h"
 
 #include <chrono>
 #include <memory>
@@ -103,9 +104,56 @@ unsigned long long elapsedMs(std::chrono::steady_clock::time_point t0) {
 
 } // namespace
 
+void solveThread_c::runStacking(void) {
+  stackingNote.clear();
+  puzzle.removeAllSolutions();
+  puzzle.markSolving();
+
+  const bool find = (parameters & PAR_DISASSM) != 0;
+  const bool countOnly = (parameters & PAR_JUST_COUNT) != 0;
+  if (!find && !countOnly) {
+    stackingNote = "Turn on Find Solutions";
+    action.store(ACT_FINISHED, std::memory_order_relaxed);
+    puzzle.finishedSolving();
+    return;
+  }
+
+  std::string err = stacking::setupError(puzzle);
+  if (!err.empty()) {
+    stackingNote = err;
+    action.store(ACT_FINISHED, std::memory_order_relaxed);
+    puzzle.finishedSolving();
+    return;
+  }
+
+  action.store(ACT_ASSEMBLING, std::memory_order_relaxed);
+  std::unique_ptr<separation_c> path = stacking::findStackPath(puzzle);
+  if (!path) {
+    stackingNote = "No path within the state budget";
+    puzzle.incNumAssemblies();
+    action.store(ACT_FINISHED, std::memory_order_relaxed);
+    puzzle.finishedSolving();
+    return;
+  }
+
+  puzzle.incNumAssemblies();
+  puzzle.incNumSolutions();
+  if (!countOnly) {
+    std::unique_ptr<assembly_c> start = stacking::startAssembly(puzzle);
+    puzzle.addSolution(start.release(), path.release(), 0, 0);
+  }
+  action.store(ACT_FINISHED, std::memory_order_relaxed);
+  puzzle.finishedSolving();
+}
+
 void solveThread_c::run(void){
 
   try {
+
+    if (stacking::isStacking(puzzle)) {
+      runStacking();
+      return;
+    }
 
     /* local pointer for this thread's own use; the shared member `assm` is
      * only written (published) here and read by the GUI thread
@@ -777,8 +825,8 @@ bool solveThread_c::start(bool stop_after_prep) {
     a = (a+1) / 2;
   }
 
-  /* Sliding records its own slide path and does not use the brick disassembler. */
-  if ((parameters & PAR_DISASSM) && !sliding::isSliding(puzzle))
+  /* Sliding and stacking record their own paths and do not use the brick disassembler. */
+  if ((parameters & PAR_DISASSM) && !sliding::isSliding(puzzle) && !stacking::isStacking(puzzle))
     startDisasmWorker();
 
   return thread_c::start();

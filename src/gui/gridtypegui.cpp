@@ -29,13 +29,43 @@
 #include <FL/Fl_Browser_.H>
 #include <FL/Fl_Image.H>
 
-gridTypeGui_0_c::gridTypeGui_0_c(int x, int y, int w, int h, gridType_c * /*gt*/) {
-
-  new LFl_Box("In the distant future there might be parameters\n"
-      "for stretching the cube and slanting its sides\n"
-      "but not right now!!", x, y, w, h);
-
+gridTypeGui_0_c::gridTypeGui_0_c(int /*x*/, int /*y*/, int /*w*/, int /*h*/, gridType_c * /*gt*/) {
   end();
+}
+
+static const char * gridTypeDescription(gridType_c::gridType type) {
+  switch (type) {
+    case gridType_c::GT_BRICKS:
+      return "Pieces are cubes.\n"
+             "This is the usual interlocking burr: find how the\n"
+             "pieces fill the result and how they come apart.";
+    case gridType_c::GT_TRIANGULAR_PRISM:
+      return "Like Brick, with a different cell shape.\n"
+             "Each cell is a triangular prism. Layers are packed\n"
+             "triangles, half pointing up and half pointing down.";
+    case gridType_c::GT_SPHERES:
+      return "Like Brick, with a different cell shape.\n"
+             "Each cell is a sphere. The spheres sit in a tight\n"
+             "three-dimensional packing.";
+    case gridType_c::GT_RHOMBIC:
+      return "Like Brick, with a different cell shape.\n"
+             "Each cell is a small tetrahedron cut from a cube.\n"
+             "Together they build rhombic dodecahedra.";
+    case gridType_c::GT_TETRA_OCTA:
+      return "Like Brick, with a different cell shape.\n"
+             "The cells are tetrahedra and octahedra that fill\n"
+             "space together. Pieces use both shapes.";
+    case gridType_c::GT_SLIDING:
+      return "Pieces are flat shapes on a shared floor.\n"
+             "Mark a start cell and a goal cell for each piece.\n"
+             "The solver slides them from start to goal.";
+    case gridType_c::GT_STACKING:
+      return "Pieces are flat discs on vertical rods.\n"
+             "Move the top disc from one rod to another, as in\n"
+             "Tower of Hanoi, until the stacks match the goal.";
+    default:
+      return "";
+  }
 }
 
 gridTypeGui_1_c::gridTypeGui_1_c(int x, int y, int w, int h, gridType_c * /*gt*/) {
@@ -87,11 +117,28 @@ void gridTypeSelectorWindow_c::select_cb(void) {
       current = i;
       gti[current]->gui->show();
 
+      if (typeDescription)
+        typeDescription->copy_label(gridTypeDescription(gti[current]->gt->getType()));
+
+      /* Brick-like types have no parameters, so the frame under the
+       * description would be an empty box. */
+      if (parameterFrame) {
+        if (gti[current]->gui->children() > 0)
+          parameterFrame->show();
+        else
+          parameterFrame->hide();
+      }
+
+      if (layouter_c * root = dynamic_cast<layouter_c*>(resizable())) {
+        root->invalidateMinSize();
+        root->resize(root->x(), root->y(), root->w(), root->h());
+      }
+      redraw();
     }
   }
 }
 
-gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(false), okPressed(false) {
+gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(false), typeDescription(0), parameterFrame(0), okPressed(false) {
 
   /* for each grid type available we need to create an instance
    * here and put it into a gridtypeinfo class and into the
@@ -103,8 +150,10 @@ gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(fal
   std::vector<int> order;
   order.push_back(gridType_c::GT_BRICKS);
   order.push_back(gridType_c::GT_SLIDING);
+  order.push_back(gridType_c::GT_STACKING);
   for (int i = 0; i < gridType_c::GT_NUM_GRIDS; i++)
-    if (i != gridType_c::GT_BRICKS && i != gridType_c::GT_SLIDING)
+    if (i != gridType_c::GT_BRICKS && i != gridType_c::GT_SLIDING &&
+        i != gridType_c::GT_STACKING)
       order.push_back(i);
 
   for (int i : order)
@@ -130,17 +179,20 @@ gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(fal
     (new LFl_Box(0, gti.size()))->weight(0, 100);
 
     fr->end();
+
+    int listW = 0, listH = 0;
+    fr->getMinSize(&listW, &listH);
+    fr->setMinimumSize(listW + 10, 0);
   }
 
-  (new LFl_Box("Attention: Concrete values within the\n"
-      "parameters are never evaluated, the solver only\n"
-      "cares for equal and not equal. So if you want something\n"
-      "that is twice as high as wide, assemble is out of\n"
-      "several unit pieces.", 1, 0))->pitch(7);
+  typeDescription = new LFl_Box(gridTypeDescription(gridType_c::GT_BRICKS), 1, 0);
+  typeDescription->pitch(7);
+  typeDescription->align(FL_ALIGN_INSIDE | FL_ALIGN_TOP_LEFT | FL_ALIGN_WRAP);
 
   /* now all the parameter boxes, only the first one is visible, the others are hidden for now */
   {
     fr = new LFl_Frame(1, 1);
+    parameterFrame = fr;
 
     for (unsigned int i = 0; i < gti.size(); i++) {
       gti[i]->gui = gti[i]->ggt->getConfigurationDialog(0, 0, 1, 1);
@@ -150,6 +202,8 @@ gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(fal
     }
 
     fr->end();
+    /* Bricks is selected first and has no parameter panel. */
+    parameterFrame->hide();
   }
 
   /* finally the 3D view that contains exactly one voxel */
@@ -160,21 +214,25 @@ gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(fal
     layouter_c * l = new layouter_c(0, 2, 3, 1);
 
     LFl_Button * b = new LFl_Button("OK", 0, 0);
-    b->labelsize(20);
-    b->setPadding(36, 20);
-    b->setMinimumSize(180, 56);
     b->pitch(7);
-    b->stretchLeft();
+    b->stretchVCenter();
     b->callback(cb_gridTypeSelectorOk_stub, this);
 
     LFl_Button * c = new LFl_Button("Cancel", 1, 0);
-    c->labelsize(20);
-    c->setPadding(36, 20);
-    c->setMinimumSize(180, 56);
     c->pitch(7);
-    c->stretchLeft();
+    c->stretchVCenter();
     c->shortcut(FL_Escape);
     c->callback(cb_WindowButton_stub, this);
+
+    int okW = 0, okH = 0, cancelW = 0, cancelH = 0;
+    b->getMinSize(&okW, &okH);
+    c->getMinSize(&cancelW, &cancelH);
+    int bw = (okW > cancelW ? okW : cancelW) + 36;
+    int bh = okH > cancelH ? okH : cancelH;
+    b->setMinimumSize((unsigned)bw, (unsigned)bh);
+    c->setMinimumSize((unsigned)bw, (unsigned)bh);
+    b->weight(0, 0);
+    c->weight(0, 0);
 
     (new LFl_Box(2, 0))->weight(1, 0);
 

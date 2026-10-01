@@ -692,10 +692,11 @@ class LFl_Scroll : public Fl_Scroll, public layoutable_c {
   private:
 
     layouter_c * lay;
+    bool relayoutRequested;
 
   public:
 
-    LFl_Scroll(int x, int y, int w, int h) : Fl_Scroll(0, 0, 100, 100), layoutable_c(x, y, w, h) {
+    LFl_Scroll(int x, int y, int w, int h) : Fl_Scroll(0, 0, 100, 100), layoutable_c(x, y, w, h), relayoutRequested(false) {
 
       lay = new layouter_c();
       lay->resize(0, 0, 200, 200);
@@ -704,6 +705,11 @@ class LFl_Scroll : public Fl_Scroll, public layoutable_c {
 
     void getMinSize(int *width, int *height) const;
     void resize(int x, int y, int w, int h);
+    /* Lay out again even when the viewport size has not changed.
+     * Showing or hiding children does not change that size, and a
+     * same-size resize would otherwise leave them where they were
+     * constructed. */
+    void relayout(void);
     int handle(int event);
     void draw();
 

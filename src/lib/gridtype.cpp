@@ -61,6 +61,7 @@ gridType_c::gridType_c(xmlParser_c & pars)
     case GT_RHOMBIC:
     case GT_TETRA_OCTA:
     case GT_SLIDING:
+    case GT_STACKING:
       break;
 
     default:
@@ -99,6 +100,7 @@ gridType_c::gridType_c(gridType gt) {
     case GT_RHOMBIC:
     case GT_TETRA_OCTA:
     case GT_SLIDING:
+    case GT_STACKING:
       break;
 
     default:
@@ -122,7 +124,8 @@ voxel_c * gridType_c::getVoxel(unsigned int x, unsigned int y, unsigned int z, v
 {
   switch (type) {
     case GT_BRICKS:
-    case GT_SLIDING:          return new voxel_0_c(x, y, z, this, init);
+    case GT_SLIDING:
+    case GT_STACKING:         return new voxel_0_c(x, y, z, this, init);
     case GT_TRIANGULAR_PRISM: return new voxel_1_c(x, y, z, this, init);
     case GT_SPHERES:          return new voxel_2_c(x, y, z, this, init);
     case GT_RHOMBIC:          return new voxel_3_c(x, y, z, this, init);
@@ -135,7 +138,8 @@ voxel_c * gridType_c::getVoxel(xmlParser_c & pars) const
 {
   switch (type) {
     case GT_BRICKS:
-    case GT_SLIDING:          return new voxel_0_c(pars, this);
+    case GT_SLIDING:
+    case GT_STACKING:         return new voxel_0_c(pars, this);
     case GT_TRIANGULAR_PRISM: return new voxel_1_c(pars, this);
     case GT_SPHERES:          return new voxel_2_c(pars, this);
     case GT_RHOMBIC:          return new voxel_3_c(pars, this);
@@ -148,7 +152,8 @@ voxel_c * gridType_c::getVoxel(const voxel_c & orig) const
 {
   switch (type) {
     case GT_BRICKS:
-    case GT_SLIDING:          return new voxel_0_c(orig);
+    case GT_SLIDING:
+    case GT_STACKING:         return new voxel_0_c(orig);
     case GT_TRIANGULAR_PRISM: return new voxel_1_c(orig);
     case GT_SPHERES:          return new voxel_2_c(orig);
     case GT_RHOMBIC:          return new voxel_3_c(orig);
@@ -161,7 +166,8 @@ voxel_c * gridType_c::getVoxel(const voxel_c * orig) const
 {
   switch (type) {
     case GT_BRICKS:
-    case GT_SLIDING:          return new voxel_0_c(orig);
+    case GT_SLIDING:
+    case GT_STACKING:         return new voxel_0_c(orig);
     case GT_TRIANGULAR_PRISM: return new voxel_1_c(orig);
     case GT_SPHERES:          return new voxel_2_c(orig);
     case GT_RHOMBIC:          return new voxel_3_c(orig);
@@ -176,6 +182,7 @@ const symmetries_c * gridType_c::getSymmetries(void) const
     switch(type) {
       case GT_BRICKS:
       case GT_SLIDING:
+      case GT_STACKING:
       case GT_RHOMBIC:
       case GT_TETRA_OCTA:
         sym = std::make_unique<symmetries_0_c>();
@@ -224,6 +231,10 @@ unsigned int gridType_c::getCapabilities(void) const
     case GT_SLIDING:          return CAP_ASSEMBLE
                                    | CAP_STLEXPORT
                                    ;
+
+    /* The stacking search is its own solver. Discs can still be exported. */
+    case GT_STACKING:         return CAP_STLEXPORT
+                                   ;
     default: return 0;
   }
 }
@@ -262,7 +273,8 @@ stlExporter_c * gridType_c::getStlExporter(void) const
 {
   switch (type) {
     case GT_BRICKS:
-    case GT_SLIDING:          return new stlExporter_0_c();
+    case GT_SLIDING:
+    case GT_STACKING:         return new stlExporter_0_c();
     case GT_TRIANGULAR_PRISM: return new stlExporter_0_c();
     case GT_SPHERES:          return new stlExporter_2_c();
     case GT_RHOMBIC:          return new stlExporter_0_c();
