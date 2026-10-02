@@ -136,6 +136,9 @@ boardLayout_c layoutBoard(const problem_c & prob, bool goal);
 std::unique_ptr<separation_c> findStackPath(const problem_c & prob,
                                             unsigned int maxStates = 250000);
 
+/** Placements per transfer in a findStackPath result: lift, cross, drop. */
+const unsigned int STEPS_PER_MOVE = 3;
+
 /** Transfers, not the three visual placements of each transfer. */
 unsigned int logicalMoves(const separation_c & path);
 

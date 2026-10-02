@@ -205,6 +205,14 @@ class voxelFrame_c : public Fl_Gl_Window {
     unsigned int addPeg(const gridType_c * gt, int x, unsigned int height);
     void addRodBase(const gridType_c * gt, int x0, int x1);
     void showStackingAssembly(const problem_c * puz, unsigned int solNum);
+    /** Sliding solution walls: x0,y0,x1,y1 per segment, in tray coordinates. */
+    std::vector<float> wallLines;
+    /** Corner posts of the walls: x,y per post. */
+    std::vector<float> wallPosts;
+    float wallTop = 0;
+    /** Outline the floor of a sliding tray, so the animation shows the walls. */
+    void buildSlidingWalls(const voxel_c & tray);
+    void drawSlidingWalls(void);
     /** Draw discs and pegs turned 90° about X so a disc lies flat and pegs stand up. */
     void tiltPlates(void);
     bool stackingPlate = false;

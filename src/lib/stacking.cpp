@@ -874,7 +874,7 @@ std::unique_ptr<separation_c> findStackPath(const problem_c & prob, unsigned int
 
 unsigned int logicalMoves(const separation_c & path) {
   unsigned int steps = path.getMoves();
-  return steps / 3;
+  return steps / STEPS_PER_MOVE;
 }
 
 std::unique_ptr<assembly_c> startAssembly(const problem_c & prob) {

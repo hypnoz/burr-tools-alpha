@@ -5,11 +5,14 @@
 #include "lib/gridtype.h"
 #include "lib/problem.h"
 #include "lib/puzzle.h"
+#include "lib/solution.h"
+#include "lib/solvethread.h"
 #include "lib/stacking.h"
 #include "lib/voxel.h"
 
 #include "tools/xml.h"
 
+#include <memory>
 #include <sstream>
 
 using namespace stacking;
@@ -244,4 +247,24 @@ TEST_CASE("stacking: rod sets and disc size survive a save and load", "[stacking
   REQUIRE(loaded.getShape(0)->getDiskSize() == 4);
   REQUIRE(loaded.getShape(0)->getName() == "large");
   REQUIRE(loaded.getShape(0)->getZ() == 1);
+}
+
+TEST_CASE("stacking: the Hanoi fixture solves in seven transfers", "[stacking][solver]") {
+  /* test/test_stacking_hanoi.xmpuzzle: three discs, largest at the bottom,
+   * on the first of three rods; the goal is the same tower on the last rod. */
+  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_stacking_hanoi.xmpuzzle");
+  REQUIRE(puzzle != nullptr);
+  REQUIRE(isStacking(*puzzle));
+  problem_c * pr = puzzle->getProblem(0);
+  REQUIRE(setupError(*pr).empty());
+
+  solveThread_c solver(*pr, solveThread_c::PAR_DISASSM);
+  REQUIRE(solver.start());
+  solver.waitUntilFinished();
+  REQUIRE(solver.currentAction() == solveThread_c::ACT_FINISHED);
+  REQUIRE(pr->getNumSolutions() == 1);
+  const separation_c * path = pr->getSavedSolution(0)->getDisassembly();
+  REQUIRE(path != nullptr);
+  CHECK(logicalMoves(*path) == 7);
+  CHECK(path->getMoves() == 7 * STEPS_PER_MOVE);
 }

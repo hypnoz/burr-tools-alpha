@@ -120,7 +120,7 @@ TEST_CASE("sliding: a variable cell is not a legal place to finish", "[sliding]"
   REQUIRE(blocked == nullptr);
 }
 
-TEST_CASE("sliding: a turn stays two moves", "[sliding]") {
+TEST_CASE("sliding: a turn is one fluid move", "[sliding]") {
   puzzle_c puz(new gridType_c(gridType_c::GT_SLIDING));
   sliding::ensureSetup(puz, 2, 2);
 
@@ -135,9 +135,104 @@ TEST_CASE("sliding: a turn stays two moves", "[sliding]") {
   start.addPlacement(0, 0, 0, 0);
   auto path = sliding::findSlidePath(*pr, start);
   REQUIRE(path != nullptr);
+  /* Round the corner without stopping: one move. */
+  REQUIRE(path->getMoves() == 1);
+  REQUIRE(path->getState(1)->getX(0) == 1);
+  REQUIRE(path->getState(1)->getY(0) == 1);
+
+  /* The route has one corner, and the animation follows it rather than
+   * cutting across the diagonal. */
+  std::vector<unsigned int> movers;
+  auto route = sliding::slideRoute(*pr, *path, 0, &movers);
+  REQUIRE(movers == std::vector<unsigned int>{0});
+  REQUIRE(route.size() == 3);
+  CHECK(route.front() == std::make_pair(0, 0));
+  CHECK(route.back() == std::make_pair(1, 1));
+
+  disasmToMoves_c mv(path.get(), 5, 1);
+  sliding::applySlideRoutes(*pr, *path, mv);
+  mv.setStep(0.5f, false, true);
+  /* Halfway along a two-cell L, the piece is at the corner, not (0.5, 0.5). */
+  CHECK(mv.getX(0) == (float)route[1].first);
+  CHECK(mv.getY(0) == (float)route[1].second);
+  mv.setStep(1, false, true);
+  CHECK(mv.getX(0) == 1);
+  CHECK(mv.getY(0) == 1);
+}
+
+TEST_CASE("sliding: a piece following another is not a caterpillar", "[sliding]") {
+  /* A 6x1 corridor: b at 1 slides to 5, then a, behind it at 0, slides to 3.
+   * Counting unit steps, every order in which a stays behind b is equally
+   * short, so the search could alternate them a cell at a time (7 moves).
+   * Counting whole moves of one piece, each goes the whole way once. */
+  puzzle_c puz(new gridType_c(gridType_c::GT_SLIDING));
+  sliding::ensureSetup(puz, 6, 1);
+
+  unsigned int a = puz.addShape(1, 1, 1);
+  puz.getShape(a)->setState(0, 0, 0, voxel_c::VX_FILLED);
+  unsigned int b = puz.addShape(1, 1, 1);
+  puz.getShape(b)->setState(0, 0, 0, voxel_c::VX_FILLED);
+  problem_c * pr = puz.getProblem(0);
+  pr->setShapeMaximum(a, 1);
+  pr->setShapeMaximum(b, 1);
+  REQUIRE(sliding::placeStart(*pr, a, 0, 0));
+  REQUIRE(sliding::placeStart(*pr, b, 1, 0));
+  REQUIRE(sliding::placeGoal(*pr, a, 3, 0));
+  REQUIRE(sliding::placeGoal(*pr, b, 5, 0));
+
+  assembly_c start(puz.getGridType());
+  start.addPlacement(0, 0, 0, 0);
+  start.addPlacement(0, 1, 0, 0);
+  auto path = sliding::findSlidePath(*pr, start);
+  REQUIRE(path != nullptr);
   REQUIRE(path->getMoves() == 2);
-  REQUIRE(path->getState(2)->getX(0) == 1);
-  REQUIRE(path->getState(2)->getY(0) == 1);
+  /* b goes the full four cells, then a goes the full three. */
+  CHECK(path->getState(1)->getX(1) == 5);
+  CHECK(path->getState(1)->getX(0) == 0);
+  CHECK(path->getState(2)->getX(0) == 3);
+}
+
+TEST_CASE("sliding: a piece nested in a pocket rides along only with nested slides", "[sliding]") {
+  /* A 2x4 tray. The outer piece is a C, open to the tray's left edge:
+   *   ##
+   *   .#
+   *   ##
+   * The inner 1x1 sits in its pocket. Both must rise one row. Alone, neither
+   * can move: the outer piece's bottom arm hits the inner piece, and the
+   * inner piece hits the top arm. Together they rise in one move. */
+  puzzle_c puz(new gridType_c(gridType_c::GT_SLIDING));
+  sliding::ensureSetup(puz, 2, 4);
+
+  unsigned int outer = puz.addShape(2, 3, 1);
+  for (auto c : std::vector<std::pair<int, int>>{{0, 0}, {1, 0}, {1, 1}, {0, 2}, {1, 2}})
+    puz.getShape(outer)->setState(c.first, c.second, 0, voxel_c::VX_FILLED);
+  unsigned int inner = puz.addShape(1, 1, 1);
+  puz.getShape(inner)->setState(0, 0, 0, voxel_c::VX_FILLED);
+  problem_c * pr = puz.getProblem(0);
+  pr->setShapeMaximum(outer, 1);
+  pr->setShapeMaximum(inner, 1);
+  /* Goals first: a goal stamp may not cover a cell already stamped as a start. */
+  REQUIRE(sliding::placeGoal(*pr, outer, 0, 0));
+  REQUIRE(sliding::placeGoal(*pr, inner, 0, 1));
+  REQUIRE(sliding::placeStart(*pr, outer, 0, 1));
+  REQUIRE(sliding::placeStart(*pr, inner, 0, 2));
+
+  assembly_c start(puz.getGridType());
+  start.addPlacement(0, 0, 1, 0);
+  start.addPlacement(0, 0, 2, 0);
+
+  REQUIRE(sliding::findSlidePath(*pr, start) == nullptr);
+
+  auto path = sliding::findSlidePath(*pr, start, sliding::SEARCH_STATES, true);
+  REQUIRE(path != nullptr);
+  REQUIRE(path->getMoves() == 1);
+  CHECK(path->getState(1)->getY(0) == 0);
+  CHECK(path->getState(1)->getY(1) == 1);
+
+  std::vector<unsigned int> movers;
+  auto route = sliding::slideRoute(*pr, *path, 0, &movers);
+  CHECK(movers == std::vector<unsigned int>{0, 1});
+  CHECK(route.size() == 2);
 }
 
 TEST_CASE("sliding: the start stamp is the only initial placement", "[sliding]") {
@@ -223,14 +318,20 @@ TEST_CASE("sliding: variable cells are corridors beside normal floor", "[sliding
 }
 
 TEST_CASE("sliding: a shorter path keeps the solution number", "[sliding]") {
+  /* A 2x2 tray, piece p and a blocker q. A piece goes anywhere it can reach
+   * in one move, so a longer path needs q to step aside first. */
   puzzle_c puz(new gridType_c(gridType_c::GT_SLIDING));
   sliding::ensureSetup(puz, 2, 2);
 
-  unsigned int pieceId = puz.addShape(1, 1, 1);
-  puz.getShape(pieceId)->setState(0, 0, 0, voxel_c::VX_FILLED);
+  unsigned int p = puz.addShape(1, 1, 1);
+  puz.getShape(p)->setState(0, 0, 0, voxel_c::VX_FILLED);
+  unsigned int q = puz.addShape(1, 1, 1);
+  puz.getShape(q)->setState(0, 0, 0, voxel_c::VX_FILLED);
   problem_c * pr = puz.getProblem(0);
-  pr->setShapeMaximum(pieceId, 1);
-  REQUIRE(sliding::placeGoal(*pr, pieceId, 1, 1));
+  pr->setShapeMaximum(p, 1);
+  pr->setShapeMaximum(q, 1);
+  REQUIRE(sliding::placeGoal(*pr, p, 1, 1));
+  REQUIRE(sliding::placeGoal(*pr, q, 0, 1));
 
   /* addSolution requires a solve in progress. The callback is reached
    * through assembler_cb so the test can offer starts in a known order. */
@@ -242,21 +343,23 @@ TEST_CASE("sliding: a shorter path keeps the solution number", "[sliding]") {
   assembler_cb & cb = solver;
   const gridType_c * gt = puz.getGridType();
 
-  auto at = [gt](int x, int y) {
+  auto at = [gt](int px, int py, int qx, int qy) {
     auto a = std::make_unique<assembly_c>(gt);
-    a->addPlacement(0, x, y, 0);
+    a->addPlacement(0, px, py, 0);
+    a->addPlacement(0, qx, qy, 0);
     return a;
   };
 
-  /* (0,0) reaches (1,1) in two moves. That is solution 0. */
-  REQUIRE(cb.assembly(at(0, 0)));
+  /* p (0,0), q (1,1): q moves to (0,1), then p goes round to (1,1).
+   * Two moves. That is solution 0. */
+  REQUIRE(cb.assembly(at(0, 0, 1, 1)));
   REQUIRE(pr->getNumSolutions() == 1);
   REQUIRE(pr->getSavedSolution(0)->getSolutionNumber() == 0);
   REQUIRE(pr->getSavedSolution(0)->getDisassembly()->getMoves() == 2);
 
-  /* (1,0) is the same picture in one move. The count stays 1 and the
-   * stored number stays 0. The Solver tab shows that number plus one. */
-  REQUIRE(cb.assembly(at(1, 0)));
+  /* p (1,0), q (0,1) is the same picture in one move. The count stays 1
+   * and the stored number stays 0. The Solver tab shows that number plus one. */
+  REQUIRE(cb.assembly(at(1, 0, 0, 1)));
   REQUIRE(pr->getNumSolutions() == 1);
   REQUIRE(pr->getNumberOfSavedSolutions() == 1);
   REQUIRE(pr->getSavedSolution(0)->getSolutionNumber() == 0);
@@ -264,11 +367,11 @@ TEST_CASE("sliding: a shorter path keeps the solution number", "[sliding]") {
 
   /* A different picture is the next solution. A shorter path to it keeps
    * that second number, and does not collide with the first. */
-  sliding::clearGoal(*pr, pieceId);
-  REQUIRE(sliding::placeGoal(*pr, pieceId, 0, 0));
-  REQUIRE(cb.assembly(at(1, 1)));
+  sliding::clearGoal(*pr, p);
+  REQUIRE(sliding::placeGoal(*pr, p, 0, 0));
+  REQUIRE(cb.assembly(at(1, 1, 1, 0)));
   REQUIRE(pr->getNumSolutions() == 2);
-  REQUIRE(cb.assembly(at(0, 1)));
+  REQUIRE(cb.assembly(at(1, 0, 0, 1)));
   REQUIRE(pr->getNumSolutions() == 2);
   REQUIRE(pr->getNumberOfSavedSolutions() == 2);
 
@@ -309,7 +412,7 @@ TEST_CASE("sliding: removing a labelled cell clears start and goal", "[sliding]"
   REQUIRE(tray->getGoalPiece(0, 0, 0) == 0);
 }
 
-TEST_CASE("sliding: One Way or Another solves to one 18-move path", "[sliding][solver]") {
+TEST_CASE("sliding: One Way or Another solves to one 16-move path", "[sliding][solver]") {
   std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_sliding_solver.xmpuzzle");
   REQUIRE(puzzle != nullptr);
   REQUIRE(puzzle->getGridType()->getType() == gridType_c::GT_SLIDING);
@@ -337,5 +440,71 @@ TEST_CASE("sliding: One Way or Another solves to one 18-move path", "[sliding][s
   REQUIRE(pr->getNumberOfSavedSolutions() == 1);
   const separation_c * path = pr->getSavedSolution(0)->getDisassembly();
   REQUIRE(path != nullptr);
-  CHECK(path->getMoves() == 18);
+  /* 18 when a move was one straight run; two pieces turn a corner in one go. */
+  CHECK(path->getMoves() == 16);
+}
+
+/* test/test_sliding_nested.xmpuzzle is a 12x8 tray with four 3x3 blocks, a
+ * C-shaped "Cave" open to the left, and a 3x3 "Smile" in the Cave's pocket.
+ * The blocks start along the top and the Cave and Smile along the bottom;
+ * the goal swaps them. The Smile cannot leave the pocket (holes beside the
+ * opening), and the Cave cannot rise or fall past it alone, so the puzzle
+ * needs the Cave to carry what sits in its pocket. */
+static separation_c * solveNested(problem_c * pr, int extra) {
+  pr->removeAllSolutions();
+  solveThread_c solver(*pr, solveThread_c::PAR_DISASSM | extra);
+  REQUIRE(solver.start());
+  solver.waitUntilFinished();
+  REQUIRE(solver.currentAction() == solveThread_c::ACT_FINISHED);
+  if (pr->getNumberOfSavedSolutions() == 0)
+    return nullptr;
+  return const_cast<separation_c *>(pr->getSavedSolution(0)->getDisassembly());
+}
+
+TEST_CASE("sliding: the nested puzzle has no solution without nested slides", "[sliding][solver]") {
+  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_sliding_nested.xmpuzzle");
+  REQUIRE(puzzle != nullptr);
+  REQUIRE(puzzle->getGridType()->getType() == gridType_c::GT_SLIDING);
+  problem_c * pr = puzzle->getProblem(0);
+
+  CHECK(solveNested(pr, 0) == nullptr);
+  CHECK(pr->getNumAssemblies() == 1);
+  CHECK(pr->getNumSolutions() == 0);
+
+  /* The search proved it: every arrangement was visited well inside the
+   * budget, so the deep solver finds nothing either. */
+  CHECK(solveNested(pr, solveThread_c::PAR_DEEP_SEARCH) == nullptr);
+}
+
+TEST_CASE("sliding: the nested puzzle solves with nested slides", "[sliding][solver]") {
+  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_sliding_nested.xmpuzzle");
+  REQUIRE(puzzle != nullptr);
+  problem_c * pr = puzzle->getProblem(0);
+
+  separation_c * path = solveNested(pr, solveThread_c::PAR_NESTED_SLIDES);
+  REQUIRE(path != nullptr);
+  CHECK(pr->getNumSolutions() == 1);
+  /* Fewest moves when a move is one piece, or a piece and what is nested
+   * in it, going anywhere it can reach. */
+  CHECK(path->getMoves() == 47);
+
+  /* Every move is one rigid group with a route, and at least one carries
+   * more than one piece. The animation needs the route; a move whose
+   * pieces shift by different amounts would have none. */
+  unsigned int carried = 0;
+  for (unsigned int step = 0; step < path->getMoves(); step++) {
+    std::vector<unsigned int> movers;
+    auto route = sliding::slideRoute(*pr, *path, step, &movers);
+    INFO("step " << step);
+    REQUIRE(route.size() >= 2);
+    if (movers.size() > 1)
+      carried++;
+  }
+  CHECK(carried > 0);
+
+  /* The Smile ends in the Cave's pocket, as the goal map asks. */
+  const state_c * last = path->getState(path->getMoves());
+  const state_c * first = path->getState(0);
+  CHECK((last->getX(4) - first->getX(4)) == (last->getX(5) - first->getX(5)));
+  CHECK((last->getY(4) - first->getY(4)) == (last->getY(5) - first->getY(5)));
 }

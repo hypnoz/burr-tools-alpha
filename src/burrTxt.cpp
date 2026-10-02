@@ -32,6 +32,7 @@
 #include "lib/voxel.h"
 #include "lib/solution.h"
 #include "lib/sliding.h"
+#include "lib/stacking.h"
 #include "tools/xml.h"
 #include "tools/gzstream.h"
 
@@ -52,9 +53,17 @@
 
 using namespace std;
 
+static unsigned int slideStates(void);
+
 bool disassemble;
 bool checkRotations;
 bool strictColors;
+bool nestedSlides;
+/* Set from --solver once the file shows a sliding puzzle. */
+bool deepSearch;
+
+/* The puzzle type decides which solvers and options apply. */
+enum puzzleKind_e { PK_BRICK, PK_SLIDING, PK_STACKING, PK_ANY };
 bool allProblems;
 bool printDisassemble;
 bool printSolutions;
@@ -227,7 +236,7 @@ public:
 
       /* Sliding "disassemble" is the start-to-goal slide, not brick take-apart. */
       std::unique_ptr<separation_c> da = sliding::isSliding(*puzzle)
-          ? sliding::findSlidePath(*puzzle, *a)
+          ? sliding::findSlidePath(*puzzle, *a, slideStates(), nestedSlides)
           : d->disassemble(a.get());
 
       if (da) {
@@ -304,6 +313,22 @@ struct json_result_c {
     }
   }
 
+  /* A stacking problem is one start; solved or not, with its transfers. */
+  void addStacking(bool solved, unsigned int moves) {
+    assemblies++;
+    if (!solved)
+      return;
+    solutions++;
+    if (!hasBest || (int)moves < bestLevel) {
+      hasBest = true;
+      snprintf(bestDotlevel, sizeof(bestDotlevel), "%u", moves);
+      bestLevel = (int)moves;
+      bestTotalmoves = (int)moves;
+      bestMoves = (int)moves;
+      bestRotations = 0;
+    }
+  }
+
   void addSolveTime(double seconds) {
     solvetime += seconds;
   }
@@ -329,39 +354,159 @@ static void print_json_result(const json_result_c & stats) {
   printf(",\"solvetime\":%.3f}\n", stats.solvetime);
 }
 
-void usage(void) {
+static unsigned int slideStates(void) {
+  return deepSearch ? sliding::DEEP_SEARCH_STATES : sliding::SEARCH_STATES;
+}
+
+static const char * kindName(puzzleKind_e k) {
+  switch (k) {
+    case PK_SLIDING: return "sliding";
+    case PK_STACKING: return "stacking";
+    default: return "brick";
+  }
+}
+
+/* Lower case, letters and digits only, so "Sliding Fast Solver (250k depth)"
+ * and "sliding-fast" both match. */
+static std::string squash(const char * s) {
+  std::string out;
+  for (; s && *s; s++) {
+    char c = *s;
+    if (c >= 'A' && c <= 'Z')
+      c = (char)(c - 'A' + 'a');
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+      out += c;
+  }
+  return out;
+}
+
+void usage(puzzleKind_e kind = PK_ANY) {
 
   cout << "burrTxt [options] file [options]\n\n";
-  cout << "  file: puzzle file with the puzzle definition to solve\n\n";
+  cout << "  file: puzzle file with the puzzle definition to solve\n";
+  cout << "  The file's puzzle type (brick, sliding or stacking) decides which solvers\n";
+  cout << "  and options apply. Brick covers every assembly and take-apart grid.\n\n";
+  cout << "  -h [TYPE], --help [TYPE]\n";
+  cout << "          show this help; with TYPE brick, sliding or stacking, also show\n";
+  cout << "          that type's options and solvers\n";
   cout << "  --json  machine-readable result for batch tools (implies -d -q -r;\n";
   cout << "          prints one JSON object with the highest disassembly level.\n";
   cout << "          Fields: assemblies, solutions, dotlevel, level, totalmoves,\n";
   cout << "          solvetime (seconds); with -R also moves (linear) and rotations)\n";
   cout << "  Short options may be combined (e.g. -dR, -rq).\n";
-  cout << "  -d      try to disassemble and only print solutions that do disassemble\n";
-  cout << "  -p      print the disassembly plan\n";
-  cout << "  -r      reduce the placements before starting to solve the puzzle\n";
-  cout << "  -R      also try 90 degree piece rotations during disassembly (implies -d, brick grids)\n";
-  cout << "  -C      strict color restrictions: a voxel fits only a result voxel of the same color\n";
-  cout << "          (a colored voxel does not also fit a neutral one, and a neutral voxel\n";
-  cout << "          fits only a neutral result voxel)\n";
+  cout << "  -d      solve: take apart (brick), find the slide path (sliding) or the rod\n";
+  cout << "          transfers (stacking); only print what solves\n";
+  cout << "  -p      print the moves of each solution\n";
   cout << "  -s      print the assembly\n";
   cout << "  -q      be quiet and only print statistics\n";
   cout << "  -n      don't print a newline at the end of the line\n";
   cout << "  -o n    select the problem to solve\n";
   cout << "  -o all  solves all problems in file\n";
   cout << "  -x      only redisassemble the given solutions\n";
-  cout << "  -t n    set number of worker threads for assembler (0 = auto)\n";
   cout << "  --solver TYPE\n";
-  cout << "          solver engine. If omitted, BurrTools Classic is used.\n";
-  cout << "          TYPE (case-insensitive; quotes needed if it has spaces):\n";
-  cout << "            \"BurrTools Classic\"  complete take-apart (also: classic)\n";
-  cout << "            \"Andrew Crowell\"     90° take-apart heuristics (also: crowell)\n";
-  cout << "            \"BurrTools 2\"        Classic take-apart + dancing-cells assembly (also: bt2)\n";
+  cout << "          solver to use; the choices depend on the puzzle type (see -h TYPE).\n";
+  cout << "          Quotes are needed if TYPE has spaces; case and spaces are ignored.\n";
   cout << "  -a      ask for information about the current puzzle, the next letters must be:\n";
   cout << "     s0   print solutions with the only the used pieces\n";
   cout << "     s1   print solutions including the assemblies\n";
   cout << "     c    print comment\n";
+
+  if (kind == PK_ANY) {
+    cout << "\n  For the options and solvers of one puzzle type:\n";
+    cout << "    burrTxt -h brick      burrTxt -h sliding      burrTxt -h stacking\n";
+    return;
+  }
+
+  cout << "\n" << kindName(kind) << " puzzles:\n";
+  if (kind == PK_BRICK) {
+    cout << "  -r      reduce the placements before starting to solve the puzzle\n";
+    cout << "  -R      also try 90 degree piece rotations during disassembly (implies -d)\n";
+    cout << "  -C      strict color restrictions: a voxel fits only a result voxel of the same color\n";
+    cout << "          (a colored voxel does not also fit a neutral one, and a neutral voxel\n";
+    cout << "          fits only a neutral result voxel)\n";
+    cout << "  -t n    set number of worker threads for assembler (0 = auto)\n";
+    cout << "  --solver TYPE   (default: BurrTools Classic)\n";
+    cout << "            \"BurrTools Classic\"  complete take-apart (also: classic)\n";
+    cout << "            \"Andrew Crowell\"     90° take-apart heuristics (also: crowell)\n";
+    cout << "            \"BurrTools 2\"        Classic take-apart + dancing-cells assembly (also: bt2)\n";
+  } else if (kind == PK_SLIDING) {
+    cout << "  -r      reduce the placements before finding the start layouts\n";
+    cout << "  -t n    set number of worker threads for finding start layouts (0 = auto)\n";
+    cout << "  --nested-slides\n";
+    cout << "          a piece may carry the pieces nested inside its outline, such as a\n";
+    cout << "          piece in another piece's pocket. Pieces that only touch never move\n";
+    cout << "          together.\n";
+    cout << "  --solver TYPE   (default: Sliding Fast Solver)\n";
+    cout << "            \"Sliding Fast Solver\"  search up to 250,000 arrangements (also: fast)\n";
+    cout << "            \"Sliding Deep Solver\"  search up to 1,000,000 arrangements (also: deep)\n";
+  } else {
+    cout << "  The start and goal stacks come from the file. A move is one disc going\n";
+    cout << "  from the top of one rod to the top of another.\n";
+    cout << "  --solver TYPE   (default: Stacking Solver)\n";
+    cout << "            \"Stacking Solver\"  fewest rod transfers (also: stacking)\n";
+  }
+}
+
+/* --solver for the puzzle's type. False, with a message, when TYPE belongs
+ * to another type or to none. */
+static bool pickSolver(puzzleKind_e kind, const char * name) {
+  const std::string n = squash(name);
+  if (kind == PK_SLIDING) {
+    if (n == "fast" || n == "slidingfast" || n == "slidingfastsolver" ||
+        n == "slidingfastsolver250kdepth") {
+      deepSearch = false;
+      return true;
+    }
+    if (n == "deep" || n == "slidingdeep" || n == "slidingdeepsolver" ||
+        n == "slidingdeepsolver1mildepth") {
+      deepSearch = true;
+      return true;
+    }
+    fprintf(stderr, "burrTxt: unknown solver '%s' for a sliding puzzle\n", name);
+    fprintf(stderr, "         use \"Sliding Fast Solver\" or \"Sliding Deep Solver\" (also: fast, deep)\n");
+    return false;
+  }
+  if (kind == PK_STACKING) {
+    if (n == "stacking" || n == "stackingsolver")
+      return true;
+    fprintf(stderr, "burrTxt: unknown solver '%s' for a stacking puzzle\n", name);
+    fprintf(stderr, "         use \"Stacking Solver\" (also: stacking)\n");
+    return false;
+  }
+  if (solverTypeFromName(name, &solverType))
+    return true;
+  fprintf(stderr, "burrTxt: unknown solver '%s' for a brick puzzle\n", name);
+  fprintf(stderr, "         use \"BurrTools Classic\", \"Andrew Crowell\", or \"BurrTools 2\"\n");
+  fprintf(stderr, "         (also: classic, crowell, bt2)\n");
+  return false;
+}
+
+/* One line per rod transfer of a stacking path: lift, cross and drop are
+ * three states, and a rod's x is its index times the board spacing. */
+static void printStackPlan(const separation_c & path, const problem_c & prob) {
+  const int spacing = stacking::layoutBoard(prob, false).spacing;
+  std::vector<std::string> names;
+  for (unsigned int part = 0; part < prob.getNumberOfParts(); part++)
+    for (unsigned int j = 0; j < prob.getPartMaximum(part); j++) {
+      std::string nm = "S" + std::to_string(prob.getShapeIdOfPart(part) + 1);
+      if (prob.getPartMaximum(part) > 1)
+        nm += " copy " + std::to_string(j + 1);
+      names.push_back(nm);
+    }
+  const unsigned int n = path.getPieceNumber();
+  const unsigned int moves = stacking::logicalMoves(path);
+  for (unsigned int m = 0; m < moves; m++) {
+    const state_c * a = path.getState(m * stacking::STEPS_PER_MOVE);
+    const state_c * b = path.getState((m + 1) * stacking::STEPS_PER_MOVE);
+    for (unsigned int i = 0; i < n; i++) {
+      if (a->getX(i) == b->getX(i))
+        continue;
+      printf("%3u: %s from rod %d to rod %d\n", m + 1,
+             i < names.size() ? names[i].c_str() : "?",
+             a->getX(i) / spacing + 1, b->getX(i) / spacing + 1);
+      break;
+    }
+  }
 }
 
 int main(int argv, char* args[]) {
@@ -375,6 +520,9 @@ int main(int argv, char* args[]) {
   disassemble = false;
   checkRotations = false;
   strictColors = false;
+  nestedSlides = false;
+  deepSearch = false;
+  const char * solverName = nullptr;
   allProblems = false;
   printDisassemble = false;
   printSolutions = false;
@@ -408,17 +556,25 @@ int main(int argv, char* args[]) {
         disassemble = true;
         quiet = true;
         reduce = true;
+      } else if (strcmp(args[i], "-h") == 0 || strcmp(args[i], "--help") == 0) {
+        puzzleKind_e k = PK_ANY;
+        if (i + 1 < argv) {
+          const std::string t = squash(args[i+1]);
+          if (t == "brick") k = PK_BRICK;
+          else if (t == "sliding" || t == "slider") k = PK_SLIDING;
+          else if (t == "stacking") k = PK_STACKING;
+        }
+        usage(k);
+        return 0;
+      } else if (strcmp(args[i], "--nested-slides") == 0) {
+        nestedSlides = true;
       } else if (strcmp(args[i], "--solver") == 0) {
         if (i + 1 >= argv) {
           usage();
           return 2;
         }
-        if (!solverTypeFromName(args[i+1], &solverType)) {
-          fprintf(stderr, "burrTxt: unknown solver '%s'\n", args[i+1]);
-          fprintf(stderr, "         use \"BurrTools Classic\", \"Andrew Crowell\", or \"BurrTools 2\"\n");
-          fprintf(stderr, "         (also: classic, crowell, bt2)\n");
-          return 2;
-        }
+        /* Checked once the file shows which puzzle type it is. */
+        solverName = args[i+1];
         i++;
       } else if (strcmp(args[i], "-t") == 0) {
         /* -t as the last argument used to pass the null terminator to atoi
@@ -542,6 +698,20 @@ int main(int argv, char* args[]) {
   xmlParser_c pars(*str);
   puzzle_c p(pars);
 
+  const puzzleKind_e kind = stacking::isStacking(p) ? PK_STACKING
+                          : sliding::isSliding(p) ? PK_SLIDING
+                          : PK_BRICK;
+  if (nestedSlides && kind != PK_SLIDING) {
+    fprintf(stderr, "burrTxt: --nested-slides is for sliding puzzles; this is a %s puzzle\n", kindName(kind));
+    return 2;
+  }
+  if ((checkRotations || strictColors) && kind != PK_BRICK) {
+    fprintf(stderr, "burrTxt: -R and -C are for brick puzzles; this is a %s puzzle\n", kindName(kind));
+    return 2;
+  }
+  if (solverName && !pickSolver(kind, solverName))
+    return 2;
+
   if (ask) {
 
     switch (what) {
@@ -612,6 +782,45 @@ int main(int argv, char* args[]) {
 
       problem_c * problem = p.getProblem(pr);
 
+      /* Stacking has no assembly: the start is the file's start stacks. */
+      if (kind == PK_STACKING) {
+        if (allProblems && !jsonOutput)
+          cout << "problem: " << problem->getName() << endl;
+        std::string err = stacking::setupError(*problem);
+        if (!err.empty()) {
+          if (jsonOutput)
+            fprintf(stderr, "%s\n", err.c_str());
+          else
+            printf("%s\n", err.c_str());
+          return jsonOutput ? 1 : 0;
+        }
+        const auto stackStart = std::chrono::steady_clock::now();
+        std::unique_ptr<separation_c> path;
+        if (disassemble)
+          path = stacking::findStackPath(*problem);
+        const double secs = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - stackStart).count();
+        const unsigned int moves = path ? stacking::logicalMoves(*path) : 0;
+        if (jsonOutput) {
+          jsonStats.addStacking(path != nullptr, moves);
+          jsonStats.addSolveTime(secs);
+        } else {
+          if (path && (!quiet || allProblems))
+            printf("level: %u\n", moves);
+          if (path && printDisassemble)
+            printStackPlan(*path, *problem);
+          char timeBuf[64];
+          snprintf(timeBuf, sizeof(timeBuf), "%.3f", secs);
+          cout << "1 assemblies and " << (path ? 1 : 0) << " solutions found in "
+               << timeBuf << " seconds";
+          if (!disassemble)
+            cout << " (use -d to search for the moves)";
+          if (newline)
+            cout << endl;
+        }
+        continue;
+      }
+
       if (sliding::isSliding(*problem)) {
         sliding::syncMaxHoles(*problem);
         sliding::refreshStartLocks(*problem);
@@ -622,7 +831,10 @@ int main(int argv, char* args[]) {
       if (threads > 0)
         assm->setNumThreads(threads);
 
-      switch (assm->createMatrix(false, false, false, strictColors)) {
+      /* A sliding start is judged against a fixed goal map, so rotated and
+       * mirrored starts are different starts. Keep them all. */
+      const bool keepAll = sliding::isSliding(*problem);
+      switch (assm->createMatrix(keepAll, keepAll, false, strictColors)) {
       case assembler_c::ERR_TOO_MANY_UNITS:
         if (jsonOutput)
           fprintf(stderr, "%i units too many for the result shape\n", assm->getErrorsParam());
@@ -717,6 +929,19 @@ int main(int argv, char* args[]) {
 
       problem_c * problem = p.getProblem(pr);
 
+      if (kind == PK_STACKING) {
+        if (problem->getNumberOfSavedSolutions() == 0)
+          continue;
+        auto path = stacking::findStackPath(*problem);
+        if (path) {
+          if (!quiet)
+            printf("level: %u\n", stacking::logicalMoves(*path));
+          if (printDisassemble)
+            printStackPlan(*path, *problem);
+        }
+        continue;
+      }
+
       const bool slide = sliding::isSliding(*problem);
       if (!slide)
         d = createDisassembler(*problem, checkRotations, solverType);
@@ -726,7 +951,8 @@ int main(int argv, char* args[]) {
         if (problem->getSavedSolution(sol)->getAssembly()) {
 
           auto da = slide
-              ? sliding::findSlidePath(*problem, *problem->getSavedSolution(sol)->getAssembly())
+              ? sliding::findSlidePath(*problem, *problem->getSavedSolution(sol)->getAssembly(),
+                                       slideStates(), nestedSlides)
               : d->disassemble(problem->getSavedSolution(sol)->getAssembly());
 
           if (da) {

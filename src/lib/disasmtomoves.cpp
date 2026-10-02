@@ -24,6 +24,7 @@
 #include "disassemblernode.h"
 
 #include <algorithm>
+#include <cmath>
 
 disasmToMoves_c::disasmToMoves_c(const separation_c * tr, unsigned int sz, unsigned int max)
   : tree(tr ? std::make_unique<separation_c>(tr) : nullptr),
@@ -97,6 +98,9 @@ void disasmToMoves_c::setStep(float step, bool fadeOut, bool center_active) {
           orients[i] = orients2[i];
         }
         /* else keep start moves/orients; rotAngle already set when havePivot */
+      } else if (routeAt(s, i, frac, &moves[4*i+0], &moves[4*i+1])) {
+        moves[4*i+2] = (1-frac)*moves[4*i+2] + frac*moves2[4*i+2];
+        moves[4*i+3] = (1-frac)*moves[4*i+3] + frac*moves2[4*i+3];
       } else {
         moves[4*i+0] = (1-frac)*moves[4*i+0] + frac*moves2[4*i+0];
         moves[4*i+1] = (1-frac)*moves[4*i+1] + frac*moves2[4*i+1];
@@ -110,6 +114,46 @@ void disasmToMoves_c::setStep(float step, bool fadeOut, bool center_active) {
         if (moves[4*i+3] > 0) moves[4*i+3] = 1;
 
   }
+}
+
+void disasmToMoves_c::setRoute(unsigned int step, const std::vector<unsigned int> & pieces,
+                               const std::vector<std::pair<float, float>> & offsets) {
+  if (offsets.size() < 2 || pieces.empty())
+    routes.erase(step);
+  else
+    routes[step] = route_c{pieces, offsets};
+}
+
+bool disasmToMoves_c::routeAt(int step, unsigned int piece, float frac, float * x, float * y) const {
+  if (step < 0)
+    return false;
+  auto it = routes.find((unsigned int)step);
+  if (it == routes.end())
+    return false;
+  const std::vector<unsigned int> & on = it->second.pieces;
+  if (std::find(on.begin(), on.end(), piece) == on.end())
+    return false;
+  const std::vector<std::pair<float, float>> & o = it->second.offsets;
+  /* Constant speed along the bends: place frac by length travelled. */
+  float total = 0;
+  for (size_t k = 1; k < o.size(); k++)
+    total += std::fabs(o[k].first - o[k-1].first) + std::fabs(o[k].second - o[k-1].second);
+  float want = frac * total;
+  float ox = o.back().first;
+  float oy = o.back().second;
+  for (size_t k = 1; k < o.size(); k++) {
+    float len = std::fabs(o[k].first - o[k-1].first) + std::fabs(o[k].second - o[k-1].second);
+    if (want <= len && len > 0) {
+      float t = want / len;
+      ox = o[k-1].first + t * (o[k].first - o[k-1].first);
+      oy = o[k-1].second + t * (o[k].second - o[k-1].second);
+      break;
+    }
+    want -= len;
+  }
+  *x += ox;
+  *y += oy;
+  return true;
 }
 
 float disasmToMoves_c::getX(unsigned int piece) {

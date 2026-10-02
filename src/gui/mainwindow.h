@@ -128,6 +128,8 @@ class mainWindow_c : public LFl_Double_Window {
   debugStatsPanel_c *debugPanel;
   solveStats_c lastSolveStats;
   Fl_Check_Button *SolveDisasm, *CheckRotations, *JustCount, *DropDisassemblies, *KeepMirrors, *KeepRotations, *StrictColors, *CompleteRotations;
+  /* Sliding only. It takes the place of Just Levels. */
+  Fl_Check_Button *NestedSlides;
 
   FlatButton *BtnPrepare, *BtnStart, *BtnCont, *BtnStop, *BtnPlacement, *BtnStep, *BtnMovement;
   FlatButton *BtnNewShape, *BtnDelShape, *BtnCpyShape, *BtnRenShape, *BtnUndo, *BtnRedo, *BtnShapeLeft, *BtnShapeRight, *BtnWeightInc, *BtnWeightDec, *BtnDetails;
@@ -182,7 +184,8 @@ class mainWindow_c : public LFl_Double_Window {
   /** Stacking starts with Find Solutions checked. Later clicks are kept. */
   bool stackingDisasmDefaulted;
   /** Solver Type menu is showing only Stacking Solver. */
-  bool solverMenuStacking;
+  /* Which Solver Type list is loaded: 0 the grid solvers, 1 stacking, 2 sliding. */
+  int solverMenuMode;
 
   void applySlidingGridMode(void);
 
@@ -221,6 +224,14 @@ class mainWindow_c : public LFl_Double_Window {
   /* Green or red bar under min=0: whether the start and goal obey the rod set. */
   layouter_c * stackValidRow;
   StackValidBar_c * stackValidBar;
+  /* Gaps beside the shape order arrows in their stacking (left) and
+   * classic (right end) places. Only one pair is shown at a time. */
+  Fl_Widget * probArrowGapL[2];
+  Fl_Widget * probArrowGapR[2];
+  int probArrowRightX;
+  bool probArrowsStacking;
+  /* Place the Puzzle tab's shape order arrows for the mode. True when moved. */
+  bool syncProbArrows(bool stackingMode);
   bool stackingEditGoal;
 
   struct rodSnap_c {
@@ -271,6 +282,9 @@ class mainWindow_c : public LFl_Double_Window {
   void refreshStackSlider(void);
   void refreshStackList(void);
   void refreshStackValid(void);
+  /* Disassembly step for the move slider. A stacking slider counts
+   * transfers, each of which is several animation steps. */
+  float animStep(void) const;
   unsigned int selectedStackRod(void) const;
   bool stackingBoard(problem_c * pr);
   /* Reserve one unused copy and place it on the rod selected on the Puzzle tab. */

@@ -1128,6 +1128,7 @@ void voxelFrame_c::drawVoxelSpace() {
   glDisable(GL_CULL_FACE);
   glDepthMask(GL_TRUE);
 
+  drawSlidingWalls();
   drawDebugRotationCells();
 }
 
@@ -1172,7 +1173,109 @@ void voxelFrame_c::clearSpaces(void) {
 
   shapes.clear();
   drivenSpaces = ~0u;
+  wallLines.clear();
+  wallPosts.clear();
   clearDebugRotationCells();
+}
+
+void voxelFrame_c::buildSlidingWalls(const voxel_c & tray) {
+  wallLines.clear();
+  wallPosts.clear();
+  const int sx = (int)tray.getX();
+  const int sy = (int)tray.getY();
+  wallTop = (float)tray.getZ();
+
+  auto floorAt = [&](int x, int y) {
+    return x >= 0 && y >= 0 && x < sx && y < sy &&
+           tray.getState(x, y, 0) != voxel_c::VX_EMPTY;
+  };
+
+  /* Each wall sits a little outside the floor, so it does not fight with
+   * the faces of a piece pushed against it. A grid corner moves away from
+   * the wall cells around it: straight runs move one gap, corners one gap
+   * along each axis. */
+  const float gap = 0.08f;
+  auto corner = [&](int vx, int vy, float * ox, float * oy, int * walls) {
+    float dx = 0, dy = 0;
+    int w = 0;
+    for (int cy = vy - 1; cy <= vy; cy++)
+      for (int cx = vx - 1; cx <= vx; cx++)
+        if (!floorAt(cx, cy)) {
+          dx += cx + 0.5f - vx;
+          dy += cy + 0.5f - vy;
+          w++;
+        }
+    float k = (w == 2) ? gap : 2 * gap;
+    *ox = vx + dx * k;
+    *oy = vy + dy * k;
+    if (walls)
+      *walls = w;
+  };
+  auto edge = [&](int x0, int y0, int x1, int y1) {
+    float ax, ay, bx, by;
+    corner(x0, y0, &ax, &ay, 0);
+    corner(x1, y1, &bx, &by, 0);
+    wallLines.push_back(ax);
+    wallLines.push_back(ay);
+    wallLines.push_back(bx);
+    wallLines.push_back(by);
+  };
+
+  for (int y = 0; y < sy; y++)
+    for (int x = 0; x < sx; x++) {
+      if (!floorAt(x, y))
+        continue;
+      if (!floorAt(x - 1, y)) edge(x, y, x, y + 1);
+      if (!floorAt(x + 1, y)) edge(x + 1, y, x + 1, y + 1);
+      if (!floorAt(x, y - 1)) edge(x, y, x + 1, y);
+      if (!floorAt(x, y + 1)) edge(x, y + 1, x + 1, y + 1);
+    }
+
+  /* Posts where the outline turns, so the top and bottom read as a wall. */
+  for (int vy = 0; vy <= sy; vy++)
+    for (int vx = 0; vx <= sx; vx++) {
+      float px, py;
+      int w = 0;
+      corner(vx, vy, &px, &py, &w);
+      if (w == 1 || w == 3) {
+        wallPosts.push_back(px);
+        wallPosts.push_back(py);
+      }
+    }
+}
+
+void voxelFrame_c::drawSlidingWalls(void) {
+  if (wallLines.empty() || trans != CenterTranslateRoateScale || pickx >= 0)
+    return;
+
+  if (_useLightning) glDisable(GL_LIGHTING);
+  glDisable(GL_BLEND);
+  GLfloat oldWidth = 1;
+  glGetFloatv(GL_LINE_WIDTH, &oldWidth);
+  glLineWidth(5.0f * pixels_per_unit());
+  glColor4f(0, 0, 0, 1);
+
+  glPushMatrix();
+  rotater->addTransform();
+  tiltPlates();
+  glTranslatef(-centerX, -centerY, -centerZ);
+
+  glBegin(GL_LINES);
+  for (float z : {0.0f, wallTop})
+    for (size_t i = 0; i + 3 < wallLines.size(); i += 4) {
+      glVertex3f(wallLines[i], wallLines[i + 1], z);
+      glVertex3f(wallLines[i + 2], wallLines[i + 3], z);
+    }
+  for (size_t i = 0; i + 1 < wallPosts.size(); i += 2) {
+    glVertex3f(wallPosts[i], wallPosts[i + 1], 0);
+    glVertex3f(wallPosts[i], wallPosts[i + 1], wallTop);
+  }
+  glEnd();
+
+  glPopMatrix();
+  glLineWidth(oldWidth);
+  glEnable(GL_BLEND);
+  if (_useLightning) glEnable(GL_LIGHTING);
 }
 
 void voxelFrame_c::setSpaceColor(unsigned int nr, float r, float g, float b, float a) {
@@ -1904,6 +2007,9 @@ void voxelFrame_c::showAssembly(const problem_c * puz, unsigned int solNum) {
     setCenter(cx*0.5, cy*0.5, cz*0.5);
     trans = CenterTranslateRoateScale;
     _showCoordinateSystem = false;
+
+    if (sliding::isSliding(puz->getPuzzle()))
+      buildSlidingWalls(*getResultShape(*puz));
   }
 
   redraw();

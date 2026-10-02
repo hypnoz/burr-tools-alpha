@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 class puzzle_c;
@@ -15,6 +16,7 @@ class assembly_c;
 class separation_c;
 class voxel_c;
 class gridType_c;
+class disasmToMoves_c;
 
 namespace sliding {
 
@@ -99,19 +101,40 @@ bool toggleGoal(problem_c & prob, unsigned int shapeId, int ax, int ay);
 /** Recompute maxHoles = floor cells − total piece volume. */
 void syncMaxHoles(problem_c & prob);
 
+/** Arrangements the slide search may visit, normally and with a deeper search. */
+const unsigned int SEARCH_STATES = 250000;
+const unsigned int DEEP_SEARCH_STATES = 1000000;
+
 /**
- * Find a shortest one-cell slide path from the given start assembly to the
- * goal map. Returns a single-branch separation_c suitable for replay, or
+ * Find a path with the fewest moves from the given start assembly to the
+ * goal map. One move is one piece going anywhere it can reach while the
+ * others stay put, turns included; slideRoute gives the way it goes. With
+ * nested true a piece may also carry every piece nested inside it, that is
+ * lying wholly in its outline (its cells plus the empty cells between them
+ * along a row or column, such as a pocket). Touching alone is not nesting. Returns a single-branch separation_c suitable for replay, or
  * nullptr if no path is found within the state budget.
  */
 std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
                                             const assembly_c & start,
-                                            unsigned int maxStates = 250000);
+                                            unsigned int maxStates = SEARCH_STATES,
+                                            bool nested = false);
 
 /**
  * Identity of the finished picture: each piece's placement in the last
  * state. Paths that share this key end with the pieces in the same places.
  */
+/**
+ * Corner points, as shifts from the start, of the route the moving pieces
+ * take on step `step` of path, start and end included, with the fewest
+ * straight runs. *movers gets the pieces that move: one, or an outer piece
+ * and what is nested in it. Empty when the step is not such a slide.
+ */
+std::vector<std::pair<int, int>> slideRoute(const problem_c & prob, const separation_c & path,
+                                            unsigned int step, std::vector<unsigned int> * movers);
+
+/** Make anim follow each move's route, so a move that turns does not cut the corner. */
+void applySlideRoutes(const problem_c & prob, const separation_c & path, disasmToMoves_c & anim);
+
 std::string finalPlacementKey(const separation_c & path);
 
 /**

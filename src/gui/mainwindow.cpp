@@ -1109,19 +1109,27 @@ void mainWindow_c::cb_StackMode(Fl_Widget * o) {
 void mainWindow_c::syncSolverTypeMenu(void) {
   if (!solverTypeChoice || !puzzle)
     return;
-  bool on = stacking::isStacking(*puzzle);
-  if (on == solverMenuStacking && solverTypeChoice->size() > 0)
+  const int mode = stacking::isStacking(*puzzle) ? 1 : sliding::isSliding(*puzzle) ? 2 : 0;
+  if (mode == solverMenuMode && solverTypeChoice->size() > 0)
     return;
-  solverMenuStacking = on;
+  const int was = solverMenuMode;
+  solverMenuMode = mode;
   int keep = solverTypeChoice->value();
   solverTypeChoice->clear();
-  if (on) {
+  if (mode == 1) {
     solverTypeChoice->add("Stacking Solver");
+    solverTypeChoice->value(0);
+  } else if (mode == 2) {
+    /* The grid solvers only differ in how they take pieces apart, which a
+     * sliding puzzle never does. What matters here is how far to search.
+     * Entry 1 is the deep search; cb_BtnStart reads the index. */
+    solverTypeChoice->add("Sliding Fast Solver (250k depth)");
+    solverTypeChoice->add("Sliding Deep Solver (1mil depth)");
     solverTypeChoice->value(0);
   } else {
     for (unsigned int i = 0; i < solverTypeCount(); i++)
       solverTypeChoice->add(solverTypeLabel((solverType_e)i));
-    if (keep < 0 || (unsigned int)keep >= solverTypeCount())
+    if (was != 0 || keep < 0 || (unsigned int)keep >= solverTypeCount())
       keep = (int)SOLVER_CLASSIC;
     solverTypeChoice->value(keep);
   }
@@ -1137,6 +1145,41 @@ static void relayoutTab(layouter_c * tab) {
       s->relayout();
   }
   tab->redraw();
+}
+
+bool mainWindow_c::syncProbArrows(bool stackingMode) {
+  if (!BtnProbShapeLeft || !BtnProbShapeRight || stackingMode == probArrowsStacking)
+    return false;
+  probArrowsStacking = stackingMode;
+  LFlatButton_c * left = static_cast<LFlatButton_c*>(BtnProbShapeLeft);
+  LFlatButton_c * right = static_cast<LFlatButton_c*>(BtnProbShapeRight);
+  if (stackingMode) {
+    /* Up and down at the left, beside the disc list they reorder. */
+    left->setGridValues(0, 0, 1, 1);
+    right->setGridValues(2, 0, 1, 1);
+    left->label("@-18->");
+    right->label("@-12->");
+    left->tooltip(" Move the selected disc up the rod ");
+    right->tooltip(" Move the selected disc down the rod ");
+  } else {
+    left->setGridValues(probArrowRightX + 1, 0, 1, 1);
+    right->setGridValues(probArrowRightX + 3, 0, 1, 1);
+    left->label("@-14->");
+    right->label("@-16->");
+    left->tooltip(" Exchange current shape with previous shape ");
+    right->tooltip(" Exchange current shape with next shape ");
+  }
+  for (Fl_Widget * g : probArrowGapL) {
+    if (stackingMode) g->show();
+    else g->hide();
+  }
+  for (Fl_Widget * g : probArrowGapR) {
+    if (stackingMode) g->hide();
+    else g->show();
+  }
+  left->redraw();
+  right->redraw();
+  return true;
 }
 
 void mainWindow_c::syncStackingChrome(void) {
@@ -1197,14 +1240,8 @@ void mainWindow_c::syncStackingChrome(void) {
         ? " Set the selected rod set as this problem's board "
         : " Set selected shape as result ");
   }
-  if (BtnProbShapeLeft && BtnProbShapeRight) {
-    BtnProbShapeLeft->tooltip(on
-        ? " Move the selected disc up the rod "
-        : " Exchange current shape with previous shape ");
-    BtnProbShapeRight->tooltip(on
-        ? " Move the selected disc down the rod "
-        : " Exchange current shape with next shape ");
-  }
+  if (syncProbArrows(on))
+    relayoutTab(TabProblems);
 
   if (on && BtnNewRod && rodSel) {
     unsigned int sel = rodSel->getSelection();
@@ -2320,11 +2357,17 @@ void mainWindow_c::cb_BtnCont(bool prep_only) {
   if (CheckRotations->value() != 0) par |= solveThread_c::PAR_CHECK_ROTATIONS;
   if (JustCount->value() != 0) par |= solveThread_c::PAR_JUST_COUNT;
   if (CompleteRotations->value() != 0) par |= solveThread_c::PAR_COMPLETE_ROTATIONS;
+  const bool slidingSolve = sliding::isSliding(*puzzle);
+  if (slidingSolve) {
+    if (NestedSlides->value() != 0) par |= solveThread_c::PAR_NESTED_SLIDES;
+    if (solverTypeChoice && solverTypeChoice->value() == 1) par |= solveThread_c::PAR_DEEP_SEARCH;
+  }
 
   assmThread = new solveThread_c(*puzzle->getProblem(prob), par);
 
+  /* Sliding and stacking menus list their own solvers, not solverType_e. */
   solverType_e st = SOLVER_CLASSIC;
-  if (solverTypeChoice)
+  if (solverTypeChoice && solverMenuMode == 0)
     st = solverTypeFromIndex(solverTypeChoice->value());
   assmThread->setSolverType(st);
   assmThread->setSortMethod(sortMethod->value());
@@ -2358,11 +2401,18 @@ void mainWindow_c::cb_SolutionSel(Fl_Value_Slider* o) {
   updateInterface();
 }
 
+float mainWindow_c::animStep(void) const {
+  float v = (float)SolutionAnim->value();
+  if (puzzle && stacking::isStacking(*puzzle))
+    v *= (float)stacking::STEPS_PER_MOVE;
+  return v;
+}
+
 static void cb_SolutionAnim_stub(Fl_Widget* o, void* v) { ((mainWindow_c*)v)->cb_SolutionAnim((Fl_Value_Slider*)o); }
 void mainWindow_c::cb_SolutionAnim(Fl_Value_Slider* o) {
   o->take_focus();
   if (disassemble) {
-    disassemble->setStep(o->value(), config.useBlendedRemoving(), true);
+    disassemble->setStep(animStep(), config.useBlendedRemoving(), true);
     View3D->getView()->updatePositions(disassemble);
   }
 }
@@ -2465,6 +2515,41 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
     CompleteRotations->activate();
     KeepMirrors->activate();
     KeepRotations->activate();
+  }
+
+  /* Just Levels and Strict Colors do nothing for sliding. Nested slides
+   * takes Just Levels' place; search depth is the Solver Type choice.
+   * The symmetry options go for sliding and stacking alike. */
+  {
+    bool moved = false;
+    auto setVis = [&moved](Fl_Widget * w, bool show) {
+      if (!w || (bool)w->visible() == show)
+        return;
+      if (show) w->show();
+      else w->hide();
+      moved = true;
+    };
+    if (slidingPuzzle) {
+      DropDisassemblies->value(0);
+      StrictColors->value(0);
+    }
+    setVis(DropDisassemblies, !slidingPuzzle);
+    setVis(StrictColors, !slidingPuzzle);
+    setVis(NestedSlides, slidingPuzzle);
+    /* The symmetry filter drops starts that are rotations or mirrors of
+     * another. Stacking never assembles, and sliding must keep every start,
+     * so these three have no use there. */
+    const bool symmetryOptions = !slidingPuzzle && !stackingPuzzle;
+    if (!symmetryOptions) {
+      CompleteRotations->value(0);
+      KeepMirrors->value(0);
+      KeepRotations->value(0);
+    }
+    setVis(CompleteRotations, symmetryOptions);
+    setVis(KeepMirrors, symmetryOptions);
+    setVis(KeepRotations, symmetryOptions);
+    if (moved && TabSolve)
+      relayoutTab(TabSolve);
   }
 
   if (stackingPuzzle) {
@@ -3771,6 +3856,20 @@ void mainWindow_c::cb_SolverTypeHelp(void) {
   list->weight(1, 1);
 
   int row = 0;
+  if (puzzle && sliding::isSliding(*puzzle)) {
+    addSolverHelpHeading(row++, "Sliding Fast Solver (250k depth)");
+    addSolverHelpBody(row++,
+        "•  Searches for the fewest moves from the start to the goal. One move is one piece going anywhere it can reach while the others stay put, corners included.\n"
+        "•  Looks at up to 250,000 arrangements of the pieces for each start.\n"
+        "•  Quick, and enough for most puzzles.");
+    (new LFl_Box(0, row++))->setMinimumSize(0, 16);
+
+    addSolverHelpHeading(row++, "Sliding Deep Solver (1mil depth)");
+    addSolverHelpBody(row++,
+        "•  The same search, allowed up to 1,000,000 arrangements for each start.\n"
+        "•  Slower and uses more memory. Try it when the fast solver finds nothing on a large puzzle.\n"
+        "•  A search that runs out of arrangements cannot tell you the puzzle is impossible; this one runs out later.");
+  } else {
   addSolverHelpHeading(row++, "BurrTools Classic");
   addSolverHelpBody(row++,
       "•  The original BurrTools solver, and the complete-search baseline.\n"
@@ -3796,6 +3895,7 @@ void mainWindow_c::cb_SolverTypeHelp(void) {
       "•  Helps when finding assemblies, not taking them apart, is what takes the time.\n"
       "•  On rotation puzzles with only a few assemblies, time will be close to BurrTools Classic.\n"
       "•  Puzzles that use ranges or extra copies of a shape still assemble on one thread.");
+  }
 
   list->end();
   body->end();
@@ -4377,7 +4477,9 @@ void mainWindow_c::activateSolution(unsigned int prob, unsigned int num) {
       const separation_c * sep = pr->getSavedSolution(num)->getDisassembly();
       const bool stackingSol = stacking::isStacking(*puzzle);
       SolutionAnim->activate();
-      SolutionAnim->range(0, sep->sumSteps());
+      /* A stacking transfer is stored as lift, cross and drop. The slider
+       * counts transfers, and animStep() scales it back to placements. */
+      SolutionAnim->range(0, stackingSol ? stacking::logicalMoves(*sep) : sep->sumSteps());
 
       SolutionsInfo->value(pr->getNumberOfSavedSolutions());
 
@@ -4399,7 +4501,10 @@ void mainWindow_c::activateSolution(unsigned int prob, unsigned int num) {
           ? stacking::boardSpan(*pr)
           : 2 * getResultShape(*pr)->getBiggestDimension();
       disassemble = new disasmToMoves_c(sep, animSize, pr->getNumberOfPieces());
-      disassemble->setStep(SolutionAnim->value(), config.useBlendedRemoving(), true);
+      /* A sliding move can turn corners. Follow its route, not the diagonal. */
+      if (sliding::isSliding(*puzzle))
+        sliding::applySlideRoutes(*pr, *sep, *disassemble);
+      disassemble->setStep(animStep(), config.useBlendedRemoving(), true);
 
       if (prob < puzzle->getNumberOfProblems()) View3D->getView()->showAssembly(puzzle->getProblem(prob), num);
       View3D->getView()->updatePositions(disassemble);
@@ -6232,10 +6337,15 @@ void mainWindow_c::CreateProblemTab(void) {
       layouter_c * o = new layouter_c(0, 1);
       int xp = 0;
 
-      BtnProbShapeLeft = new LFlatButton_c(xp++, 0, 1, 1, "@-18->", " Move the selected disc up the rod ", cb_ProbShapeLeft_stub, this);
-      (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
-      BtnProbShapeRight = new LFlatButton_c(xp++, 0, 1, 1, "@-12->", " Move the selected disc down the rod ", cb_ProbShapeRight_stub, this);
-      (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
+      /* The shape order arrows start in the classic place, at the right end
+       * of the row. syncProbArrows() moves them to the left, as up and
+       * down, for stacking's disc order. */
+      BtnProbShapeLeft = new LFlatButton_c(xp++, 0, 1, 1, "@-14->", " Exchange current shape with previous shape ", cb_ProbShapeLeft_stub, this);
+      probArrowGapL[0] = new LFl_Box(xp++, 0);
+      ((LFl_Box*)probArrowGapL[0])->setMinimumSize(SZ_GAP, 0);
+      BtnProbShapeRight = new LFlatButton_c(xp++, 0, 1, 1, "@-16->", " Exchange current shape with next shape ", cb_ProbShapeRight_stub, this);
+      probArrowGapL[1] = new LFl_Box(xp++, 0);
+      ((LFl_Box*)probArrowGapL[1])->setMinimumSize(SZ_GAP, 0);
       BtnAddShape = new LFlatButton_c(xp++, 0, 1, 1, "+1", " Add another one of the selected shape ", cb_AddShapeToProblem_stub, this);
       ((LFlatButton_c*)BtnAddShape)->weight(1, 0);
       (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
@@ -6247,8 +6357,16 @@ void mainWindow_c::CreateProblemTab(void) {
       (new LFl_Box(xp++, 0))->setMinimumSize(SZ_GAP, 0);
       BtnRemAll = new LFlatButton_c(xp++, 0, 1, 1, "Clear All", " Remove all pieces ", cb_RemoveAllShapesFromProblem_stub, this);
       ((LFlatButton_c*)BtnRemAll)->weight(1, 0);
+      probArrowRightX = xp;
+      probArrowGapR[0] = new LFl_Box(xp++, 0);
+      ((LFl_Box*)probArrowGapR[0])->setMinimumSize(SZ_GAP, 0);
+      xp++;
+      probArrowGapR[1] = new LFl_Box(xp++, 0);
+      ((LFl_Box*)probArrowGapR[1])->setMinimumSize(SZ_GAP, 0);
 
       o->end();
+      probArrowsStacking = true;
+      syncProbArrows(false);
     }
 
     (new LFl_Box(0, 2))->setMinimumSize(0, SZ_GAP);
@@ -6443,6 +6561,13 @@ void mainWindow_c::CreateSolveTab(void) {
     StrictColors = new LFl_Check_Button("Strict Color Restrictions", 1, 3, 1, 1);
     StrictColors->tooltip(" A voxel with a colour fits only a result voxel of that same colour, not a neutral one. A voxel with no colour fits only a result voxel that also has no colour. ");
     StrictColors->clear_visible_focus();
+
+    NestedSlides = new LFl_Check_Button("Allow nested slides", 0, 3, 1, 1);
+    NestedSlides->tooltip(" A piece may slide together with the pieces nested inside its outline, such as a piece in another piece's pocket. Pieces that only touch never slide together. ");
+    NestedSlides->clear_visible_focus();
+    NestedSlides->callback(cb_SolverOptions_stub, this);
+    NestedSlides->hide();
+
 
     updateSolverOptionCheckboxes();
 
@@ -6954,7 +7079,7 @@ void mainWindow_c::activateConfigOptions(void) {
   View3D->getView()->setDebugRotations(config.debugRotations());
   applyDebugTabVisibility();
   if (disassemble && SolutionAnim) {
-    disassemble->setStep(SolutionAnim->value(), config.useBlendedRemoving(), true);
+    disassemble->setStep(animStep(), config.useBlendedRemoving(), true);
     View3D->getView()->updatePositions(disassemble);
   }
 }
@@ -6997,7 +7122,7 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   slidingEditMode = 0;
   slidingDisasmDefaulted = false;
   stackingDisasmDefaulted = false;
-  solverMenuStacking = false;
+  solverMenuMode = -1;
   TabRods = 0;
   shapeEditColumn = 0;
   voxelPenRow = 0;
@@ -7033,6 +7158,11 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   problemButtonRule = 0;
   stackValidRow = 0;
   stackValidBar = 0;
+  NestedSlides = 0;
+  probArrowGapL[0] = probArrowGapL[1] = 0;
+  probArrowGapR[0] = probArrowGapR[1] = 0;
+  probArrowRightX = 0;
+  probArrowsStacking = false;
   stackingEditGoal = false;
 
   copy_label(platform::windowTitle(0).c_str());

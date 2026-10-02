@@ -339,6 +339,13 @@ disasmCreepShown(0)
   /* Persist solutions under <solutionsWithRotations> so older BurrTools skip them */
   if (par & PAR_CHECK_ROTATIONS)
     puzzle.setSolutionsWithRotations(true);
+
+  /* A sliding start is judged against a fixed goal map, so a rotated or
+   * mirrored start is a different start, not a duplicate. Keep every one. */
+  if (sliding::isSliding(puzzle)) {
+    parameters |= PAR_KEEP_MIRROR | PAR_KEEP_ROTATIONS;
+    parameters &= ~PAR_COMPLETE_ROTATIONS;
+  }
 }
 
 solveThread_c::~solveThread_c(void) {
@@ -688,7 +695,10 @@ bool solveThread_c::assembly(std::unique_ptr<assembly_c> a) {
   if (sliding::isSliding(puzzle)) {
     if (!(parameters & PAR_JUST_COUNT)) {
       if (parameters & PAR_DISASSM) {
-        std::unique_ptr<separation_c> path = sliding::findSlidePath(puzzle, *a);
+        std::unique_ptr<separation_c> path = sliding::findSlidePath(
+            puzzle, *a,
+            (parameters & PAR_DEEP_SEARCH) ? sliding::DEEP_SEARCH_STATES : sliding::SEARCH_STATES,
+            (parameters & PAR_NESTED_SLIDES) != 0);
         if (path) {
           /* Several starts can slide to the same finished picture. A search
            * never walks in a circle, but a worse start takes more moves to

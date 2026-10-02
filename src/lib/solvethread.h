@@ -180,6 +180,8 @@ class solveThread_c : public assembler_cb, public thread_c {
     static const int PAR_COMPLETE_ROTATIONS = 0x40;  // do a thorough rotation check
     static const int PAR_CHECK_ROTATIONS =    0x80;  // try 90° piece rotations during disassembly
     static const int PAR_STRICT_COLORS =     0x100;  // piece colour must equal result colour
+    static const int PAR_NESTED_SLIDES =     0x200;  // sliding: a piece may carry pieces nested inside it
+    static const int PAR_DEEP_SEARCH =       0x400;  // sliding: search 1,000,000 arrangements, not 250,000
 
     // create all the necessary data structures to start the thread later on
     solveThread_c(problem_c & puz, int par);

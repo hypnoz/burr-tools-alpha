@@ -21,8 +21,10 @@
 #ifndef __DISASSMTOMOVES_H__
 #define __DISASSMTOMOVES_H__
 
-#include <vector>
+#include <map>
 #include <memory>
+#include <utility>
+#include <vector>
 
 class separation_c;
 class disassemblerNode_c;
@@ -113,6 +115,16 @@ class disasmToMoves_c : public piecePositions_c {
    */
   unsigned int maxPieceName;
 
+  /* Corner points, as offsets from the start, that the moving pieces follow
+   * on a step instead of a straight line. Keyed by step. */
+  struct route_c {
+    std::vector<unsigned int> pieces;
+    std::vector<std::pair<float, float>> offsets;
+  };
+  std::map<unsigned int, route_c> routes;
+  /* Add the route's offset at frac to *x and *y. False when no route applies. */
+  bool routeAt(int step, unsigned int piece, float frac, float * x, float * y) const;
+
   /** this function walks the tree and sets the piece positions */
   int doRecursive(const separation_c * tree, int step, float * array, unsigned int * orientsOut, bool center_active, int cx, int cy, int cz);
 
@@ -144,6 +156,14 @@ public:
    * worked on is always in the middle of the display, other groups are invisible
    */
   void setStep(float step, bool fadeOut = true, bool center_active = false);
+
+  /**
+   * Make pieces follow a bent route between states step and step+1. offsets
+   * are x/y corner points relative to each piece's place at step, start and
+   * end included. Without a route a piece moves in a straight line.
+   */
+  void setRoute(unsigned int step, const std::vector<unsigned int> & pieces,
+                const std::vector<std::pair<float, float>> & offsets);
 
   virtual float getX(unsigned int piece) override;
   virtual float getY(unsigned int piece) override;

@@ -3,6 +3,7 @@
  * Sliding-tray helpers: start/goal colour maps and one-cell slide search.
  */
 #include "sliding.h"
+#include "disasmtomoves.h"
 
 #include "assembly.h"
 #include "disassembly.h"
@@ -172,49 +173,6 @@ std::string stateKey(const SlideState & s) {
   return os.str();
 }
 
-bool placementValid(const voxel_c & tray,
-                    const std::vector<const voxel_c *> & pieces,
-                    const SlideState & s,
-                    unsigned int moving) {
-  /* Occupancy grid for non-moving pieces, then test the mover. */
-  std::set<std::pair<int, int>> occ;
-  for (unsigned int i = 0; i < s.places.size(); i++) {
-    if (i == moving)
-      continue;
-    const voxel_c * p = pieces[i];
-    int hx = (int)p->getHx();
-    int hy = (int)p->getHy();
-    /* Pieces keep their assembly transform; for sliding we only translate.
-     * The voxel we hold is already in the assembly orientation. */
-    for (unsigned int y = 0; y < p->getY(); y++)
-      for (unsigned int x = 0; x < p->getX(); x++) {
-        if (p->getState(x, y, 0) == voxel_c::VX_EMPTY)
-          continue;
-        int tx = s.places[i].x + (int)x - hx;
-        int ty = s.places[i].y + (int)y - hy;
-        if (!isFloor(tray, tx, ty))
-          return false;
-        occ.insert({tx, ty});
-      }
-  }
-
-  const voxel_c * p = pieces[moving];
-  int hx = (int)p->getHx();
-  int hy = (int)p->getHy();
-  for (unsigned int y = 0; y < p->getY(); y++)
-    for (unsigned int x = 0; x < p->getX(); x++) {
-      if (p->getState(x, y, 0) == voxel_c::VX_EMPTY)
-        continue;
-      int tx = s.places[moving].x + (int)x - hx;
-      int ty = s.places[moving].y + (int)y - hy;
-      if (!isFloor(tray, tx, ty))
-        return false;
-      if (occ.count({tx, ty}))
-        return false;
-    }
-  return true;
-}
-
 bool goalsSatisfied(const problem_c & prob,
                     const std::vector<const voxel_c *> & pieces,
                     const SlideState & s) {
@@ -326,66 +284,183 @@ bool goalsSatisfied(const problem_c & prob,
   return true;
 }
 
-/* One piece stepping one cell, or no single mover. */
-static bool unitStep(const SlideState & prev, const SlideState & next,
-                     int * piece, int * dx, int * dy) {
-  if (prev.places.size() != next.places.size())
-    return false;
-  int mover = -1;
-  int mx = 0;
-  int my = 0;
-  for (size_t i = 0; i < prev.places.size(); i++) {
-    int sx = next.places[i].x - prev.places[i].x;
-    int sy = next.places[i].y - prev.places[i].y;
-    if (sx == 0 && sy == 0 && prev.places[i].trans == next.places[i].trans)
-      continue;
-    if (mover >= 0)
-      return false;
-    mover = (int)i;
-    mx = sx;
-    my = sy;
+/* Filled cells of a piece, relative to its hotspot. Pieces only ever
+ * translate in a sliding search, so these are worked out once. */
+std::vector<std::pair<int, int>> cellsOf(const voxel_c & p) {
+  std::vector<std::pair<int, int>> out;
+  int hx = (int)p.getHx();
+  int hy = (int)p.getHy();
+  for (unsigned int y = 0; y < p.getY(); y++)
+    for (unsigned int x = 0; x < p.getX(); x++)
+      if (p.getState(x, y, 0) != voxel_c::VX_EMPTY)
+        out.push_back({(int)x - hx, (int)y - hy});
+  return out;
+}
+
+/* A piece's outline: its own cells plus every empty cell that has cells of
+ * the piece on both sides of it in the same row or in the same column, such
+ * as the inside of a pocket. Relative to the hotspot. */
+std::vector<std::pair<int, int>> outlineOf(const voxel_c & p) {
+  std::vector<std::pair<int, int>> out;
+  int hx = (int)p.getHx();
+  int hy = (int)p.getHy();
+  auto filled = [&p](int x, int y) {
+    return p.getState((unsigned int)x, (unsigned int)y, 0) != voxel_c::VX_EMPTY;
+  };
+  const int sx = (int)p.getX();
+  const int sy = (int)p.getY();
+  for (int y = 0; y < sy; y++)
+    for (int x = 0; x < sx; x++) {
+      bool in = filled(x, y);
+      if (!in) {
+        bool left = false, right = false, up = false, down = false;
+        for (int k = 0; k < x; k++) left = left || filled(k, y);
+        for (int k = x + 1; k < sx; k++) right = right || filled(k, y);
+        for (int k = 0; k < y; k++) up = up || filled(x, k);
+        for (int k = y + 1; k < sy; k++) down = down || filled(x, k);
+        in = (left && right) || (up && down);
+      }
+      if (in)
+        out.push_back({x - hx, y - hy});
+    }
+  return out;
+}
+
+using cellList_t = std::vector<std::pair<int, int>>;
+
+/* Floor cells not covered by any piece outside `movers`. */
+struct freeGrid_c {
+  int w = 0;
+  int h = 0;
+  std::vector<char> open;
+  bool at(int x, int y) const {
+    return x >= 0 && y >= 0 && x < w && y < h && open[(size_t)(y * w + x)];
   }
-  if (mover < 0)
-    return false;
-  if (!((mx == 0 && (my == 1 || my == -1)) || (my == 0 && (mx == 1 || mx == -1))))
-    return false;
-  *piece = mover;
-  *dx = mx;
-  *dy = my;
+};
+
+freeGrid_c freeCells(const voxel_c & tray, const std::vector<cellList_t> & cells,
+                     const SlideState & s, const std::vector<unsigned int> & movers) {
+  freeGrid_c g;
+  g.w = (int)tray.getX();
+  g.h = (int)tray.getY();
+  g.open.assign((size_t)(g.w * g.h), 0);
+  for (int y = 0; y < g.h; y++)
+    for (int x = 0; x < g.w; x++)
+      g.open[(size_t)(y * g.w + x)] = isFloor(tray, x, y) ? 1 : 0;
+  for (unsigned int i = 0; i < s.places.size(); i++) {
+    if (std::find(movers.begin(), movers.end(), i) != movers.end())
+      continue;
+    for (const auto & c : cells[i]) {
+      int x = s.places[i].x + c.first;
+      int y = s.places[i].y + c.second;
+      if (x >= 0 && y >= 0 && x < g.w && y < g.h)
+        g.open[(size_t)(y * g.w + x)] = 0;
+    }
+  }
+  return g;
+}
+
+/* The movers fit when shifted by (dx, dy) as one rigid group. */
+bool groupFits(const freeGrid_c & g, const std::vector<cellList_t> & cells,
+               const SlideState & s, const std::vector<unsigned int> & movers, int dx, int dy) {
+  for (unsigned int m : movers)
+    for (const auto & c : cells[m])
+      if (!g.at(s.places[m].x + c.first + dx, s.places[m].y + c.second + dy))
+        return false;
   return true;
 }
 
-/* Consecutive one-cell steps of one piece along one direction are one slide.
- * A turn, or another piece moving, starts a new move. */
-static void collapseStraightSlides(std::vector<SlideState> & path) {
-  if (path.size() < 3)
-    return;
-  std::vector<SlideState> kept;
-  kept.push_back(path[0]);
-  int runPiece = -1;
-  int runDx = 0;
-  int runDy = 0;
-  for (size_t i = 1; i < path.size(); i++) {
-    int piece = -1;
-    int dx = 0;
-    int dy = 0;
-    bool step = unitStep(path[i - 1], path[i], &piece, &dx, &dy);
-    if (step && piece == runPiece && dx == runDx && dy == runDy) {
-      kept.back() = path[i];
-      continue;
-    }
-    kept.push_back(path[i]);
-    if (step) {
-      runPiece = piece;
-      runDx = dx;
-      runDy = dy;
-    } else {
-      runPiece = -1;
-      runDx = 0;
-      runDy = 0;
+/* Every shift the movers can reach as one group while the others stay put.
+ * One move of the solver is a jump to any of them, whatever the route. */
+cellList_t reachableShifts(const voxel_c & tray, const std::vector<cellList_t> & cells,
+                           const SlideState & s, const std::vector<unsigned int> & movers) {
+  freeGrid_c g = freeCells(tray, cells, s, movers);
+  std::set<std::pair<int, int>> seen{{0, 0}};
+  cellList_t out;
+  std::queue<std::pair<int, int>> q;
+  q.push({0, 0});
+  while (!q.empty()) {
+    std::pair<int, int> c = q.front();
+    q.pop();
+    for (int d = 0; d < 4; d++) {
+      std::pair<int, int> n{c.first + DX[d], c.second + DY[d]};
+      if (seen.count(n) || !groupFits(g, cells, s, movers, n.first, n.second))
+        continue;
+      seen.insert(n);
+      out.push_back(n);
+      q.push(n);
     }
   }
-  path.swap(kept);
+  return out;
+}
+
+/* Corner points, as shifts from the start, of a route with the fewest
+ * straight runs that takes the movers to shift (tx, ty), start and end
+ * included. Empty when unreachable. */
+cellList_t fewestTurns(const voxel_c & tray, const std::vector<cellList_t> & cells,
+                       const SlideState & s, const std::vector<unsigned int> & movers,
+                       int tx, int ty) {
+  freeGrid_c g = freeCells(tray, cells, s, movers);
+  const std::pair<int, int> from{0, 0};
+  const std::pair<int, int> to{tx, ty};
+  std::map<std::pair<int, int>, std::pair<int, int>> came{{from, from}};
+  std::queue<std::pair<int, int>> q;
+  q.push(from);
+  while (!q.empty() && !came.count(to)) {
+    std::pair<int, int> c = q.front();
+    q.pop();
+    for (int d = 0; d < 4; d++) {
+      std::pair<int, int> n = c;
+      while (true) {
+        n.first += DX[d];
+        n.second += DY[d];
+        if (!groupFits(g, cells, s, movers, n.first, n.second))
+          break;
+        if (came.count(n))
+          continue;
+        came[n] = c;
+        q.push(n);
+      }
+    }
+  }
+  cellList_t route;
+  if (!came.count(to))
+    return route;
+  for (std::pair<int, int> c = to; ; c = came[c]) {
+    route.push_back(c);
+    if (c == from)
+      break;
+  }
+  std::reverse(route.begin(), route.end());
+  return route;
+}
+
+/* `outer` and everything nested inside it: pieces whose cells all lie in
+ * the outline of a piece already in the group, repeated until no more join.
+ * Pieces that merely touch are not nested. */
+std::vector<unsigned int> nestedGroup(const std::vector<cellList_t> & cells,
+                                      const std::vector<cellList_t> & outlines,
+                                      const SlideState & s, unsigned int outer) {
+  std::vector<unsigned int> group{outer};
+  for (size_t k = 0; k < group.size(); k++) {
+    unsigned int a = group[k];
+    std::set<std::pair<int, int>> inside;
+    for (const auto & c : outlines[a])
+      inside.insert({s.places[a].x + c.first, s.places[a].y + c.second});
+    for (unsigned int b = 0; b < s.places.size(); b++) {
+      if (std::find(group.begin(), group.end(), b) != group.end() || cells[b].empty())
+        continue;
+      bool all = true;
+      for (const auto & c : cells[b])
+        if (!inside.count({s.places[b].x + c.first, s.places[b].y + c.second})) {
+          all = false;
+          break;
+        }
+      if (all)
+        group.push_back(b);
+    }
+  }
+  return group;
 }
 
 } // namespace
@@ -864,7 +939,8 @@ void syncMaxHoles(problem_c & prob) {
 
 std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
                                             const assembly_c & start,
-                                            unsigned int maxStates) {
+                                            unsigned int maxStates,
+                                            bool nested) {
   if (!prob.resultValid())
     return nullptr;
 
@@ -916,6 +992,14 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
     return sep;
   }
 
+  std::vector<cellList_t> cells(n);
+  std::vector<cellList_t> outlines(n);
+  for (unsigned int i = 0; i < n; i++) {
+    cells[i] = cellsOf(*pieces[i]);
+    if (nested)
+      outlines[i] = outlineOf(*pieces[i]);
+  }
+
   std::queue<SlideState> q;
   std::map<std::string, std::pair<std::string, unsigned int>> parent;
   /* parent[key] = {prevKey, movedPiece}; movedPiece==n means root. */
@@ -933,27 +1017,42 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
     q.pop();
     visited++;
 
-    for (unsigned int pi = 0; pi < n; pi++) {
-      for (int d = 0; d < 4; d++) {
-        SlideState next = cur;
-        next.places[pi].x += DX[d];
-        next.places[pi].y += DY[d];
-        if (!placementValid(*tray, pieces, next, pi))
-          continue;
-        std::string key = stateKey(next);
-        if (parent.count(key))
-          continue;
-        parent[key] = {stateKey(cur), pi};
-        if (goalsSatisfied(prob, pieces, next)) {
-          goalKey = key;
-          found = true;
-          q = {};
-          break;
-        }
-        q.push(next);
+    /* One move is one piece going anywhere it can reach while the others
+     * stay put, round corners included, so the search finds the fewest
+     * moves. Counting single-cell steps or straight runs instead leaves
+     * equally short paths that alternate pieces, or stop a piece at a
+     * corner and come back to it after another piece has moved.
+     * With nested slides a piece may also carry what is nested inside it. */
+    const std::string curKey = stateKey(cur);
+    for (unsigned int pi = 0; pi < n && !found; pi++) {
+      std::vector<std::vector<unsigned int>> moverSets{{pi}};
+      if (nested) {
+        std::vector<unsigned int> group = nestedGroup(cells, outlines, cur, pi);
+        if (group.size() > 1)
+          moverSets.push_back(group);
       }
-      if (found)
-        break;
+      for (const std::vector<unsigned int> & movers : moverSets) {
+        for (const std::pair<int, int> & shift : reachableShifts(*tray, cells, cur, movers)) {
+          SlideState next = cur;
+          for (unsigned int m : movers) {
+            next.places[m].x += shift.first;
+            next.places[m].y += shift.second;
+          }
+          std::string key = stateKey(next);
+          if (parent.count(key))
+            continue;
+          parent[key] = {curKey, pi};
+          if (goalsSatisfied(prob, pieces, next)) {
+            goalKey = key;
+            found = true;
+            q = {};
+            break;
+          }
+          q.push(next);
+        }
+        if (found)
+          break;
+      }
     }
   }
 
@@ -991,7 +1090,6 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
     }
   }
   std::reverse(path.begin(), path.end());
-  collapseStraightSlides(path);
 
   std::vector<unsigned int> pcs(n);
   for (unsigned int i = 0; i < n; i++)
@@ -1012,6 +1110,71 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
     sep->addstate(std::move(st));
   }
   return sep;
+}
+
+std::vector<std::pair<int, int>> slideRoute(const problem_c & prob, const separation_c & path,
+                                            unsigned int step, std::vector<unsigned int> * movers) {
+  std::vector<std::pair<int, int>> none;
+  if (movers)
+    movers->clear();
+  if (!prob.resultValid() || step >= path.getMoves())
+    return none;
+  const state_c * a = path.getState(step);
+  const state_c * b = path.getState(step + 1);
+  unsigned int n = path.getPieceNumber();
+
+  /* The pieces that move all shift by the same amount: one piece, or an
+   * outer piece and what is nested inside it. */
+  std::vector<unsigned int> moving;
+  int sx = 0;
+  int sy = 0;
+  for (unsigned int i = 0; i < n; i++) {
+    int dx = b->getX(i) - a->getX(i);
+    int dy = b->getY(i) - a->getY(i);
+    if (dx == 0 && dy == 0)
+      continue;
+    if (a->getOrient(i) != b->getOrient(i))
+      return none;
+    if (!moving.empty() && (dx != sx || dy != sy))
+      return none;
+    sx = dx;
+    sy = dy;
+    moving.push_back(i);
+  }
+  if (moving.empty())
+    return none;
+
+  /* Pieces in path order are the problem's parts, copy by copy. */
+  std::vector<cellList_t> cells;
+  SlideState st;
+  unsigned int pc = 0;
+  for (unsigned int part = 0; part < prob.getNumberOfParts() && pc < n; part++)
+    for (unsigned int j = 0; j < prob.getPartMaximum(part) && pc < n; j++, pc++) {
+      voxel_c * v = prob.getPuzzle().getGridType()->getVoxel(*prob.getPartShape(part));
+      v->transform(a->getOrient(pc));
+      cells.push_back(cellsOf(*v));
+      delete v;
+      st.places.push_back(Place{a->getX(pc), a->getY(pc), (unsigned char)a->getOrient(pc)});
+    }
+  if (pc != n)
+    return none;
+  if (movers)
+    *movers = moving;
+  return fewestTurns(*getResultShape(prob), cells, st, moving, sx, sy);
+}
+
+void applySlideRoutes(const problem_c & prob, const separation_c & path, disasmToMoves_c & anim) {
+  for (unsigned int step = 0; step < path.getMoves(); step++) {
+    std::vector<unsigned int> movers;
+    std::vector<std::pair<int, int>> route = slideRoute(prob, path, step, &movers);
+    /* A straight run animates correctly without help. */
+    if (route.size() < 3)
+      continue;
+    std::vector<std::pair<float, float>> offsets;
+    for (const auto & c : route)
+      offsets.push_back({(float)c.first, (float)c.second});
+    anim.setRoute(step, movers, offsets);
+  }
 }
 
 std::string finalPlacementKey(const separation_c & path) {
