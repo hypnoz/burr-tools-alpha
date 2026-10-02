@@ -1,10 +1,25 @@
+# BurrTools Alpha
+
+This is an **alpha** fork of [BurrTools](https://github.com/burr-tools/burr-tools).
+It has new features and changes that have had very little testing, so expect
+rough edges, and expect both the interface and the solver to change between
+versions.
+
+The fork is for rapid development: new features are built and released quickly
+so the community can try them early and report what works and what doesn't.
+Once a feature has been tested and is stable, it can be merged back, slowly and
+carefully, into the main BurrTools release. If you want the original version,
+use the [main BurrTools releases](https://github.com/burr-tools/burr-tools/releases/latest).
+
+---
+
 This repository contains the BurrTools code with some modernisations
 to make it run on modern systems.
 
 ## Download and install
 
 Grab the file for your platform from the
-[Releases page](https://github.com/burr-tools/burr-tools/releases/latest).
+[Releases page](https://github.com/hypnoz/burr-tools-alpha/releases/latest).
 
 | Platform | Download | Notes |
 | :--- | :--- | :--- |
