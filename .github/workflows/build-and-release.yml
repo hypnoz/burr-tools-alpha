@@ -85,8 +85,15 @@ jobs:
           ./build_scripts/build-linux.sh --skip-dep-install --buildtype release
           ccache -s || true
 
+      # meson keeps only the last 100 lines of a failing test's output, and the
+      # solvers' progress lines on stderr crowd out Catch2's report. On failure,
+      # rerun the binary with stderr dropped so the failing assertions show.
       - name: Run tests
-        run: just test
+        run: |
+          just test || {
+            ./build/test_burrtools 2>/dev/null | grep -v -E '^blockpack:' || true
+            exit 1
+          }
 
       - name: Run static analysis
         run: just check

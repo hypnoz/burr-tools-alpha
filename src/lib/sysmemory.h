@@ -32,7 +32,7 @@ unsigned long long physicalMemoryBytes(void);
 
 /**
  * Where BurrTools may keep large files between runs: ~/Library/Caches/BurrTools
- * on macOS, %LOCALAPPDATA%\BurrTools on Windows, and $XDG_CACHE_HOME/burrtools
+ * on macOS, %%LOCALAPPDATA%\\BurrTools on Windows, and $XDG_CACHE_HOME/burrtools
  * or ~/.cache/burrtools elsewhere. Empty when none of those can be found.
  */
 std::string userCacheDirectory(void);
