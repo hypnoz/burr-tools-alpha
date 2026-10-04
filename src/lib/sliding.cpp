@@ -1,11 +1,31 @@
 /* BurrTools
  *
+ * BurrTools is the legal property of its developers, whose
+ * names are listed in the COPYRIGHT file, which is included
+ * within the source distribution.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ */
+/*
  * Sliding-tray helpers: start/goal colour maps and one-cell slide search.
  */
 #include "sliding.h"
 #include "disasmtomoves.h"
 
 #include "assembly.h"
+#include "bt_assert.h"
 #include "disassembly.h"
 #include "gridtype.h"
 #include "problem.h"
@@ -23,7 +43,6 @@
 #include <sstream>
 #include <string>
 #include <tuple>
-#include <unordered_map>
 #include <utility>
 
 namespace sliding {
@@ -50,6 +69,22 @@ bool isFloor(const voxel_c & tray, int x, int y, int z) {
   return tray.getState(x, y, z) != voxel_c::VX_EMPTY;
 }
 
+unsigned int findOrAddColor(puzzle_c & puz, unsigned int preferredIndex) {
+  /* Prefer 1-based colour indices that match the piece's part order. */
+  while (puz.colorNumber() < preferredIndex)
+    puz.addColor(40 + 30 * (puz.colorNumber() % 3),
+                 40 + 30 * ((puz.colorNumber() + 1) % 3),
+                 40 + 30 * ((puz.colorNumber() + 2) % 3));
+  return preferredIndex;
+}
+
+unsigned int piecePartIndex(const problem_c & prob, unsigned int shapeId) {
+  for (unsigned int i = 0; i < prob.getNumberOfParts(); i++)
+    if (prob.getShapeIdOfPart(i) == shapeId)
+      return i + 1;
+  return 1;
+}
+
 void fillTray(voxel_c * v) {
   for (unsigned int y = 0; y < v->getY(); y++)
     for (unsigned int x = 0; x < v->getX(); x++)
@@ -66,22 +101,6 @@ void paintPieceColor(voxel_c * piece, unsigned int color) {
   for (unsigned int i = 0; i < piece->getXYZ(); i++)
     if (piece->getState(i) != voxel_c::VX_EMPTY)
       piece->setColor(i, color);
-}
-
-unsigned int findOrAddColor(puzzle_c & puz, unsigned int preferredIndex) {
-  /* Prefer 1-based colour indices that match the piece's part order. */
-  while (puz.colorNumber() < preferredIndex)
-    puz.addColor(40 + 30 * (puz.colorNumber() % 3),
-                 40 + 30 * ((puz.colorNumber() + 1) % 3),
-                 40 + 30 * ((puz.colorNumber() + 2) % 3));
-  return preferredIndex;
-}
-
-unsigned int piecePartIndex(const problem_c & prob, unsigned int shapeId) {
-  for (unsigned int i = 0; i < prob.getNumberOfParts(); i++)
-    if (prob.getShapeIdOfPart(i) == shapeId)
-      return i + 1;
-  return 1;
 }
 
 bool footprintFits(const voxel_c & tray, const voxel_c & piece,
@@ -169,8 +188,8 @@ bool findColorAnchor(const voxel_c & tray, const voxel_c & piece,
 }
 
 struct Place {
-  int x, y;
-  unsigned char trans;
+  int x = 0, y = 0;
+  unsigned char trans = 0;
   /* Pieces slide in x and y only. z is the layer their hotspot sits on,
    * fixed from the start, so a tray more than one layer deep works too. */
   int z = 0;
@@ -746,6 +765,21 @@ unsigned int floorCells(const voxel_c & tray) {
   return n;
 }
 
+unsigned int pieceColor(const problem_c & prob, unsigned int shapeId) {
+  if (shapeId >= prob.getPuzzle().getNumberOfShapes())
+    return 0;
+  const voxel_c * piece = prob.getPuzzle().getShape(shapeId);
+  for (unsigned int i = 0; i < piece->getXYZ(); i++)
+    if (piece->getState(i) != voxel_c::VX_EMPTY && piece->getColor(i) != 0)
+      return piece->getColor(i);
+  return 0;
+}
+
+/* The goal-map model below (a separate goal shape painted in piece colours)
+ * came before start/goal shapes. The editor no longer uses it, but older
+ * files can hold such goals and the solver still reads them; the tests use
+ * these to build such puzzles. */
+
 void ensureSetup(puzzle_c & puz, unsigned int width, unsigned int height) {
   if (!isSliding(puz))
     return;
@@ -799,16 +833,6 @@ void ensureSetup(puzzle_c & puz, unsigned int width, unsigned int height) {
     }
     pr->setGoalId(goalId);
   }
-}
-
-unsigned int pieceColor(const problem_c & prob, unsigned int shapeId) {
-  if (shapeId >= prob.getPuzzle().getNumberOfShapes())
-    return 0;
-  const voxel_c * piece = prob.getPuzzle().getShape(shapeId);
-  for (unsigned int i = 0; i < piece->getXYZ(); i++)
-    if (piece->getState(i) != voxel_c::VX_EMPTY && piece->getColor(i) != 0)
-      return piece->getColor(i);
-  return 0;
 }
 
 bool hasStart(const problem_c & prob, unsigned int shapeId) {
@@ -971,7 +995,7 @@ namespace {
 
 /* The original slide search: an arrangement is a text key, and each move
  * works out the free cells afresh. Kept for trays the position tables
- * cannot pack into 64 bits, and for A/B runs (BURRTOOLS_SLIDE_LEGACY=1). */
+ * cannot pack into 128 bits, and for A/B runs (BURRTOOLS_SLIDE_LEGACY=1). */
 void legacySearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
                   const std::vector<cell3List_t> & outlines, bool nested,
                   const SlideState & initial, const goalCheck_c & goals,
@@ -1093,6 +1117,11 @@ void legacySearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
   std::reverse(path.begin(), path.end());
 }
 
+#ifdef __SIZEOF_INT128__
+/* The key of a search whose arrangements do not fit 64 bits. */
+__extension__ typedef unsigned __int128 wideKey_t;
+#endif
+
 /* Every position one piece can take in the empty tray. Pieces only ever
  * translate, so this is worked out once per search: a piece keyed to a
  * narrow slot, like the stepped back layer of a Panex tray, gets a short
@@ -1110,6 +1139,10 @@ struct posTable_c {
   std::vector<std::array<int, 4>> next;
   /* Tray cells each position covers, `words` 64-bit words per position. */
   std::vector<uint64_t> mask;
+  /* With nested slides: the cells of the piece's outline at each position,
+   * laid out as mask is. A piece is nested in this one when its mask lies
+   * wholly inside. */
+  std::vector<uint64_t> outline;
   std::vector<char> atGoal;
   /* Where this piece's position number sits in a packed arrangement. */
   unsigned int shift = 0;
@@ -1126,10 +1159,11 @@ struct posTable_c {
 
 /* Build the position tables. False when they cannot hold this search: a
  * piece with no cells or nowhere to go, a start off the floor, or more
- * positions than 64 bits can number. */
+ * positions than keyBits bits can number. */
 bool buildTables(const voxel_c & tray, const std::vector<cell3List_t> & cells,
+                 const std::vector<cell3List_t> & outlines, bool nested,
                  const SlideState & initial, const goalCheck_c & goals,
-                 size_t & words, std::vector<posTable_c> & tables) {
+                 unsigned int keyBits, size_t & words, std::vector<posTable_c> & tables) {
   const int W = (int)tray.getX();
   const int H = (int)tray.getY();
   const int D = (int)tray.getZ();
@@ -1177,6 +1211,17 @@ bool buildTables(const voxel_c & tray, const std::vector<cell3List_t> & cells,
           size_t bit = ((size_t)(home.z + c.z) * H + (size_t)(y + c.y)) * W + (size_t)(x + c.x);
           m[bit / 64] |= uint64_t(1) << (bit % 64);
         }
+        if (nested) {
+          t.outline.resize(t.outline.size() + words, 0);
+          uint64_t * o = &t.outline[t.outline.size() - words];
+          for (const auto & c : outlines[i]) {
+            const int ox = x + c.x, oy = y + c.y, oz = home.z + c.z;
+            if (ox < 0 || oy < 0 || oz < 0 || ox >= W || oy >= H || oz >= D)
+              continue;
+            size_t bit = ((size_t)oz * H + (size_t)oy) * W + (size_t)ox;
+            o[bit / 64] |= uint64_t(1) << (bit % 64);
+          }
+        }
         t.atGoal.push_back(goals.piece(i, Place{x, y, home.trans, home.z}) ? 1 : 0);
       }
 
@@ -1191,7 +1236,7 @@ bool buildTables(const voxel_c & tray, const std::vector<cell3List_t> & cells,
     unsigned int width = 1;
     while (width < 64 && (uint64_t(1) << width) < count)
       width++;
-    if (used + width > 64)
+    if (used + width > keyBits)
       return false;
     t.shift = used;
     t.bits = width == 64 ? ~uint64_t(0) : (uint64_t(1) << width) - 1;
@@ -1200,32 +1245,121 @@ bool buildTables(const voxel_c & tray, const std::vector<cell3List_t> & cells,
   return true;
 }
 
-/* Memory one arrangement takes in tableSearch: a hash node with its key and
- * its parent's, its bucket, and its share of the queue. Measured at about
- * 55 bytes at peak on Panex Jr; this leaves some room. */
-const unsigned long TABLE_STATE_BYTES = 64;
+/* Arrangement -> the arrangement it was reached from, for tableSearch. Open
+ * addressing in two flat arrays: no allocation per entry, unlike
+ * std::unordered_map, so about twice as fast. */
+template <class key_t>
+class parentMap_c {
+public:
+  parentMap_c(void) { rehash(1u << 16); }
+
+  /* Add key with its parent; false when key is there already. */
+  bool emplace(key_t key, key_t parent) {
+    if (key == EMPTY) {
+      if (hasEmptyKey)
+        return false;
+      hasEmptyKey = true;
+      emptyKeyParent = parent;
+      count++;
+      return true;
+    }
+    size_t i = slot(key);
+    while (keys[i] != EMPTY) {
+      if (keys[i] == key)
+        return false;
+      i = (i + 1) & mask;
+    }
+    keys[i] = key;
+    parents[i] = parent;
+    if (++count * 10 > keys.size() * 7)
+      rehash(keys.size() * 2);
+    return true;
+  }
+
+  /* The parent of a key that is there. */
+  key_t parentOf(key_t key) const {
+    if (key == EMPTY)
+      return emptyKeyParent;
+    size_t i = slot(key);
+    while (keys[i] != key)
+      i = (i + 1) & mask;
+    return parents[i];
+  }
+
+  size_t size(void) const { return count; }
+
+private:
+  static constexpr key_t EMPTY = ~key_t(0);
+
+  size_t slot(key_t key) const {
+    return (size_t)((fold(key) * 0x9E3779B97F4A7C15ull) >> shift);
+  }
+  static uint64_t fold(uint64_t key) { return key; }
+#ifdef __SIZEOF_INT128__
+  static uint64_t fold(wideKey_t key) {
+    return (uint64_t)key ^ ((uint64_t)(key >> 64) * 0xC2B2AE3D27D4EB4Full);
+  }
+#endif
+
+  void rehash(size_t capacity) {
+    std::vector<key_t> oldKeys(capacity, EMPTY);
+    std::vector<key_t> oldParents(capacity);
+    oldKeys.swap(keys);
+    oldParents.swap(parents);
+    mask = capacity - 1;
+    shift = 64;
+    for (size_t c = capacity; c > 1; c >>= 1)
+      shift--;
+    for (size_t j = 0; j < oldKeys.size(); j++)
+      if (oldKeys[j] != EMPTY) {
+        size_t i = slot(oldKeys[j]);
+        while (keys[i] != EMPTY)
+          i = (i + 1) & mask;
+        keys[i] = oldKeys[j];
+        parents[i] = oldParents[j];
+      }
+  }
+
+  std::vector<key_t> keys;
+  std::vector<key_t> parents;
+  size_t mask = 0;
+  unsigned int shift = 64;
+  size_t count = 0;
+  /* EMPTY marks a free slot, so that one key is kept aside. */
+  bool hasEmptyKey = false;
+  key_t emptyKeyParent = 0;
+};
+
+/* Memory one arrangement takes in tableSearch, in key sizes: two keys in
+ * parentMap_c at a load between 35% and 70%, its share of the queue, and
+ * while the table doubles the old and the new table together. Measured at
+ * 51 bytes at peak with 8-byte keys on the 4x4 benchmark in
+ * test_sliding.cpp; 7 keys leaves some room. */
+const unsigned long TABLE_STATE_KEYS = 7;
 
 /* The slide search over position tables. An arrangement is one position
- * number per piece packed into 64 bits, and a move is a flood fill over the
+ * number per piece packed into a key_t (64 bits, or 128 for trays that need
+ * more), and a move is a flood fill over the
  * piece's own positions against a bitmask of the cells the others cover.
  * It visits arrangements in the same order as legacySearch, so both find
  * the same path. False, having searched nothing, when the tables cannot
  * hold this search. */
+template <class key_t>
 bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
                  const std::vector<cell3List_t> & outlines, bool nested,
                  const SlideState & initial, const goalCheck_c & goals,
                  slideSearch_c & search, std::vector<SlideState> & path) {
   size_t words = 0;
   std::vector<posTable_c> t;
-  if (!buildTables(tray, cells, initial, goals, words, t))
+  if (!buildTables(tray, cells, outlines, nested, initial, goals, 8 * sizeof(key_t), words, t))
     return false;
 
   const unsigned int n = (unsigned int)initial.places.size();
   const unsigned long maxStates = search.maxStates;
-  auto posOf = [&t](uint64_t key, unsigned int i) {
+  auto posOf = [&t](key_t key, unsigned int i) {
     return (int)((key >> t[i].shift) & t[i].bits);
   };
-  auto decode = [&](uint64_t key) {
+  auto decode = [&](key_t key) {
     SlideState st = initial;
     for (unsigned int i = 0; i < n; i++) {
       int p = posOf(key, i);
@@ -1241,28 +1375,79 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
     return false;
   };
 
-  uint64_t startKey = 0;
+  key_t startKey = 0;
   for (unsigned int i = 0; i < n; i++)
-    startKey |= (uint64_t)t[i].at(initial.places[i].x, initial.places[i].y) << t[i].shift;
+    startKey |= (key_t)t[i].at(initial.places[i].x, initial.places[i].y) << t[i].shift;
+
+  /* Pieces that are copies of one another -- same cells, same layer, same
+   * goal -- can swap places without changing the puzzle. Each such group is
+   * kept with its positions in rising order, so the arrangements that differ
+   * only by which copy sits where are searched as one.
+   * BURRTOOLS_NO_SLIDE_SYMMETRY=1 turns this off, for A/B runs. */
+  std::vector<std::vector<unsigned int>> copies;
+  if (!std::getenv("BURRTOOLS_NO_SLIDE_SYMMETRY")) {
+    auto sameCells = [](const cell3List_t & a, const cell3List_t & b) {
+      return a.size() == b.size() &&
+             std::equal(a.begin(), a.end(), b.begin(), [](const cell3_c & p, const cell3_c & q) {
+               return p.x == q.x && p.y == q.y && p.z == q.z;
+             });
+    };
+    std::vector<std::vector<unsigned int>> groups;
+    for (unsigned int i = 0; i < n; i++) {
+      bool placed = false;
+      for (auto & g : groups) {
+        const unsigned int j = g[0];
+        if (initial.places[i].z == initial.places[j].z && sameCells(cells[i], cells[j]) &&
+            t[i].px == t[j].px && t[i].py == t[j].py && t[i].atGoal == t[j].atGoal) {
+          g.push_back(i);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed)
+        groups.push_back({i});
+    }
+    for (auto & g : groups)
+      if (g.size() > 1)
+        copies.push_back(std::move(g));
+  }
+  auto canon = [&](key_t key) {
+    for (const std::vector<unsigned int> & g : copies) {
+      /* A move changes one position, so this is nearly sorted already. */
+      for (size_t a = 1; a < g.size(); a++)
+        for (size_t b = a; b > 0; b--) {
+          const posTable_c & lo = t[g[b - 1]];
+          const posTable_c & hi = t[g[b]];
+          const key_t pl = (key >> lo.shift) & lo.bits;
+          const key_t ph = (key >> hi.shift) & hi.bits;
+          if (pl <= ph)
+            break;
+          key = (key & ~((key_t)lo.bits << lo.shift) & ~((key_t)hi.bits << hi.shift)) |
+                (ph << lo.shift) | (pl << hi.shift);
+        }
+    }
+    return key;
+  };
+  const key_t startCanon = canon(startKey);
 
   const unsigned long memoryLimit = search.maxMemoryStates
       ? search.maxMemoryStates
-      : memoryStates(TABLE_STATE_BYTES, search.highMemory);
+      : memoryStates(TABLE_STATE_KEYS * sizeof(key_t), search.highMemory);
   search.memoryStates = memoryLimit;
 
-  /* parent[key] is the arrangement it was reached from; the start is its own. */
-  std::unordered_map<uint64_t, uint64_t> parent;
-  parent.emplace(startKey, startKey);
-  std::queue<uint64_t> q;
-  q.push(startKey);
+  /* Each arrangement and the one it was reached from; the start is its own. */
+  parentMap_c<key_t> parent;
+  parent.emplace(startCanon, startCanon);
+  std::queue<key_t> q;
+  q.push(startCanon);
 
   unsigned long visited = 0;
-  uint64_t goalKey = 0;
+  key_t goalKey = 0;
   bool found = false;
 
   /* A new arrangement: remember it and queue it. True when it is the goal. */
-  auto reach = [&](uint64_t key, uint64_t from) {
-    if (!parent.emplace(key, from).second)
+  auto reach = [&](key_t key, key_t from) {
+    if (!parent.emplace(key, from))
       return false;
     bool goal = true;
     for (unsigned int i = 0; i < n && goal; i++)
@@ -1284,8 +1469,128 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
     seen[i].assign(t[i].px.size(), 0);
   unsigned int epoch = 0;
   std::vector<int> fill;
+  /* The same for the shifts of a nested group, (dx, dy) from -tray to +tray. */
+  const int trayW = (int)tray.getX();
+  const int trayH = (int)tray.getY();
+  std::vector<unsigned int> shiftSeen(nested ? (size_t)(2 * trayW + 1) * (2 * trayH + 1) : 0, 0);
+  unsigned int shiftEpoch = 0;
+  std::vector<std::pair<int, int>> shiftQueue;
 
-  while (!q.empty()) {
+  /* Calls emit with every arrangement one move from cur, until emit returns
+   * true; then it returns true itself. Same order as legacySearch: each
+   * piece alone, then with what is nested in it; positions in the order a
+   * breadth-first fill finds them. */
+  auto expand = [&](const key_t cur, auto && emit) {
+    std::fill(occupied.begin(), occupied.end(), 0);
+    for (unsigned int i = 0; i < n; i++) {
+      pos[i] = posOf(cur, i);
+      const uint64_t * m = &t[i].mask[(size_t)pos[i] * words];
+      for (size_t w = 0; w < words; w++)
+        occupied[w] |= m[w];
+    }
+
+    for (unsigned int pi = 0; pi < n; pi++) {
+      const posTable_c & tp = t[pi];
+      const uint64_t * mine = &tp.mask[(size_t)pos[pi] * words];
+      for (size_t w = 0; w < words; w++)
+        others[w] = occupied[w] & ~mine[w];
+
+      if (++epoch == 0) {
+        for (auto & v : seen)
+          std::fill(v.begin(), v.end(), 0);
+        epoch = 1;
+      }
+      seen[pi][(size_t)pos[pi]] = epoch;
+      fill.assign(1, pos[pi]);
+      const key_t clear = cur & ~((key_t)tp.bits << tp.shift);
+      for (size_t head = 0; head < fill.size(); head++)
+        for (int d = 0; d < 4; d++) {
+          int nb = tp.next[(size_t)fill[head]][d];
+          if (nb < 0 || seen[pi][(size_t)nb] == epoch ||
+              overlaps(&tp.mask[(size_t)nb * words], others))
+            continue;
+          seen[pi][(size_t)nb] = epoch;
+          fill.push_back(nb);
+          if (emit(clear | ((key_t)nb << tp.shift)))
+            return true;
+        }
+
+      if (!nested)
+        continue;
+      /* pi and everything nested inside it (see nestedGroup): a piece is
+       * nested in a member when its cells all lie in that member's outline. */
+      unsigned int group[64];
+      unsigned int members = 0;
+      uint64_t inGroup = uint64_t(1) << pi;
+      group[members++] = pi;
+      for (unsigned int k = 0; k < members; k++) {
+        const unsigned int a = group[k];
+        const uint64_t * outer = &t[a].outline[(size_t)pos[a] * words];
+        for (unsigned int b = 0; b < n; b++) {
+          if ((inGroup >> b) & 1)
+            continue;
+          const uint64_t * inner = &t[b].mask[(size_t)pos[b] * words];
+          bool all = true;
+          for (size_t w = 0; w < words && all; w++)
+            all = (inner[w] & ~outer[w]) == 0;
+          if (all) {
+            group[members++] = b;
+            inGroup |= uint64_t(1) << b;
+          }
+        }
+      }
+      if (members < 2)
+        continue;
+      others = occupied;
+      for (unsigned int g = 0; g < members; g++) {
+        const unsigned int m = group[g];
+        const uint64_t * gm = &t[m].mask[(size_t)pos[m] * words];
+        for (size_t w = 0; w < words; w++)
+          others[w] &= ~gm[w];
+      }
+      /* The group's key at shift (dx, dy), or false when it does not fit. */
+      auto shifted = [&](int dx, int dy, key_t & key) {
+        key = cur;
+        for (unsigned int g = 0; g < members; g++) {
+          const unsigned int m = group[g];
+          int p = t[m].at(t[m].px[(size_t)pos[m]] + dx, t[m].py[(size_t)pos[m]] + dy);
+          if (p < 0 || overlaps(&t[m].mask[(size_t)p * words], others))
+            return false;
+          key = (key & ~((key_t)t[m].bits << t[m].shift)) | ((key_t)p << t[m].shift);
+        }
+        return true;
+      };
+      /* Flood over the shifts the group can make, as for one piece. */
+      if (++shiftEpoch == 0) {
+        std::fill(shiftSeen.begin(), shiftSeen.end(), 0);
+        shiftEpoch = 1;
+      }
+      auto seenAt = [&](int dx, int dy) -> unsigned int & {
+        return shiftSeen[(size_t)((dy + trayH) * (2 * trayW + 1) + (dx + trayW))];
+      };
+      seenAt(0, 0) = shiftEpoch;
+      shiftQueue.assign(1, {0, 0});
+      for (size_t head = 0; head < shiftQueue.size(); head++) {
+        const std::pair<int, int> c = shiftQueue[head];
+        for (int d = 0; d < 4; d++) {
+          const std::pair<int, int> nb{c.first + DX[d], c.second + DY[d]};
+          /* A shift as wide as the tray fits nothing. */
+          if (nb.first < -trayW || nb.first > trayW || nb.second < -trayH || nb.second > trayH)
+            continue;
+          key_t key;
+          if (seenAt(nb.first, nb.second) == shiftEpoch || !shifted(nb.first, nb.second, key))
+            continue;
+          seenAt(nb.first, nb.second) = shiftEpoch;
+          shiftQueue.push_back(nb);
+          if (emit(key))
+            return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  while (!q.empty() && !found) {
     if (maxStates != FULL_SEARCH && visited >= maxStates) {
       search.outcome = SLIDE_LIMIT;
       break;
@@ -1302,101 +1607,41 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
         break;
       }
     }
-    const uint64_t cur = q.front();
+    const key_t cur = q.front();
     q.pop();
     visited++;
-
-    std::fill(occupied.begin(), occupied.end(), 0);
-    for (unsigned int i = 0; i < n; i++) {
-      pos[i] = posOf(cur, i);
-      const uint64_t * m = &t[i].mask[(size_t)pos[i] * words];
-      for (size_t w = 0; w < words; w++)
-        occupied[w] |= m[w];
-    }
-
-    /* Same order as legacySearch: each piece alone, then with what is
-     * nested in it; positions in the order a breadth-first fill finds them. */
-    for (unsigned int pi = 0; pi < n && !found; pi++) {
-      const posTable_c & tp = t[pi];
-      const uint64_t * mine = &tp.mask[(size_t)pos[pi] * words];
-      for (size_t w = 0; w < words; w++)
-        others[w] = occupied[w] & ~mine[w];
-
-      if (++epoch == 0) {
-        for (auto & v : seen)
-          std::fill(v.begin(), v.end(), 0);
-        epoch = 1;
-      }
-      seen[pi][(size_t)pos[pi]] = epoch;
-      fill.assign(1, pos[pi]);
-      const uint64_t clear = cur & ~(tp.bits << tp.shift);
-      for (size_t head = 0; head < fill.size() && !found; head++)
-        for (int d = 0; d < 4; d++) {
-          int nb = tp.next[(size_t)fill[head]][d];
-          if (nb < 0 || seen[pi][(size_t)nb] == epoch ||
-              overlaps(&tp.mask[(size_t)nb * words], others))
-            continue;
-          seen[pi][(size_t)nb] = epoch;
-          fill.push_back(nb);
-          if (reach(clear | ((uint64_t)nb << tp.shift), cur)) {
-            found = true;
-            break;
-          }
-        }
-
-      if (!nested || found)
-        continue;
-      std::vector<unsigned int> group = nestedGroup(cells, outlines, decode(cur), pi);
-      if (group.size() < 2)
-        continue;
-      others = occupied;
-      for (unsigned int m : group) {
-        const uint64_t * gm = &t[m].mask[(size_t)pos[m] * words];
-        for (size_t w = 0; w < words; w++)
-          others[w] &= ~gm[w];
-      }
-      /* The group's key at shift (dx, dy), or false when it does not fit. */
-      auto shifted = [&](int dx, int dy, uint64_t & key) {
-        key = cur;
-        for (unsigned int m : group) {
-          int p = t[m].at(t[m].px[(size_t)pos[m]] + dx, t[m].py[(size_t)pos[m]] + dy);
-          if (p < 0 || overlaps(&t[m].mask[(size_t)p * words], others))
-            return false;
-          key = (key & ~(t[m].bits << t[m].shift)) | ((uint64_t)p << t[m].shift);
-        }
-        return true;
-      };
-      std::set<std::pair<int, int>> shifts{{0, 0}};
-      std::queue<std::pair<int, int>> sq;
-      sq.push({0, 0});
-      while (!sq.empty() && !found) {
-        std::pair<int, int> c = sq.front();
-        sq.pop();
-        for (int d = 0; d < 4; d++) {
-          std::pair<int, int> nb{c.first + DX[d], c.second + DY[d]};
-          uint64_t key;
-          if (shifts.count(nb) || !shifted(nb.first, nb.second, key))
-            continue;
-          shifts.insert(nb);
-          sq.push(nb);
-          if (reach(key, cur)) {
-            found = true;
-            break;
-          }
-        }
-      }
-    }
+    found = expand(cur, [&](key_t key) { return reach(canon(key), cur); });
   }
 
   search.visited = visited;
   if (!found)
     return true;
-  for (uint64_t k = goalKey; ; k = parent[k]) {
-    path.push_back(decode(k));
-    if (k == startKey)
+
+  /* The arrangements from goal back to start, as the search kept them. */
+  std::vector<key_t> chain;
+  for (key_t k = goalKey; ; k = parent.parentOf(k)) {
+    chain.push_back(k);
+    if (k == startCanon)
       break;
   }
-  std::reverse(path.begin(), path.end());
+  /* Forward again from the real start. Where copies were swapped about,
+   * each step is the move from the arrangement at hand that gives the next
+   * one kept, so every piece keeps its own identity along the path. */
+  key_t real = startKey;
+  path.push_back(decode(real));
+  for (size_t s = chain.size() - 1; s-- > 0;) {
+    key_t next = chain[s];
+    if (!copies.empty()) {
+      bt_assert2(expand(real, [&](key_t key) {
+        if (canon(key) != chain[s])
+          return false;
+        next = key;
+        return true;
+      }));
+    }
+    real = next;
+    path.push_back(decode(real));
+  }
   return true;
 }
 
@@ -1426,6 +1671,8 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
   if (n == 0)
     return nullptr;
 
+  /* The pieces as placed at the start; owned here, viewed through pieces. */
+  std::vector<std::unique_ptr<voxel_c>> owned(n);
   std::vector<const voxel_c *> pieces(n, nullptr);
   SlideState initial;
   initial.places.resize(n);
@@ -1433,20 +1680,12 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
   unsigned int pc = 0;
   for (unsigned int part = 0; part < prob.getNumberOfParts(); part++) {
     for (unsigned int j = 0; j < prob.getPartMaximum(part); j++) {
-      if (!start.isPlaced(pc)) {
-        for (auto * p : pieces)
-          delete p;
+      if (pc >= n || !start.isPlaced(pc))
         return nullptr;
-      }
-      voxel_c * oriented = prob.getPuzzle().getGridType()->getVoxel(
-          *prob.getPartShape(part));
-      if (!oriented->transform(start.getTransformation(pc))) {
-        delete oriented;
-        for (auto * p : pieces)
-          delete p;
+      owned[pc].reset(prob.getPuzzle().getGridType()->getVoxel(*prob.getPartShape(part)));
+      if (!owned[pc]->transform(start.getTransformation(pc)))
         return nullptr;
-      }
-      pieces[pc] = oriented;
+      pieces[pc] = owned[pc].get();
       initial.places[pc].x = start.getX(pc);
       initial.places[pc].y = start.getY(pc);
       initial.places[pc].trans = start.getTransformation(pc);
@@ -1467,8 +1706,6 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
       st->set(i, initial.places[i].x, initial.places[i].y, start.getZ(i),
               initial.places[i].trans);
     sep->addstate(std::move(st));
-    for (auto * p : pieces)
-      delete p;
     return sep;
   }
 
@@ -1482,12 +1719,16 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
 
   /* Start to goal, in order. Empty when no path was found. */
   std::vector<SlideState> path;
-  if (std::getenv("BURRTOOLS_SLIDE_LEGACY") ||
-      !tableSearch(*tray, cells, outlines, nested, initial, goals, search, path))
+  bool searched = false;
+  if (!std::getenv("BURRTOOLS_SLIDE_LEGACY")) {
+    searched = tableSearch<uint64_t>(*tray, cells, outlines, nested, initial, goals, search, path);
+#ifdef __SIZEOF_INT128__
+    if (!searched)
+      searched = tableSearch<wideKey_t>(*tray, cells, outlines, nested, initial, goals, search, path);
+#endif
+  }
+  if (!searched)
     legacySearch(*tray, cells, outlines, nested, initial, goals, search, path);
-
-  for (auto * p : pieces)
-    delete p;
 
   if (search.progress)
     search.progress->store(search.visited, std::memory_order_relaxed);
@@ -1554,10 +1795,9 @@ std::vector<std::pair<int, int>> slideRoute(const problem_c & prob, const separa
   unsigned int pc = 0;
   for (unsigned int part = 0; part < prob.getNumberOfParts() && pc < n; part++)
     for (unsigned int j = 0; j < prob.getPartMaximum(part) && pc < n; j++, pc++) {
-      voxel_c * v = prob.getPuzzle().getGridType()->getVoxel(*prob.getPartShape(part));
+      std::unique_ptr<voxel_c> v(prob.getPuzzle().getGridType()->getVoxel(*prob.getPartShape(part)));
       v->transform(a->getOrient(pc));
       cells.push_back(cellsOf(*v));
-      delete v;
       st.places.push_back(Place{a->getX(pc), a->getY(pc), (unsigned char)a->getOrient(pc),
                                 a->getZ(pc)});
     }

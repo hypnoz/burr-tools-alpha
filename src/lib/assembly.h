@@ -141,8 +141,8 @@ class mirrorInfo_c {
 private:
 
   // no copying and assigning
-  mirrorInfo_c(const mirrorInfo_c&);
-  void operator=(const mirrorInfo_c&);
+  mirrorInfo_c(const mirrorInfo_c&) = delete;
+  void operator=(const mirrorInfo_c&) = delete;
 };
 
 /** this class contains the assembly for a puzzle.
@@ -336,8 +336,8 @@ public:
 private:
 
   // no copying and assigning
-  assembly_c(const assembly_c&);
-  void operator=(const assembly_c&);
+  assembly_c(const assembly_c&) = delete;
+  void operator=(const assembly_c&) = delete;
 
 };
 

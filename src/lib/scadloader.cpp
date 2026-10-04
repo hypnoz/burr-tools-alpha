@@ -28,6 +28,7 @@
 #include <cctype>
 #include <cstdio>
 #include <iterator>
+#include <memory>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -39,6 +40,10 @@ const unsigned int MAX_DIM = 256;
 class ScadParser {
   const std::string &s;
   size_t i;
+  /* Arrays nested in arrays: skipValue recurses, so a crafted file could
+   * otherwise run the stack out. Real puzzlecad files nest a few deep. */
+  unsigned int depth = 0;
+  static const unsigned int MAX_NESTING = 200;
 
 public:
   explicit ScadParser(const std::string &text) : s(text), i(0) {}
@@ -129,6 +134,13 @@ public:
     }
 
     if (s[i] == '[') {
+      if (depth >= MAX_NESTING)
+        return false;
+      struct nest_c {
+        unsigned int & d;
+        explicit nest_c(unsigned int & dd) : d(dd) { d++; }
+        ~nest_c() { d--; }
+      } nest(depth);
       i++;
       skip();
       if (!eat(']')) {
@@ -310,7 +322,7 @@ static bool isIdentChar(char c) {
 
 struct ScadCall {
   std::string name;
-  size_t argsPos; /* index of '(' */
+  size_t argsPos = 0; /* index of '(' */
 };
 
 /* Scan the file, skipping comments and strings, and collect puzzlecad calls
@@ -477,10 +489,10 @@ static bool addShapeFromLayers(puzzle_c *p, const std::vector<std::string> &laye
 
 } // namespace
 
-puzzle_c * loadOpenScadPuzzle(std::istream * str) {
+std::unique_ptr<puzzle_c> loadOpenScadPuzzle(std::istream * str) {
 
   if (!str)
-    return 0;
+    return nullptr;
 
   std::string text((std::istreambuf_iterator<char>(*str)),
                    std::istreambuf_iterator<char>());
@@ -488,12 +500,10 @@ puzzle_c * loadOpenScadPuzzle(std::istream * str) {
   std::vector<ScadCall> calls;
   findCalls(text, calls);
   if (calls.empty())
-    return 0;
+    return nullptr;
 
-  puzzle_c * p = new puzzle_c(new gridType_c());
+  auto p = std::make_unique<puzzle_c>(new gridType_c());
   problem_c * pr = p->getProblem(p->addProblem());
-  pr->setName("Problem");
-
   std::vector<std::string> resultLayers;
   unsigned int pieceCount = 0;
 
@@ -512,7 +522,7 @@ puzzle_c * loadOpenScadPuzzle(std::istream * str) {
         char nm[32];
         snprintf(nm, sizeof(nm), "Piece %u", pieceCount + 1);
         unsigned int id;
-        if (addShapeFromLayers(p, pieces[n], nm, &id)) {
+        if (addShapeFromLayers(p.get(), pieces[n], nm, &id)) {
           pr->setShapeMinimum(id, 1);
           pieceCount++;
         }
@@ -524,7 +534,7 @@ puzzle_c * loadOpenScadPuzzle(std::istream * str) {
       char nm[32];
       snprintf(nm, sizeof(nm), "Piece %u", pieceCount + 1);
       unsigned int id;
-      if (addShapeFromLayers(p, layers, nm, &id)) {
+      if (addShapeFromLayers(p.get(), layers, nm, &id)) {
         pr->setShapeMinimum(id, 1);
         pieceCount++;
       }
@@ -535,16 +545,14 @@ puzzle_c * loadOpenScadPuzzle(std::istream * str) {
     }
   }
 
-  if (pieceCount == 0) {
-    delete p;
-    return 0;
-  }
+  if (pieceCount == 0)
+    return nullptr;
 
   pr->setName("Puzzle");
 
   if (!resultLayers.empty()) {
     unsigned int id;
-    if (addShapeFromLayers(p, resultLayers, "Result", &id))
+    if (addShapeFromLayers(p.get(), resultLayers, "Result", &id))
       pr->setResultId(id);
   }
 

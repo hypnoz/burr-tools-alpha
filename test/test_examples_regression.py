@@ -326,6 +326,24 @@ def generate_known_good(release_dir: str, source_root: str, output_path: str, in
     print(f"\nKnown-good reference written to {output_path} ({len(data['puzzles'])} puzzles).")
 
 
+FORK_MOVES_FILE = "examples_fork_moves.json"
+
+
+def load_fork_moves(known_good_path: str) -> dict:
+    """burrTxt move strings where this fork's notation differs from 0.7.1.
+
+    The fork prints one segment per single-piece removal and carries a group
+    split's moves into the removed branch (separation_c::movesTextPieceRemovals),
+    so some 0.7.1 strings differ by design. The file sits next to the
+    known-good JSON and maps puzzle path -> expected move strings.
+    """
+    path = os.path.join(os.path.dirname(known_good_path), FORK_MOVES_FILE)
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r") as f:
+        return json.load(f).get("puzzles", {})
+
+
 def compare_against_known_good(
     burrtxt: str,
     burrtxt2: str,
@@ -345,6 +363,7 @@ def compare_against_known_good(
         reference = json.load(f)
 
     puzzles_ref = reference.get("puzzles", {})
+    fork_moves = load_fork_moves(known_good_path)
     if not puzzles_ref:
         print("Error: Known-good reference file contains no puzzles.", file=sys.stderr)
         return 2
@@ -408,9 +427,10 @@ def compare_against_known_good(
                 puzzle_failures.append(
                     f"burrTxt disassembly solutions count mismatch: expected {exp_dis['solutions']}, got {act_dis['solutions']}"
                 )
-            if exp_dis.get("moves") and sorted(act_dis.get("moves", [])) != sorted(exp_dis.get("moves", [])):
+            exp_moves = fork_moves.get(rel_path, exp_dis.get("moves"))
+            if exp_moves and sorted(act_dis.get("moves", [])) != sorted(exp_moves):
                 puzzle_failures.append(
-                    f"burrTxt disassembly moves mismatch: expected {sorted(exp_dis.get('moves', []))}, got {sorted(act_dis.get('moves', []))}"
+                    f"burrTxt disassembly moves mismatch: expected {sorted(exp_moves)}, got {sorted(act_dis.get('moves', []))}"
                 )
 
         # 3. Test burrTxt2 assembly

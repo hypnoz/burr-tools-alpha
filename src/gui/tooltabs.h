@@ -35,7 +35,7 @@ class ToolTab : public LFl_Tabs {
 
 public:
 
-  ToolTab(int x, int y, int w, int h) : LFl_Tabs(x, y, w, h), puzzle(0), shape(0) {}
+  ToolTab(int x, int y, int w, int h) : LFl_Tabs(x, y, w, h), toAll(0), puzzle(0), shape(0) {}
 
   virtual void setVoxelSpace(puzzle_c * puz, unsigned int sh) = 0;
   bool operationToAll(void) { return toAll->value() != 0; }

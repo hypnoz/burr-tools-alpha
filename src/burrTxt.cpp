@@ -824,7 +824,8 @@ int main(int argv, char* args[]) {
       case W_SOLUTION_ASSM:
         for (unsigned int i = 0; i < p.getNumberOfProblems(); i++) {
           printf("problem %u\n", i);
-          for (unsigned int s = 0; s < p.getProblem(i)->getNumSolutions(); s++) {
+          /* The saved ones: a solution limit keeps fewer than were found. */
+          for (unsigned int s = 0; s < p.getProblem(i)->getNumberOfSavedSolutions(); s++) {
 
             printf("%03u: ", s+1);
             const assembly_c * a = p.getProblem(i)->getSavedSolution(s)->getAssembly();
@@ -861,6 +862,11 @@ int main(int argv, char* args[]) {
     }
   else
     {
+      if (problem >= p.getNumberOfProblems()) {
+        fprintf(stderr, "burrTxt: there is no problem %u; the file has %u (numbered from 0)\n",
+                problem, p.getNumberOfProblems());
+        return 2;
+      }
       firstProblem = problem;
       lastProblem = problem+1;
     }
@@ -899,12 +905,18 @@ int main(int argv, char* args[]) {
         panex::panexSearch_c panexSearch;
         panexSearch.highMemory = highMemory;
         panexSearch.threads = threads;
-        if (disassemble && panexSolver) {
-          std::string why = panex::unsupported(*problem);
+        /* As in the GUI: the Stacking Solver runs on the Panex search too
+         * whenever that search can hold the puzzle; the older search is
+         * for the rest (more rods or discs than it packs). */
+        const bool usePanex = disassemble &&
+            (panexSolver || panex::unsupported(*problem, true).empty());
+        if (usePanex) {
+          std::string why = panex::unsupported(*problem, !panexSolver);
           if (!why.empty()) {
             fprintf(stderr, "burrTxt: %s\n", why.c_str());
             return 2;
           }
+          panexSearch.anyRules = !panexSolver;
           panexSearch.workDir = panexDir;
           panexSearch.diskBudget = (unsigned long long)(panexDiskGB * 1e9);
           panexSearch.stop = &panexStop;
@@ -939,8 +951,8 @@ int main(int argv, char* args[]) {
             cout << " (use -d to search for the moves)";
           if (newline)
             cout << endl;
-          if (disassemble && panexSolver) {
-            cout << "panex search: " << panexSearch.depthReached << " moves deep, "
+          if (usePanex) {
+            cout << (panexSolver ? "panex search: " : "stack search: ") << panexSearch.depthReached << " moves deep, "
                  << panexSearch.found << " stackings, peak "
                  << panexSearch.peakMemory / 1048576 << " MB in memory";
             if (panexSearch.diskBytes)

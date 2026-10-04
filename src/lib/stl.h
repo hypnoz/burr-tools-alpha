@@ -103,8 +103,8 @@ class stlExporter_c {
   private:
 
     // no copying and assigning
-    stlExporter_c(const stlExporter_c&);
-    void operator=(const stlExporter_c&);
+    stlExporter_c(const stlExporter_c&) = delete;
+    void operator=(const stlExporter_c&) = delete;
 };
 
 #endif

@@ -1,5 +1,24 @@
 /* BurrTools
  *
+ * BurrTools is the legal property of its developers, whose
+ * names are listed in the COPYRIGHT file, which is included
+ * within the source distribution.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ */
+/*
  * The Panex Solver. A breadth-first search of rod transfers built for large
  * Panex towers:
  *
@@ -237,51 +256,165 @@ void parallel(unsigned int n, F f) {
     th.join();
 }
 
-/* Drop from sorted, unique a every key that is in sorted b. */
+/* Drop from sorted, unique a every key that is in sorted b. Both run
+ * upwards, so each key of a is looked for from where the last was found, in
+ * doubling steps and then by halving: a few steps close by, where a search
+ * of all the rest of b would jump about memory. */
 void subtract(layer_t & a, const layer_t & b) {
   size_t w = 0;
-  auto it = b.begin();
+  const pkey_c * it = b.data();
+  const pkey_c * const end = b.data() + b.size();
   for (size_t i = 0; i < a.size(); i++) {
-    it = std::lower_bound(it, b.end(), a[i]);
-    if (it == b.end() || *it != a[i])
+    size_t step = 1;
+    const pkey_c * lo = it;
+    while (lo + step < end && lo[step] < a[i]) {
+      lo += step;
+      step *= 2;
+    }
+    it = std::lower_bound(lo, std::min(lo + step + 1, end), a[i]);
+    if (it == end || *it != a[i])
       a[w++] = a[i];
   }
   a.resize(w);
 }
 
-/* Merge sorted, unique parts into one sorted, unique layer, pairwise and in
- * parallel. Empties parts. */
-layer_t mergeParts(std::vector<layer_t> & parts) {
-  if (parts.empty())
+/* Sort keys of at most bits significant bits: by 11 bits at a time from the
+ * low end, each pass keeping the order of the one before. tmp is scratch.
+ * Several times quicker than a comparison sort on the hundreds of thousands
+ * of keys one batch of a level makes. */
+void radixSort(layer_t & keys, layer_t & tmp, unsigned int bits) {
+  if (keys.size() < 2048) {
+    std::sort(keys.begin(), keys.end());
+    return;
+  }
+  const unsigned int DIGIT = 11;
+  tmp.resize(keys.size());
+  pkey_c * from = keys.data();
+  pkey_c * to = tmp.data();
+  const size_t n = keys.size();
+  for (unsigned int shift = 0; shift < bits; shift += DIGIT) {
+    size_t count[1u << DIGIT] = {};
+    auto digit = [shift](const pkey_c & k) {
+      const uint64_t v = shift >= 64 ? k.hi >> (shift - 64)
+                         : shift == 0 ? k.lo
+                         : (k.lo >> shift) | (k.hi << (64 - shift));
+      return (size_t)(v & ((1u << DIGIT) - 1));
+    };
+    for (size_t i = 0; i < n; i++)
+      count[digit(from[i])]++;
+    /* Every key alike in this digit: nothing to move. */
+    if (count[digit(from[0])] == n)
+      continue;
+    size_t at = 0;
+    for (size_t d = 0; d < (1u << DIGIT); d++) {
+      const size_t c = count[d];
+      count[d] = at;
+      at += c;
+    }
+    for (size_t i = 0; i < n; i++)
+      to[count[digit(from[i])]++] = from[i];
+    std::swap(from, to);
+  }
+  if (from != keys.data())
+    keys.swap(tmp);
+}
+
+/* Merge two sorted, unique runs into one. */
+layer_t mergeTwo(const pkey_c * a, const pkey_c * aEnd, const pkey_c * b, const pkey_c * bEnd) {
+  layer_t out((size_t)(aEnd - a) + (size_t)(bEnd - b));
+  auto end = std::merge(a, aEnd, b, bEnd, out.begin());
+  out.resize((size_t)(std::unique(out.begin(), end) - out.begin()));
+  return out;
+}
+
+/* Merge sorted, unique runs into one, pairwise, on this thread. Empties runs. */
+layer_t mergeRuns(std::vector<layer_t> & runs) {
+  if (runs.empty())
     return layer_t();
-  while (parts.size() > 1) {
-    std::vector<layer_t> next((parts.size() + 1) / 2);
-    parallel((unsigned int)next.size(), [&](unsigned int i) {
-      if (2 * i + 1 >= parts.size()) {
-        next[i].swap(parts[2 * i]);
-        return;
+  while (runs.size() > 1) {
+    std::vector<layer_t> next((runs.size() + 1) / 2);
+    for (size_t i = 0; i < next.size(); i++) {
+      if (2 * i + 1 >= runs.size()) {
+        next[i].swap(runs[2 * i]);
+        continue;
       }
-      layer_t & a = parts[2 * i];
-      layer_t & b = parts[2 * i + 1];
-      layer_t out(a.size() + b.size());
-      auto end = std::merge(a.begin(), a.end(), b.begin(), b.end(), out.begin());
-      out.resize((size_t)(std::unique(out.begin(), end) - out.begin()));
+      layer_t & a = runs[2 * i];
+      layer_t & b = runs[2 * i + 1];
+      next[i] = mergeTwo(a.data(), a.data() + a.size(), b.data(), b.data() + b.size());
       layer_t().swap(a);
       layer_t().swap(b);
-      out.shrink_to_fit();
-      next[i].swap(out);
-    });
-    parts.swap(next);
+    }
+    runs.swap(next);
   }
   layer_t out;
-  out.swap(parts[0]);
+  out.swap(runs[0]);
+  return out;
+}
+
+/* Merge sorted, unique parts into one sorted, unique layer. Empties parts.
+ * With threads the keys are cut into as many stretches, by value, and each
+ * thread merges one stretch of every part: no step is left to one thread,
+ * as the last of a pairwise merge would be. */
+layer_t mergeParts(std::vector<layer_t> & parts, unsigned int threads) {
+  size_t total = 0;
+  for (const layer_t & p : parts)
+    total += p.size();
+  if (threads <= 1 || parts.size() <= 1 || total < 200000)
+    return mergeRuns(parts);
+
+  /* Cut points: evenly spaced keys of a sample of every part. */
+  layer_t sample;
+  for (const layer_t & p : parts) {
+    const size_t step = std::max<size_t>(1, p.size() / 64);
+    for (size_t i = step / 2; i < p.size(); i += step)
+      sample.push_back(p[i]);
+  }
+  std::sort(sample.begin(), sample.end());
+  layer_t cut(threads - 1);
+  for (unsigned int t = 0; t + 1 < threads; t++)
+    cut[t] = sample[(size_t)(t + 1) * sample.size() / threads];
+
+  /* The first round reads the parts and writes new runs; the parts go
+   * before the later rounds, so no more is held than a pairwise merge holds. */
+  std::vector<std::vector<layer_t>> runs(threads);
+  parallel(threads, [&](unsigned int t) {
+    std::vector<std::pair<const pkey_c *, const pkey_c *>> mine;
+    for (const layer_t & p : parts) {
+      const pkey_c * lo = t ? std::lower_bound(p.data(), p.data() + p.size(), cut[t - 1]) : p.data();
+      const pkey_c * hi = t + 1 < threads ? std::lower_bound(p.data(), p.data() + p.size(), cut[t])
+                                          : p.data() + p.size();
+      if (lo < hi)
+        mine.push_back({lo, hi});
+    }
+    for (size_t i = 0; i < mine.size(); i += 2) {
+      if (i + 1 < mine.size())
+        runs[t].push_back(mergeTwo(mine[i].first, mine[i].second, mine[i + 1].first, mine[i + 1].second));
+      else
+        runs[t].emplace_back(mine[i].first, mine[i].second);
+    }
+  });
+  std::vector<layer_t>().swap(parts);
+
+  std::vector<layer_t> stretch(threads);
+  parallel(threads, [&](unsigned int t) { stretch[t] = mergeRuns(runs[t]); });
+
+  total = 0;
+  for (const layer_t & p : stretch)
+    total += p.size();
+  layer_t out;
+  out.reserve(total);
+  for (layer_t & p : stretch) {
+    out.insert(out.end(), p.begin(), p.end());
+    layer_t().swap(p);
+  }
   return out;
 }
 
 /* Sort and drop duplicates, on every thread. */
-void parallelSort(layer_t & keys, unsigned int threads) {
+void parallelSort(layer_t & keys, unsigned int threads, unsigned int bits) {
   if (threads <= 1 || keys.size() < 100000) {
-    std::sort(keys.begin(), keys.end());
+    layer_t scratch;
+    radixSort(keys, scratch, bits);
     keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
     return;
   }
@@ -291,11 +424,12 @@ void parallelSort(layer_t & keys, unsigned int threads) {
     const size_t lo = std::min(keys.size(), t * chunk);
     const size_t hi = std::min(keys.size(), lo + chunk);
     parts[t].assign(keys.begin() + (ptrdiff_t)lo, keys.begin() + (ptrdiff_t)hi);
-    std::sort(parts[t].begin(), parts[t].end());
+    layer_t scratch;
+    radixSort(parts[t], scratch, bits);
     parts[t].erase(std::unique(parts[t].begin(), parts[t].end()), parts[t].end());
   });
   layer_t().swap(keys);
-  keys = mergeParts(parts);
+  keys = mergeParts(parts, threads);
 }
 
 /* The first key in both sorted layers. */
@@ -340,8 +474,8 @@ struct savedState_c {
   uint32_t bwdDepth = 0;
   uint32_t interval = 1;
   uint64_t found = 0;
-  /* Seconds spent solving so far, over every run of this search. */
-  uint64_t seconds = 0;
+  /* Milliseconds spent solving so far, over every run of this search. */
+  uint64_t ms = 0;
   /* Once the ends have met: where, and how far from each end. Then only
    * tracing the path back is left, and the frontier is not saved. */
   uint32_t met = 0;
@@ -351,7 +485,9 @@ struct savedState_c {
   layer_t fwdPrev, fwdCur, bwdPrev, bwdCur, mirrorPrev;
 };
 
-const char STATE_MAGIC[8] = {'B', 'T', 'P', 'A', 'N', 'E', 'X', '3'};
+const char STATE_MAGIC[8] = {'B', 'T', 'P', 'A', 'N', 'E', 'X', '4'};
+/* Version 3 was the same but kept whole seconds where 4 keeps ms. */
+const char STATE_MAGIC_SECONDS[8] = {'B', 'T', 'P', 'A', 'N', 'E', 'X', '3'};
 
 /* One puzzle's saved search, in its own folder: every few levels of each
  * end ("f12.lvl", "b0.lvl"), sorted keys, and the frontier ("state.bin").
@@ -392,22 +528,42 @@ public:
   }
 
   bool writeLevel(char side, unsigned int level, const layer_t & keys) {
-    if (level % interval)
+    if (!keepsLevel(level))
       return true;
-    if (!writeKeys(levelPath(side, level), keys))
+    if (!writeKeys(levelPath(side, level), keys.data(), keys.size()))
       return false;
-    used += keys.size() * sizeof(pkey_c);
-    while (used > budget && interval < (1u << 30))
-      thin();
+    wrote(keys.size());
     return true;
   }
 
-  /* The first key of sorted probe that level holds, read as a stream. */
+  /* writeLevel in three steps, for writing a level on another thread:
+   * keepsLevel says whether it is one to save, writeKeys(levelFile(...))
+   * writes it, and wrote counts it against the budget. */
+  bool keepsLevel(unsigned int level) const { return level % interval == 0; }
+
+  std::filesystem::path levelFile(char side, unsigned int level) const {
+    return levelPath(side, level);
+  }
+
+  static bool writeKeys(const std::filesystem::path & path, const pkey_c * keys, size_t count) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (count)
+      out.write(reinterpret_cast<const char *>(keys), (std::streamsize)(count * sizeof(pkey_c)));
+    return (bool)out;
+  }
+
+  void wrote(size_t keys) {
+    used += keys * sizeof(pkey_c);
+    while (used > budget && interval < (1u << 30))
+      thin();
+  }
+
   bool hasLevel(char side, unsigned int level) const {
     std::error_code ec;
     return std::filesystem::exists(levelPath(side, level), ec);
   }
 
+  /* The first key of sorted probe that level holds, read as a stream. */
   bool findIn(char side, unsigned int level, const layer_t & probe, pkey_c & match) const {
     std::ifstream in(levelPath(side, level), std::ios::binary);
     if (!in)
@@ -443,7 +599,7 @@ public:
       put(out, st.bwdDepth);
       put(out, st.interval);
       put(out, st.found);
-      put(out, st.seconds);
+      put(out, st.ms);
       put(out, st.met);
       put(out, st.fromStart);
       put(out, st.fromGoal);
@@ -467,14 +623,17 @@ public:
     std::ifstream in(dir / "state.bin", std::ios::binary);
     char magic[sizeof(STATE_MAGIC)];
     in.read(magic, sizeof(magic));
-    if (!in || !std::equal(magic, magic + sizeof(magic), STATE_MAGIC))
+    const bool inSeconds = std::equal(magic, magic + sizeof(magic), STATE_MAGIC_SECONDS);
+    if (!in || !(inSeconds || std::equal(magic, magic + sizeof(magic), STATE_MAGIC)))
       return false;
     get(in, st.fingerprint);
     get(in, st.fwdDepth);
     get(in, st.bwdDepth);
     get(in, st.interval);
     get(in, st.found);
-    get(in, st.seconds);
+    get(in, st.ms);
+    if (inSeconds)
+      st.ms *= 1000;
     get(in, st.met);
     get(in, st.fromStart);
     get(in, st.fromGoal);
@@ -500,13 +659,6 @@ public:
 private:
   std::filesystem::path levelPath(char side, unsigned int level) const {
     return dir / (std::string(1, side) + std::to_string(level) + ".lvl");
-  }
-
-  static bool writeKeys(const std::filesystem::path & path, const layer_t & keys) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!keys.empty())
-      out.write(reinterpret_cast<const char *>(keys.data()), (std::streamsize)(keys.size() * sizeof(pkey_c)));
-    return (bool)out;
   }
 
   /* Keep every other saved level. Level 0 is a multiple of any interval. */
@@ -552,12 +704,12 @@ public:
   pkey_c startKey;
   pkey_c goalKey;
   uint64_t fingerprint = 0;
-  /* Seconds the saved search had used, and when this run began. */
-  uint64_t priorSeconds = 0;
+  /* Milliseconds the saved search had used, and when this run began. */
+  uint64_t priorMs = 0;
   std::chrono::steady_clock::time_point began = std::chrono::steady_clock::now();
 
-  uint64_t secondsSoFar(void) const {
-    return priorSeconds + (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(
+  uint64_t msSoFar(void) const {
+    return priorMs + (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now() - began).count();
   }
 
@@ -665,8 +817,9 @@ private:
     /* Several batches a thread, so none waits on another; at most 65,536
      * stackings, so the raw moves stay small. */
     const size_t batch = std::max<size_t>(256, std::min<size_t>(1 << 16, cur.size() / (8 * n) + 1));
+    const unsigned int keyBits = 5 * (rules.discs + rules.rods - 1);
     parallel(n, [&](unsigned int t) {
-      layer_t out;
+      layer_t out, scratch;
       state_c s;
       for (;;) {
         const size_t lo = nextChunk.fetch_add(batch);
@@ -678,7 +831,7 @@ private:
           rules.decode(cur[i], s);
           rules.moves(s, [&](const state_c & st) { out.push_back(key(st)); });
         }
-        std::sort(out.begin(), out.end());
+        radixSort(out, scratch, keyBits);
         out.erase(std::unique(out.begin(), out.end()), out.end());
         subtract(out, cur);
         subtract(out, prev);
@@ -693,7 +846,7 @@ private:
     for (auto & r : runs)
       for (auto & p : r)
         parts.emplace_back(std::move(p));
-    next = mergeParts(parts);
+    next = mergeParts(parts, n);
     return true;
   }
 
@@ -882,9 +1035,30 @@ private:
       search.error = "Could not save the search in " + saveTo->dir.string() + ". The disk may be full.";
       return false;
     };
+    /* The newest level is written to disk on a thread of its own while the
+     * search goes on to the next: the level is only read from then on, and
+     * the write is waited for before anything depends on the file. */
+    struct levelWriter_c {
+      std::thread thread;
+      bool ok = true;
+      size_t keys = 0;
+      ~levelWriter_c() {
+        if (thread.joinable())
+          thread.join();
+      }
+    } writer;
+    auto finishWrite = [&]() {
+      if (!writer.thread.joinable())
+        return true;
+      writer.thread.join();
+      if (!writer.ok)
+        return false;
+      saveTo->wrote(writer.keys);
+      return true;
+    };
     /* Save where the search stands, so Continue can carry it on. */
     auto saveState = [&]() {
-      if (!saveTo || !toDisk())
+      if (!saveTo || !finishWrite() || !toDisk())
         return false;
       savedState_c st;
       st.fingerprint = fingerprint;
@@ -892,7 +1066,7 @@ private:
       st.bwdDepth = bwd.depth;
       st.interval = saveTo->interval;
       st.found = search.found;
-      st.seconds = secondsSoFar();
+      st.ms = msSoFar();
       st.fwdPrev = fwd.prev;
       st.fwdCur = fwd.cur;
       st.bwdPrev = bwd.prev;
@@ -900,11 +1074,11 @@ private:
       st.mirrorPrev = mirrorPrev;
       return saveTo->saveState(st);
     };
-    /* The search stopped short: save it if it can be carried on. */
     /* How long a path both ends together have ruled out. */
     auto deep = [&]() {
       return mirrored ? 2ul * fwd.depth : (unsigned long)(fwd.depth + bwd.depth);
     };
+    /* The search stopped short: save it if it can be carried on. */
     auto haltAndSave = [&](outcome_e why) {
       search.outcome = why;
       search.depthReached = deep();
@@ -923,6 +1097,8 @@ private:
       const size_t room = base >= budget ? 0 : (size_t)((budget - base) / sizeof(pkey_c) / 2);
       if (!nextLevel(side.cur, side.prev, canonOf, room, next))
         return haltAndSave(stopped() ? PANEX_STOPPED : PANEX_MEMORY);
+      if (!finishWrite())
+        return diskFailed();
       if (next.empty()) {
         /* Everything this end can reach is searched without meeting the other. */
         search.outcome = PANEX_NO_PATH;
@@ -948,8 +1124,19 @@ private:
       side.prev.swap(side.cur);
       side.cur.swap(next);
       side.depth++;
-      if (onDisk && !saveTo->writeLevel(&side == &fwd ? 'f' : 'b', side.depth, side.cur))
-        return diskFailed();
+      if (onDisk && saveTo->keepsLevel(side.depth)) {
+        /* The level's memory stays where it is until it is two levels old,
+         * well after finishWrite, whichever vector then holds it. */
+        const pkey_c * keys = side.cur.data();
+        const size_t count = side.cur.size();
+        const std::filesystem::path file = saveTo->levelFile(&side == &fwd ? 'f' : 'b', side.depth);
+        writer.ok = true;
+        writer.keys = count;
+        bool * ok = &writer.ok;
+        writer.thread = std::thread([ok, keys, count, file]() {
+          *ok = store_c::writeKeys(file, keys, count);
+        });
+      }
       search.found += side.cur.size() * (useTwin ? 2 : 1);
       if (search.progress)
         search.progress->store((unsigned long)search.found, std::memory_order_relaxed);
@@ -979,7 +1166,7 @@ private:
             mirrorCur[i] = canonOf(mi);
           }
         });
-        parallelSort(mirrorCur, mt);
+        parallelSort(mirrorCur, mt, 5 * (rules.discs + rules.rods - 1));
         if (top && search.depth)
           search.depth->store(2ul * fwd.depth, std::memory_order_relaxed);
         if (meet(fwd.cur, mirrorCur, m.at)) {
@@ -1009,6 +1196,8 @@ private:
         lastSave = std::chrono::steady_clock::now();
       }
     }
+    if (!finishWrite())
+      return diskFailed();
     search.depthReached = m.fromStart + m.fromGoal;
 
     if (onDisk) {
@@ -1026,7 +1215,7 @@ private:
       st.bwdDepth = m.fromGoal;
       st.interval = saveTo->interval;
       st.found = search.found;
-      st.seconds = secondsSoFar();
+      st.ms = msSoFar();
       st.met = 1;
       st.fromStart = m.fromStart;
       st.fromGoal = m.fromGoal;
@@ -1134,6 +1323,67 @@ bool setup(const problem_c & prob, rules_c & rules, pkey_c & startKey, pkey_c & 
   rules.distance = board.distanceMatters && !board.canMoveOver;
   startKey = rules.encode(rules.fromStacking(startSt));
   goalKey = rules.encode(rules.fromStacking(goalSt));
+  return true;
+}
+
+/* The classic tower: three plain rods under the size rule, every disc a
+ * different size and room for them all on any rod, the whole tower on one
+ * rod at the start and on another at the goal. The well-known recursion --
+ * all but the largest disc to the spare rod, the largest across, the rest
+ * on top of it -- is then a shortest path, 2^n - 1 transfers, and needs no
+ * search. Fills path and returns true when the puzzle is that one and the
+ * path is not too long to hold. BURRTOOLS_NO_TOWER_RULE=1 turns it off. */
+bool classicTower(const rules_c & rules, pkey_c startKey, pkey_c goalKey,
+                  std::vector<stacking::stacking_t> & path) {
+  /* 2^22 stackings in the path is about what the path's own memory allows. */
+  const unsigned int MOST_DISCS = 22;
+  const unsigned int n = rules.discs;
+  if (std::getenv("BURRTOOLS_NO_TOWER_RULE") || rules.panex || !rules.sizeRule || rules.distance ||
+      rules.rods != 3 || n == 0 || n > MOST_DISCS)
+    return false;
+  state_c s, g;
+  rules.decode(startKey, s);
+  rules.decode(goalKey, g);
+  int from = -1, to = -1;
+  for (unsigned int r = 0; r < 3; r++) {
+    if (rules.cap[r] < n)
+      return false;
+    if (s.count[r] == n)
+      from = (int)r;
+    if (g.count[r] == n)
+      to = (int)r;
+  }
+  if (from < 0 || to < 0 || from == to)
+    return false;
+  for (unsigned int i = 0; i + 1 < n; i++)
+    if (rules.size[s.disc[from][i]] <= rules.size[s.disc[from][i + 1]])
+      return false;
+  for (unsigned int i = 0; i < n; i++)
+    if (g.disc[to][i] != s.disc[from][i])
+      return false;
+
+  path.reserve((size_t)1 << n);
+  path.push_back(rules.toStacking(s));
+  auto move = [&](unsigned int a, unsigned int b) {
+    s.disc[b][s.count[b]++] = s.disc[a][--s.count[a]];
+    path.push_back(rules.toStacking(s));
+  };
+  /* tower(k, a, b): the top k discs of rod a to rod b. Kept as a stack of
+   * things still to do, so a tall tower does not nest calls. */
+  struct todo_c { unsigned int k, a, b; bool single; };
+  std::vector<todo_c> todo{{n, (unsigned int)from, (unsigned int)to, false}};
+  while (!todo.empty()) {
+    const todo_c t = todo.back();
+    todo.pop_back();
+    if (t.single || t.k == 1) {
+      move(t.a, t.b);
+      continue;
+    }
+    const unsigned int spare = 3 - t.a - t.b;
+    todo.push_back({t.k - 1, spare, t.b, false});
+    todo.push_back({1, t.a, t.b, true});
+    todo.push_back({t.k - 1, t.a, spare, false});
+  }
   return true;
 }
 
@@ -1247,7 +1497,7 @@ std::string savedSearch(const problem_c & prob, const std::string & workDir) {
          shortCount((double)st.found) + " stackings";
 }
 
-unsigned long long savedSeconds(const problem_c & prob, const std::string & workDir) {
+unsigned long long savedMs(const problem_c & prob, const std::string & workDir) {
   rules_c rules;
   pkey_c start, goal;
   if (!setup(prob, rules, start, goal))
@@ -1258,7 +1508,7 @@ unsigned long long savedSeconds(const problem_c & prob, const std::string & work
   savedState_c st;
   if (store.dir.empty() || !store.loadState(st, fp, false))
     return 0;
-  return st.seconds;
+  return st.ms;
 }
 
 void discardSaved(const problem_c & prob, const std::string & workDir) {
@@ -1293,6 +1543,20 @@ std::unique_ptr<separation_c> solve(const problem_c & prob, panexSearch_c & sear
     return nullptr;
   }
 
+  {
+    std::vector<stacking::stacking_t> tower;
+    if (classicTower(rules, startKey, goalKey, tower)) {
+      search.outcome = PANEX_FOUND;
+      search.found = tower.size();
+      search.depthReached = (unsigned long)tower.size() - 1;
+      if (search.depth)
+        search.depth->store(search.depthReached, std::memory_order_relaxed);
+      if (search.progress)
+        search.progress->store((unsigned long)search.found, std::memory_order_relaxed);
+      return stacking::pathSeparation(prob, tower);
+    }
+  }
+
   unsigned long long budget = sliding::SEARCH_MEMORY_BYTES;
   if (search.highMemory)
     budget = std::max(budget, physicalMemoryBytes() / 2);
@@ -1325,7 +1589,7 @@ std::unique_ptr<separation_c> solve(const problem_c & prob, panexSearch_c & sear
     if (search.resume && store.loadState(resumeState, fp, true)) {
       store.interval = resumeState.interval;
       searcher.resumeFrom = &resumeState;
-      searcher.priorSeconds = resumeState.seconds;
+      searcher.priorMs = resumeState.ms;
     } else {
       store.wipe();
     }

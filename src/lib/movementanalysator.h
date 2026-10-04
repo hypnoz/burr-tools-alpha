@@ -66,17 +66,22 @@ class movementAnalysator_c {
     std::vector<char> check;
     unsigned int piecenumber;
 
-    /* Cached input/output of the previous prepare() call for the incremental
-     * fast path. prevSearch is refcounted (see prepare): the compared node
-     * stays alive to prevent ABA pointer aliasing. All state is per-instance,
-     * so multiple analysators can run concurrently without shared mutation. */
+    /* The movement values of the last node prepared, before closing, with
+     * where its pieces lay (x, y, z, orientation each) and which pieces
+     * they were: prepare() asks the cache only about pairs that lie
+     * differently now. All state is per-instance, so several analysators
+     * can run at once. */
     std::vector<unsigned int> prevFill;
-    disassemblerNode_c * prevSearch = nullptr;
-    const std::vector<unsigned int> * prevPieces = nullptr;
-    uint64_t prevPiecesHash = 0;
-    int prevN = 0;
-    /* reusable dirty bitsets for the incremental closure: [d * n + idx] */
-    std::vector<char> dirtyRows, dirtyCols;
+    std::vector<int> prevPlace, place;
+    std::vector<unsigned int> prevIds;
+    /* one direction's matrix, pieces in use only, for closeFrom */
+    std::vector<unsigned int> dense;
+    /* checkmovementMasks: per direction (with its sign) and step, the
+     * pieces each piece takes along, 64 words a set; pushValid says which
+     * sets are worked out for the node at hand. */
+    static const unsigned int PUSH_SLOTS = 16;
+    std::vector<uint64_t> pushMasks, pushTemp;
+    std::vector<char> pushValid;
 
     std::unique_ptr<countingNodeHash> nodes;
 
@@ -105,13 +110,13 @@ class movementAnalysator_c {
     void prepareFill(void);
     /* Compute transitive closure of the movement matrix to fixpoint */
     void closureFull(void);
-    /* Incremental update: reuse previous matrix, recompute pairs touching
-     * the moved pieces, and propagate relaxations via dirty worklist */
-    void prepareIncremental(const std::vector<unsigned int> & moved);
+    /* Close a copy of fill into matrix: one Floyd-Warshall pass */
+    void closeFrom(const std::vector<unsigned int> & fill);
     void beginSearchPhase(bool linear);
     void switchToRotationPhase(void);
     void flushSearchPhase(void);
     bool checkmovement(unsigned int maxPieces, unsigned int nextstep);
+    bool checkmovementMasks(unsigned int maxPieces, unsigned int nextstep);
     disassemblerNode_c * newNode(unsigned int amount);
     disassemblerNode_c * newNodeMerge(const disassemblerNode_c *n0, const disassemblerNode_c *n1);
 

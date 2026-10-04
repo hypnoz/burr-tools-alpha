@@ -133,12 +133,7 @@ void stlExportSolution_c::cb_FileChooser(void)
   if (f) {
     const char * div = strrchr(f, '/');
     if (div) {
-      char dir[500];
-      int len = (int)(div - f);
-      if (len >= 499) len = 498;
-      strncpy(dir, f, len);
-      dir[len] = 0;
-      Pname->value(dir);
+      Pname->value(std::string(f, div).c_str());
     }
   }
 }
@@ -172,16 +167,21 @@ void stlExportSolution_c::cb_Export(void)
       raw = buf;
     }
 
-    char pathbuf[1200];
-    if (folder[strlen(folder)-1] != '/')
-      snprintf(pathbuf, 1200, "%s/%s.stl", folder, safeName(raw).c_str());
-    else
-      snprintf(pathbuf, 1200, "%s%s.stl",  folder, safeName(raw).c_str());
+    const std::string folderSep = folder[strlen(folder)-1] != '/' ? std::string(folder) + "/" : std::string(folder);
+
+    /* Two pieces can share a name, or names that become the same file
+     * name: a second file would overwrite the first. Tell them apart. */
+    std::string base = safeName(raw);
+    for (const SolPieceEntry & other : entries)
+      if (other.fname == folderSep + base + ".stl") {
+        base += "-S" + std::to_string(shapeId + 1);
+        break;
+      }
 
     SolPieceEntry e;
     e.shapeId = shapeId;
     e.count   = count;
-    e.fname   = pathbuf;
+    e.fname   = folderSep + base + ".stl";
     entries.push_back(e);
   }
 

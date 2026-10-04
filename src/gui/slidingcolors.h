@@ -1,9 +1,29 @@
 /* BurrTools
  *
+ * BurrTools is the legal property of its developers, whose
+ * names are listed in the COPYRIGHT file, which is included
+ * within the source distribution.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ */
+/*
  * Colours of a sliding puzzle's start/goal tray in the GUI, kept in one
  * place so they can be changed or reverted together.
  *
  * History:
+ *   2026-10-04  Marked cells in the piece's colour, no S# labels.
  *   2026-10-02  Black tray with white S# labels.
  *               Before: a white tray (list swatch 255,255,255; 2D editor
  *               chequer 255/235; 3D view 1.0) with orange labels
@@ -27,7 +47,8 @@ const unsigned char EDIT_DARK = 30;
  * the lit faces still show the tray's shape. */
 const float VIEW_GREY = 0.12f;
 
-/* The S# piece labels drawn on tray voxels, in the 2D editor and 3D view. */
+/* Text labels on tray voxels. Unused since 2026-10-04: the 2D editor and
+ * the 3D view show a marked cell in its piece's colour instead. */
 const unsigned char LABEL_R = 255, LABEL_G = 255, LABEL_B = 255;
 
 } // namespace slidingColors

@@ -60,8 +60,8 @@ public:
 private:
 
   // no copying and assigning
-  disassembler_0_c(const disassembler_0_c&);
-  void operator=(const disassembler_0_c&);
+  disassembler_0_c(const disassembler_0_c&) = delete;
+  void operator=(const disassembler_0_c&) = delete;
 };
 
 #endif

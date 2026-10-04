@@ -33,62 +33,117 @@
 #include "solvertype.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <string.h>
 
-static uint64_t hashPieces(const std::vector<unsigned int> & p) {
-  uint64_t h = p.size();
-  for (unsigned int x : p)
-    h = h * 31 + x;
-  return h;
+/* BURRTOOLS_NO_DISASM_FAST=1: fill the whole movement matrix for every
+ * node and close it by repeated sweeps, as before, for A/B runs. The
+ * matrix that comes out is the same either way. */
+static bool disasmFast(void) {
+  static const bool on = getenv("BURRTOOLS_NO_DISASM_FAST") == nullptr;
+  return on;
 }
 
 void movementAnalysator_c::prepare(void) {
 
-  const unsigned int n = pieces->size();
-  const uint64_t pcsHash = hashPieces(*pieces);
-
-  /* Incremental fast path: if the previous prepare() ran for our parent
-   * node with the same piece subset, only pairs touching moved pieces
-   * can differ. prevSearch is refcounted, hence alive to prevent ABA.
-   * pcsHash and prevN guard against pointer reuse of pieces across different
-   * subproblem stack frames. Orientation (getTrans) is included so rotation
-   * moves still invalidate the inherited matrix. */
-  bool incremental = prevSearch && searchnode && searchnode->getComefrom() == prevSearch
-    && pieces == prevPieces && next_pn == prevN && pcsHash == prevPiecesHash && n > 0;
-
-  std::vector<unsigned int> moved;
-  if (incremental) {
-    for (unsigned int i = 0; i < n; i++)
-      if ((searchnode->getX(i) != prevSearch->getX(i)) ||
-          (searchnode->getY(i) != prevSearch->getY(i)) ||
-          (searchnode->getZ(i) != prevSearch->getZ(i)) ||
-          (searchnode->getTrans(i) != prevSearch->getTrans(i)))
-        moved.push_back(i);
-
-    /* prepareIncremental updates prevFill in-place for touched pairs,
-     * copies it once to matrix, and applies dirty-worklist closure. */
-    prepareIncremental(moved);
-  } else {
+  if (!disasmFast()) {
     prepareFill();
-    /* snapshot the FILL matrix: the incremental base must be pre-closure
-     * values (closure only decreases and can never repair upward) */
-    prevFill = matrix;
     closureFull();
+    return;
   }
 
-  /* rotate the refcounted owner for the next call */
-  if (prevSearch != searchnode) {
-    if (prevSearch && prevSearch->decRefCount())
-      delete prevSearch;
-    prevSearch = searchnode;
-    if (prevSearch)
-      prevSearch->incRefCount();
+  const unsigned int n = pieces->size();
+  const unsigned int dirs = cache->numDirections();
+
+  /* What two pieces allow each other depends only on where they lie
+   * relative to each other and how each is turned. A breadth-first search
+   * hands over nodes that differ from the one before by a few pieces, so
+   * most pairs lie as they did: keep the last node's values for those, and
+   * ask the cache for the rest. prevFill holds the values before closing,
+   * for the pieces in prevIds. */
+  const bool reuse = prevIds == *pieces && prevPlace.size() == (size_t)4 * n;
+
+  place.resize((size_t)4 * n);
+  for (unsigned int i = 0; i < n; i++) {
+    place[4 * i + 0] = searchnode->getX(i);
+    place[4 * i + 1] = searchnode->getY(i);
+    place[4 * i + 2] = searchnode->getZ(i);
+    place[4 * i + 3] = (int)searchnode->getTrans(i);
   }
-  prevPieces = pieces;
-  prevPiecesHash = pcsHash;
-  prevN = next_pn;
+
+  for (unsigned int j = 0; j < n; j++)
+    for (unsigned int i = 0; i < n; i++) {
+      if (i == j)
+        continue;
+      const int dx = place[4 * j + 0] - place[4 * i + 0];
+      const int dy = place[4 * j + 1] - place[4 * i + 1];
+      const int dz = place[4 * j + 2] - place[4 * i + 2];
+      if (reuse &&
+          dx == prevPlace[4 * j + 0] - prevPlace[4 * i + 0] &&
+          dy == prevPlace[4 * j + 1] - prevPlace[4 * i + 1] &&
+          dz == prevPlace[4 * j + 2] - prevPlace[4 * i + 2] &&
+          place[4 * i + 3] == prevPlace[4 * i + 3] && place[4 * j + 3] == prevPlace[4 * j + 3])
+        continue;
+      cache->getMoValue(dx, dy, dz, (unsigned char)place[4 * i + 3], (unsigned char)place[4 * j + 3],
+                        (*pieces)[i], (*pieces)[j],
+                        &prevFill[((size_t)i + (size_t)j * piecenumber) * dirs]);
+    }
+
+  prevPlace.swap(place);
+  if (!reuse)
+    prevIds = *pieces;
+
+  /* The masks checkmovementMasks kept were the last node's. */
+  std::fill(pushValid.begin(), pushValid.end(), 0);
+
+  closeFrom(prevFill);
+}
+
+/* The second part of Bill Cutler's algorithm on a copy of fill, left in
+ * matrix: how far a piece can go relative to another when the pieces
+ * between them may be pushed along. That is the shortest path between
+ * every two pieces, which one Floyd-Warshall pass gives exactly; sweeping
+ * until nothing changes, as closureFull does, reaches the same values in
+ * two or more passes. */
+void movementAnalysator_c::closeFrom(const std::vector<unsigned int> & fill) {
+
+  const unsigned int n = pieces->size();
+  const unsigned int dirs = cache->numDirections();
+
+  dense.resize((size_t)n * n);
+
+  for (unsigned int d = 0; d < dirs; d++) {
+    /* dense[y * n + x]: piece x relative to piece y, as matrix holds it. */
+    for (unsigned int y = 0; y < n; y++) {
+      const unsigned int * row = &fill[((size_t)y * piecenumber) * dirs + d];
+      for (unsigned int x = 0; x < n; x++)
+        dense[(size_t)y * n + x] = row[(size_t)x * dirs];
+    }
+
+    for (unsigned int k = 0; k < n; k++) {
+      /* Row k does not change in round k (its own entry is 0), so the other
+       * rows can read it while they are written: the compiler may then do
+       * several pieces at a time. */
+      const unsigned int * __restrict via = &dense[(size_t)k * n];
+      for (unsigned int y = 0; y < n; y++) {
+        if (y == k)
+          continue;
+        unsigned int * __restrict row = &dense[(size_t)y * n];
+        const unsigned int first = row[k];
+        for (unsigned int x = 0; x < n; x++)
+          row[x] = std::min(row[x], first + via[x]);
+      }
+    }
+
+    for (unsigned int y = 0; y < n; y++) {
+      unsigned int * row = &matrix[((size_t)y * piecenumber) * dirs + d];
+      for (unsigned int x = 0; x < n; x++)
+        row[(size_t)x * dirs] = dense[(size_t)y * n + x];
+    }
+  }
 }
 
 void movementAnalysator_c::prepareFill(void) {
@@ -222,80 +277,6 @@ void movementAnalysator_c::closureFull(void) {
   }
 }
 
-void movementAnalysator_c::prepareIncremental(const std::vector<unsigned int> & moved) {
-
-  const unsigned int n = pieces->size();
-  const unsigned int dirs = cache->numDirections();
-
-  /* Pairs touching a moved piece need fresh cache values; the rest is
-   * already correct from the inherited parent base. Panels of untouched
-   * pairs keep base values since relative offsets, piece identities, and
-   * orientations are unchanged. */
-  std::vector<char> isMoved(n, 0);
-  for (unsigned int m : moved)
-    isMoved[m] = 1;
-
-  if (dirtyRows.size() < (size_t)dirs * n || dirtyCols.size() < (size_t)dirs * n) {
-    dirtyRows.assign((size_t)dirs * n, 0);
-    dirtyCols.assign((size_t)dirs * n, 0);
-  } else {
-    std::fill(dirtyRows.begin(), dirtyRows.end(), 0);
-    std::fill(dirtyCols.begin(), dirtyCols.end(), 0);
-  }
-
-  for (unsigned int j = 0; j < pieces->size(); j++) {
-    for (unsigned int i = 0; i < pieces->size(); i++) {
-      if ((i != j) && (isMoved[i] || isMoved[j]))
-        cache->getMoValue(searchnode->getX(j) - searchnode->getX(i),
-                          searchnode->getY(j) - searchnode->getY(i),
-                          searchnode->getZ(j) - searchnode->getZ(i),
-                          searchnode->getTrans(i), searchnode->getTrans(j),
-                          (*pieces)[i], (*pieces)[j],
-                          &prevFill[((size_t)i + (size_t)j * piecenumber) * dirs]);
-    }
-  }
-  /* Single copy from the updated fill snapshot to working matrix for closure */
-  matrix = prevFill;
-
-  /* Dirty-worklist closure: the first sweep evaluates all triples (the base
-   * is a fresh fill, not a fixpoint); subsequent sweeps only revisit rows
-   * and columns marked by relaxations. This converges to the same least
-   * fixpoint as full iterative relaxation. */
-  for (unsigned int d = 0; d < dirs; d++) {
-    /* at(a,b): movement of a relative to b in direction d, same layout
-     * and unsigned semantics as the full matrix */
-    auto at = [&](unsigned int a, unsigned int b) -> unsigned int & {
-      return matrix[((size_t)a + (size_t)b * piecenumber) * dirs + d];
-    };
-
-    bool changed = true;
-    /* first sweep evaluates everything (base is a fresh fill, not a
-     * fixpoint); later sweeps only revisit marked rows/columns */
-    bool first = true;
-    while (changed) {
-      changed = false;
-      for (unsigned int y = 0; y < n; y++)
-        for (unsigned int x = 0; x < n; x++) {
-          if (!first && !dirtyRows[(size_t)d * n + y] && !dirtyCols[(size_t)d * n + x])
-            continue;
-          unsigned int best = at(x, 0) + at(0, y);
-          for (unsigned int k = 1; k < n; k++) {
-            unsigned int l = at(x, k) + at(k, y);
-            if (l < best)
-              best = l;
-          }
-          if (best < at(x, y)) {
-            at(x, y) = best;
-            dirtyRows[(size_t)d * n + y] = 1;
-            dirtyCols[(size_t)d * n + x] = 1;
-            changed = true;
-          }
-        }
-      first = false;
-    }
-  }
-}
-
 /*
  * suppose you want to move piece x y units into one direction, if you hit another piece
  * on your way and this piece can be moved then it may be nice to also move this piece
@@ -312,6 +293,9 @@ void movementAnalysator_c::prepareIncremental(const std::vector<unsigned int> & 
 bool movementAnalysator_c::checkmovement(unsigned int maxPieces, unsigned int nextstep) {
 
   stats.checkCalls++;
+
+  if (disasmFast() && next_pn <= 64)
+    return checkmovementMasks(maxPieces, nextstep);
 
   /* we count the number of pieces that need to be moved, if this number
    * gets bigger than halve of the pieces of the current problem we
@@ -438,6 +422,72 @@ bool movementAnalysator_c::checkmovement(unsigned int maxPieces, unsigned int ne
   return true;
 }
 
+/* checkmovement on bit masks, for up to 64 pieces. For one direction and
+ * step, pushes[i] is the set of pieces that piece i takes along: those it
+ * cannot go that far without. They are the same for every piece asked
+ * about at this node, so they are worked out once and kept; the pieces
+ * that must move with nextpiece are then what its mask reaches, a few
+ * word operations. Same answer and same movement[] as the loops below. */
+bool movementAnalysator_c::checkmovementMasks(unsigned int maxPieces, unsigned int step) {
+
+  const unsigned int n = (unsigned int)next_pn;
+  const unsigned int dirs = cache->numDirections();
+  const unsigned int nd = nextdir >> 1;
+  bt_assert(nd < dirs);
+
+  /* Slot 0 is a removal; slots 1 .. PUSH_SLOTS - 1 the steps of that length. */
+  const unsigned int slot = step < PUSH_SLOTS ? step : (step == 30000 ? 0 : PUSH_SLOTS);
+  uint64_t * pushes;
+  bool fresh = true;
+  if (slot < PUSH_SLOTS) {
+    const size_t entry = (size_t)nextdir * PUSH_SLOTS + slot;
+    if (pushValid.size() < (size_t)2 * dirs * PUSH_SLOTS) {
+      pushValid.assign((size_t)2 * dirs * PUSH_SLOTS, 0);
+      pushMasks.assign((size_t)2 * dirs * PUSH_SLOTS * 64, 0);
+    }
+    pushes = &pushMasks[entry * 64];
+    fresh = !pushValid[entry];
+    pushValid[entry] = 1;
+  } else {
+    pushTemp.resize(64);
+    pushes = pushTemp.data();
+  }
+
+  if (fresh) {
+    for (unsigned int i = 0; i < n; i++) {
+      uint64_t m = 0;
+      /* how far piece i can go relative to piece j, as checkmovement reads it */
+      const unsigned int * v = (nextdir & 1) ? &matrix[((size_t)piecenumber * i) * dirs + nd]
+                                             : &matrix[(size_t)i * dirs + nd];
+      const size_t stride = (nextdir & 1) ? dirs : (size_t)piecenumber * dirs;
+      for (unsigned int j = 0; j < n; j++)
+        if (j != i && step > v[j * stride])
+          m |= uint64_t(1) << j;
+      pushes[i] = m;
+    }
+  }
+
+  uint64_t moving = uint64_t(1) << nextpiece;
+  uint64_t todo = moving;
+  while (todo) {
+    const unsigned int i = (unsigned int)std::countr_zero(todo);
+    todo &= todo - 1;
+    const uint64_t more = pushes[i] & ~moving;
+    if (more) {
+      moving |= more;
+      todo |= more;
+      if ((unsigned int)std::popcount(moving) > maxPieces)
+        return false;
+    }
+  }
+
+  for (unsigned int i = 0; i < n; i++)
+    movement[i] = (moving >> i) & 1 ? step : 0;
+
+  stats.checkSuccess++;
+  return true;
+}
+
 movementAnalysator_c::movementAnalysator_c(const problem_c & problem, bool enableRotations,
                                            solverType_e solverType) :
   cache(problem.getPuzzle().getGridType()->getMovementCache(problem)),
@@ -483,10 +533,7 @@ void movementAnalysator_c::setCheckRotations(bool enable) {
   checkRotations = enable && bricksGrid && rotationMoves;
 }
 
-movementAnalysator_c::~movementAnalysator_c() {
-  if (prevSearch && prevSearch->decRefCount())
-    delete prevSearch;
-}
+movementAnalysator_c::~movementAnalysator_c() = default;
 
 static int max(int a, int b) { if (a > b) return a; else return b; }
 

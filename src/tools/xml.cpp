@@ -663,9 +663,9 @@ int xmlParser_c::peekType(void)
 
 std::string xmlParser_c::get(int pos)
 {
-  std::string
-    tmp (txtBuf.data());
-  return tmp.substr (pos, txtPos - pos);
+  /* Only the characters wanted: building the whole buffer first copied
+   * everything read so far for every name. */
+  return std::string(txtBuf.data() + pos, txtPos - pos);
 }
 
 

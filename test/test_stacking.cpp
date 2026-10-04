@@ -9,11 +9,19 @@
 #include "lib/solvethread.h"
 #include "lib/stacking.h"
 #include "lib/panex.h"
+#include "lib/blockpack.h"
 #include "lib/voxel.h"
+#include "gui/shapehistory.h"
 
 #include "tools/xml.h"
 
+#include <chrono>
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <algorithm>
+#include <random>
 #include <memory>
 #include <sstream>
 
@@ -433,6 +441,23 @@ TEST_CASE("panex: the Panex Solver agrees with the Stacking Solver", "[stacking]
   }
 }
 
+/* The two solvers keep the Panex rules separately (stacking::moveAllowed and
+ * panex rules_c); on the swap, with no pocket, discs raised into the bridge
+ * block moves, so both rules are exercised. */
+TEST_CASE("panex: the two solvers agree on the Panex swap", "[stacking][panex]") {
+  for (unsigned int n = 2; n <= 3; n++) {
+    INFO(n << " discs a tower");
+    puzzle_c puz = makeBoard();
+    problem_c * pr = makePanexSwap(puz, n);
+    std::unique_ptr<separation_c> stacked = findStackPath(*pr);
+    REQUIRE(stacked);
+    panex::panexSearch_c search;
+    std::unique_ptr<separation_c> path = panex::solve(*pr, search);
+    REQUIRE(path);
+    CHECK(logicalMoves(*path) == logicalMoves(*stacked));
+  }
+}
+
 TEST_CASE("panex: the Panex Solver needs Panex columns", "[stacking][panex]") {
   puzzle_c puz = makeBoard();
   problem_c * pr = makePanexSwap(puz, 3);
@@ -506,6 +531,26 @@ TEST_CASE("panex: a stopped search carries on where it stopped", "[stacking][pan
   CHECK(first.outcome == panex::PANEX_STOPPED);
   CHECK(first.saved);
   CHECK(panex::savedSearch(*pr, dir).find("200 moves deep") != std::string::npos);
+
+  /* Saves from before Time used kept milliseconds (BTPANEX3, whole seconds)
+   * still load: rewrite this one in that form and read it back. */
+  {
+    std::filesystem::path state;
+    for (const auto & e : std::filesystem::recursive_directory_iterator(dir))
+      if (e.path().filename() == "state.bin")
+        state = e.path();
+    REQUIRE_FALSE(state.empty());
+    std::fstream f(state, std::ios::in | std::ios::out | std::ios::binary);
+    const std::streamoff msAt = 8 + 8 + 4 + 4 + 4 + 8;
+    f.seekp(7);
+    f.put('3');
+    f.seekp(msAt);
+    const uint64_t seconds = 7;
+    f.write(reinterpret_cast<const char *>(&seconds), sizeof(seconds));
+    f.close();
+    CHECK(panex::savedMs(*pr, dir) == 7000);
+    CHECK(panex::savedSearch(*pr, dir).find("200 moves deep") != std::string::npos);
+  }
 
   /* Without resume it starts over; with it, it carries on to the same answer. */
   panex::panexSearch_c second;
@@ -596,5 +641,219 @@ TEST_CASE("panex: a saved search without its levels still finds the path", "[sta
   REQUIRE(path);
   CHECK(logicalMoves(*path) == 343);
   checkTransfers(*path);
+  std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("stacking: the board span covers every rod, the pocket too", "[stacking]") {
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexJr(puz);
+  const boardLayout_c lay = layoutBoard(*pr, false);
+  REQUIRE(lay.rodX.size() == 3);
+  /* The pocket is the last rod but is drawn first, at x 0. */
+  CHECK(lay.rodX.back() == 0);
+  CHECK(boardSpan(*pr) == (unsigned int)(lay.rodX[1] + lay.spacing));
+}
+
+TEST_CASE("stacking: a rod set with impossible numbers in the file loads sanely", "[stacking]") {
+  std::stringstream in("<rodSets><rodSet rods=\"-3\" grow=\"0\" height=\"-1\" pocket=\"x\"/></rodSets>");
+  xmlParser_c pars(in);
+  REQUIRE(pars.nextTag() == xmlParser_c::START_TAG);
+  puzzle_c puz = makeBoard();
+  const unsigned int before = puz.rodSetCount();
+  loadRodSets(puz, pars);
+  REQUIRE(puz.rodSetCount() == before + 1);
+  const rodSet_c & r = puz.getRodSet(before);
+  CHECK(r.rodCount == 3);
+  CHECK(r.definedHeight == 8);
+  CHECK_FALSE(r.pocketColumn);
+}
+
+/* Undo puts back the discs' places on the rods: restoring the part counts
+ * goes through zero, which takes the discs off the rods. */
+TEST_CASE("stacking: undo of a disc edit keeps the stacks", "[stacking]") {
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexJr(puz);
+  const stackMap_c start = pr->startStacks();
+  const stackMap_c goal = pr->goalStacks();
+  REQUIRE_FALSE(start.rods.empty());
+
+  shapeHistory_c history;
+  history.reset(&puz);
+  /* A structural edit: one more copy of the first disc. */
+  pr->setShapeMaximum(pr->getShapeIdOfPart(0), 2);
+  history.record(&puz, shapeHistory_c::AK_STRUCTURAL, 0);
+  REQUIRE(history.canUndo());
+  history.undo(&puz);
+
+  CHECK(pr->getShapeMaximum(pr->getShapeIdOfPart(0)) == 1);
+  CHECK(pr->startStacks().rods == start.rods);
+  CHECK(pr->goalStacks().rods == goal.rods);
+  CHECK(setupError(*pr).empty());
+}
+
+/* Hidden: the Panex swap of 6 discs a tower (881 transfers), at one thread
+ * and at all of them.   ./build/test_burrtools "[.bench][panex]" */
+TEST_CASE("panex: benchmark, the six-disc swap", "[.bench][panex]") {
+  /* BT_PANEX_BENCH_N=7 for the seven-disc swap (2189 transfers). */
+  const char * asked = std::getenv("BT_PANEX_BENCH_N");
+  const unsigned int n = asked ? (unsigned int)std::atoi(asked) : 6;
+  for (unsigned int threads : {1u, 0u}) {
+    puzzle_c puz = makeBoard();
+    problem_c * pr = makePanexSwap(puz, n);
+    panex::panexSearch_c search;
+    search.threads = threads;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::unique_ptr<separation_c> path = panex::solve(*pr, search);
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    REQUIRE(path);
+    printf("panex %u, %s: %u transfers, %llu stackings, peak %llu MB, %.2f s\n",
+           n, threads ? "1 thread" : "all threads", logicalMoves(*path),
+           (unsigned long long)search.found, (unsigned long long)(search.peakMemory >> 20), s);
+  }
+}
+
+/* The classic tower is solved by its well-known recursion, with no search:
+ * 2^n - 1 transfers, each one legal, the same count the search finds. */
+TEST_CASE("panex: the classic tower needs no search", "[stacking][panex]") {
+  for (unsigned int n : {1u, 2u, 7u, 10u}) {
+    INFO(n << " discs");
+    puzzle_c puz = makeBoard();
+    puz.getRodSet(0).sizeMatters = true;
+    problem_c * pr = puz.getProblem(puz.addProblem());
+    for (unsigned int size = n; size >= 1; size--)
+      addSized(puz, *pr, size);
+    pr->setRodSetId(0);
+    syncMaps(*pr);
+    for (unsigned int i = 0; i < n; i++) {
+      REQUIRE(placeDisk(*pr, false, i, 2).empty());
+      REQUIRE(placeDisk(*pr, true, i, 1).empty());
+    }
+    REQUIRE(setupError(*pr).empty());
+
+    panex::panexSearch_c direct;
+    direct.anyRules = true;
+    std::unique_ptr<separation_c> path = panex::solve(*pr, direct);
+    REQUIRE(path);
+    CHECK(direct.outcome == panex::PANEX_FOUND);
+    CHECK(logicalMoves(*path) == (1u << n) - 1);
+    checkTransfers(*path);
+    /* No search: only the path's own stackings were made. */
+    CHECK(direct.found == (1ull << n));
+
+#ifndef _WIN32
+    setenv("BURRTOOLS_NO_TOWER_RULE", "1", 1);
+    panex::panexSearch_c searched;
+    searched.anyRules = true;
+    searched.workDir = (std::filesystem::temp_directory_path() / "burrtools-panex-tower").string();
+    std::unique_ptr<separation_c> found = panex::solve(*pr, searched);
+    unsetenv("BURRTOOLS_NO_TOWER_RULE");
+    REQUIRE(found);
+    CHECK(logicalMoves(*found) == logicalMoves(*path));
+#endif
+  }
+}
+
+namespace {
+
+std::string fileBytes(const std::filesystem::path & f) {
+  std::ifstream in(f, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+/* Pack f, unpack it again, and check the bytes come back; returns the
+ * packed size. */
+uint64_t packRoundTrip(const std::filesystem::path & f, bool keys, size_t chunk) {
+  std::stringstream packed;
+  const uint64_t n = blockpack::pack(f, packed, keys, 4, chunk);
+  REQUIRE(n == packed.str().size());
+  const std::filesystem::path back = f.string() + ".back";
+  std::stringstream in(packed.str());
+  REQUIRE(blockpack::unpack(in, n, back, 4));
+  const bool same = fileBytes(back) == fileBytes(f);
+  CHECK(same);
+  std::filesystem::remove(back);
+  return n;
+}
+
+} // namespace
+
+TEST_CASE("blockpack: files come back unchanged, keys packed small", "[stacking][panex][export]") {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "burrtools-blockpack";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  std::mt19937_64 rng(7);
+
+  /* Sorted 16-byte keys, as a search level holds, over many chunks. */
+  std::vector<std::pair<uint64_t, uint64_t>> keys(100000);
+  for (auto & k : keys)
+    k = {rng() >> 40, rng()};
+  std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  {
+    std::ofstream out(dir / "sorted.lvl", std::ios::binary);
+    for (const auto & k : keys) {
+      out.write(reinterpret_cast<const char *>(&k.first), 8);
+      out.write(reinterpret_cast<const char *>(&k.second), 8);
+    }
+  }
+  const uint64_t raw = std::filesystem::file_size(dir / "sorted.lvl");
+  const uint64_t asKeys = packRoundTrip(dir / "sorted.lvl", true, 16 * 997);
+  const uint64_t plain = packRoundTrip(dir / "sorted.lvl", false, 16 * 997);
+  INFO("raw " << raw << ", as keys " << asKeys << ", plain deflate " << plain);
+  printf("blockpack: random sorted keys %llu bytes -> %llu as keys, %llu plain\n",
+         (unsigned long long)raw, (unsigned long long)asKeys, (unsigned long long)plain);
+  CHECK(asKeys < plain);
+
+  /* Unsorted keys and odd sizes fall back to plain deflate. */
+  std::shuffle(keys.begin(), keys.end(), rng);
+  {
+    std::ofstream out(dir / "unsorted.lvl", std::ios::binary);
+    for (const auto & k : keys) {
+      out.write(reinterpret_cast<const char *>(&k.first), 8);
+      out.write(reinterpret_cast<const char *>(&k.second), 8);
+    }
+    std::ofstream odd(dir / "odd.bin", std::ios::binary);
+    for (int i = 0; i < 12345; i++)
+      odd.put((char)(rng() & 0xff));
+    std::ofstream empty(dir / "empty.bin", std::ios::binary);
+  }
+  packRoundTrip(dir / "unsorted.lvl", true, 16 * 997);
+  packRoundTrip(dir / "odd.bin", true, 4096);
+  packRoundTrip(dir / "empty.bin", true, 4096);
+
+  /* Damage is refused, not written out as data. */
+  std::stringstream packed;
+  const uint64_t n = blockpack::pack(dir / "sorted.lvl", packed, true, 2, 16 * 997);
+  std::string bytes = packed.str();
+  bytes[bytes.size() / 2] ^= 0x55;
+  std::stringstream damaged(bytes);
+  CHECK_FALSE(blockpack::unpack(damaged, n, dir / "damaged.lvl", 2));
+  std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("blockpack: a real search's saved levels", "[stacking][panex][export]") {
+  const std::string dir = (std::filesystem::temp_directory_path() / "burrtools-blockpack-panex").string();
+  std::filesystem::remove_all(dir);
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexSwap(puz, 5);
+  panex::panexSearch_c search;
+  search.workDir = dir;
+  search.keepLimit = 10;
+  search.stopAtDepth = 200;
+  CHECK_FALSE(panex::solve(*pr, search));
+  REQUIRE(search.saved);
+
+  uint64_t raw = 0, packedTotal = 0, plainTotal = 0;
+  for (const auto & e : std::filesystem::directory_iterator(panex::searchFolder(*pr, dir))) {
+    const bool level = e.path().extension() == ".lvl";
+    raw += std::filesystem::file_size(e.path());
+    packedTotal += packRoundTrip(e.path(), level, 0);
+    plainTotal += packRoundTrip(e.path(), false, 0);
+  }
+  INFO("saved search: raw " << raw << " bytes, packed " << packedTotal);
+  printf("blockpack: Panex 5 saved search %llu bytes -> %llu (plain deflate %llu)\n",
+         (unsigned long long)raw, (unsigned long long)packedTotal, (unsigned long long)plainTotal);
+  CHECK(packedTotal * 2 < raw);
+  CHECK(packedTotal < plainTotal);
   std::filesystem::remove_all(dir);
 }

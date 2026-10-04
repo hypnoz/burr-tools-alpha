@@ -19,6 +19,7 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include "assembler_0.h"
+#include "assembler_resume.h"
 
 #include "bt_assert.h"
 #include "problem.h"
@@ -2028,66 +2029,26 @@ assembler_c::errState assembler_0_c::setPosition(const char * string, const char
   if (interrupted >= 2) {
     if (pos != 0)
       return ERR_CAN_NOT_RESTORE_SYNTAX;
-    const char * s = string + spos;
-    char * end = nullptr;
-    auto next = [&](unsigned long long & v) {
-      v = std::strtoull(s, &end, 10);
-      if (end == s)
-        return false;
-      s = end;
-      return true;
-    };
-    auto expect = [&](char c) {
-      while (*s == ' ')
-        s++;
-      if (*s != c)
-        return false;
-      s++;
-      return true;
-    };
-    unsigned long long n = 0;
-    if (interrupted == 3) {
-      if (!expect('K') || !next(n))
-        return ERR_CAN_NOT_RESTORE_SYNTAX;
-      simdSkip = n;
-    } else {
-      if (!expect('T') || !next(n))
-        return ERR_CAN_NOT_RESTORE_SYNTAX;
-      parallelTasks.resize((size_t)n);
-      for (SubtreeTask & t : parallelTasks) {
-        unsigned long long k = 0;
-        if (!next(k))
-          return ERR_CAN_NOT_RESTORE_SYNTAX;
-        t.prefix.resize((size_t)k);
-        for (PrefixStep & st : t.prefix) {
-          unsigned long long c = 0, r = 0;
-          if (!next(c) || !next(r) || c >= left.size() || r >= left.size())
-            return ERR_CAN_NOT_RESTORE_SYNTAX;
-          st.col = (unsigned int)c;
-          st.row = (unsigned int)r;
-        }
-      }
-      if (!expect('C'))
-        return ERR_CAN_NOT_RESTORE_SYNTAX;
-      while (*s == ' ')
-        s++;
-      taskCompleted.assign(parallelTasks.size(), 0);
-      size_t done = 0;
-      for (size_t i = 0; i < parallelTasks.size(); i++, s++) {
-        if (*s != '0' && *s != '1')
-          return ERR_CAN_NOT_RESTORE_SYNTAX;
-        taskCompleted[i] = *s == '1';
-        done += taskCompleted[i];
-      }
-      unsigned long long m = 0;
-      if (!expect('S') || !next(m))
-        return ERR_CAN_NOT_RESTORE_SYNTAX;
-      for (unsigned long long i = 0; i < m; i++) {
-        unsigned long long sig = 0;
-        if (!next(sig))
-          return ERR_CAN_NOT_RESTORE_SYNTAX;
-        emittedSignatures.insert(sig);
-      }
+    assemblerResume::tail_c<SubtreeTask> tail;
+    size_t done = 0;
+    const size_t rowCount = left.size();
+    if (!assemblerResume::readTail(string + spos, interrupted, tail, done,
+          [rowCount](assemblerResume::reader_c & r, SubtreeTask & t) {
+            unsigned long long k = 0;
+            if (!r.next(k))
+              return false;
+            t.prefix.resize((size_t)k);
+            for (PrefixStep & st : t.prefix)
+              if (!r.next(st.col) || !r.next(st.row) || st.col >= rowCount || st.row >= rowCount)
+                return false;
+            return true;
+          }))
+      return ERR_CAN_NOT_RESTORE_SYNTAX;
+    simdSkip = tail.simdSkip;
+    parallelTasks = std::move(tail.tasks);
+    taskCompleted = std::move(tail.completed);
+    emittedSignatures = std::move(tail.signatures);
+    if (interrupted == 2) {
       totalTasks.store(parallelTasks.size(), std::memory_order_relaxed);
       completedTasks.store(done, std::memory_order_relaxed);
     }
@@ -2138,22 +2099,12 @@ void assembler_0_c::save(xmlWriter_c & xml) const
       if (j < pos) str << " ";
     }
 
-  if (flag == 3) {
-    str << " K " << std::max(simdSkip, simdDone);
-  } else if (flag == 2) {
-    str << " T " << parallelTasks.size();
-    for (const SubtreeTask & t : parallelTasks) {
-      str << " " << t.prefix.size();
-      for (const PrefixStep & st : t.prefix)
-        str << " " << st.col << " " << st.row;
-    }
-    str << " C ";
-    for (uint8_t c : taskCompleted)
-      str << (c ? '1' : '0');
-    str << " S " << emittedSignatures.size();
-    for (uint64_t sig : emittedSignatures)
-      str << " " << sig;
-  }
+  assemblerResume::writeTail(str, flag, std::max(simdSkip, simdDone), parallelTasks, taskCompleted,
+      emittedSignatures, [](std::ostream & o, const SubtreeTask & t) {
+        o << " " << t.prefix.size();
+        for (const PrefixStep & st : t.prefix)
+          o << " " << st.col << " " << st.row;
+      });
 
   xml.endTag("assembler");
 }

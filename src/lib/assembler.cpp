@@ -34,7 +34,7 @@
 #include <thread>
 
 placementFinder_c::placementFinder_c(const problem_c & problem, const voxel_c * result, bool strictColors) :
-  prob(problem), res(result)
+  res(result)
 {
   colorTableWidth = problem.getPuzzle().colorNumber() + 1;
 

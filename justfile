@@ -33,6 +33,9 @@ rebuild:
 test: build
     ninja -C build test
 
+# Run every test including the stress case (same as test; the docs call it test-all)
+test-all: test
+
 # Run regression test comparing burrTxt and burrTxt2 against known-good 0.7.1 release output
 test-regression: build
     python3 test/test_examples_regression.py
@@ -84,6 +87,7 @@ check-analyzer:
 
 # Run default static check (cppcheck)
 check: check-cppcheck
+
 
 # Run full static check suite (cppcheck + clang-tidy)
 check-all: check-cppcheck check-tidy

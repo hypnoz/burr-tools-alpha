@@ -6,21 +6,28 @@
 #include "lib/assembler_0.h"
 #include "lib/assembler_1.h"
 #include "lib/assembly.h"
+#include "lib/bt2_assemble.h"
 #include "lib/disassembler.h"
 #include "lib/disassembler_0.h"
 #include "lib/disassembly.h"
 #include "lib/gridtype.h"
 #include "lib/solvethread.h"
+#include "lib/solvertype.h"
 #include "lib/voxel.h"
 #include "tools/xml.h"
 #include "tools/gzstream.h"
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
+#include <algorithm>
+#include <atomic>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -888,6 +895,26 @@ TEST_CASE("Parallel assembler 1 does not report stale progress on a later run",
   CHECK(again.getFinished() < 1.0f);
 }
 
+/* A saved assembler position with the numbers after " S <count>" sorted. */
+static std::string sortedSignatures(const std::string & saved) {
+  const size_t at = saved.find(" S ");
+  if (at == std::string::npos)
+    return saved;
+  std::istringstream in(saved.substr(at + 3));
+  unsigned long long count = 0;
+  in >> count;
+  std::vector<unsigned long long> sigs(count);
+  for (unsigned long long & v : sigs)
+    in >> v;
+  std::sort(sigs.begin(), sigs.end());
+  std::string rest;
+  std::getline(in, rest, '\0');
+  std::string out = saved.substr(0, at) + " S " + std::to_string(count);
+  for (unsigned long long v : sigs)
+    out += " " + std::to_string(v);
+  return out + rest;
+}
+
 /* Stops a search after stopAt assemblies the way the application does (the
  * callback asks it to stop), then finishes it: either straight on with the
  * same assembler, or after saving the position as it would go into the
@@ -947,6 +974,14 @@ static void checkStopAndResume(const char * file, unsigned int prob, unsigned in
     std::string payload = extractAssemblerContent(state);
     REQUIRE(restored.setPosition(payload.c_str(), assemblerVersionOf(state).c_str())
             == assembler_c::ERR_NONE);
+    /* Restoring and saving again writes the same position. The reported
+     * signatures come from an unordered set, so compare those sorted. */
+    {
+      std::ostringstream str;
+      xmlWriter_c xml(str);
+      restored.save(xml);
+      CHECK(sortedSignatures(str.str()) == sortedSignatures(state));
+    }
     restored.assemble(&rest);
   } else {
     assm.assemble(&rest);
@@ -1087,4 +1122,163 @@ TEST_CASE("Solver: an autosave pause saves a solve that carries on to the same t
     CHECK(pr->getNumSolutions() == solutions);
   }
   CHECK(paused >= 1);
+}
+
+/* No solution limit (0) and a drop of 0, as a typed-in value can give: the
+ * solve must start (it used to loop for ever in start()) and keep every
+ * solution. */
+TEST_CASE("Solver: no solution limit keeps every solution", "[solver]") {
+  auto p = puzzle_c::load("examples/SolidSixPieceBurrs.xmpuzzle");
+  REQUIRE(p != nullptr);
+  problem_c * pr = p->getProblem(0);
+  pr->removeAllSolutions();
+  solveThread_c solver(*pr, solveThread_c::PAR_REDUCE | solveThread_c::PAR_DISASSM);
+  solver.setSortMethod(solveThread_c::SRT_UNSORT);
+  solver.setSolutionLimits(0, 0);
+  REQUIRE(solver.start());
+  solver.waitUntilFinished();
+  CHECK(pr->getSolveState() == SS_SOLVED);
+  CHECK(pr->getNumSolutions() > 10);
+  CHECK(pr->getNumberOfSavedSolutions() == pr->getNumSolutions());
+}
+
+/* A saved position the assembler cannot use is reported once; the problem
+ * then starts over cleanly. A second solve used to assert, because the
+ * unusable state stayed behind on an unsolved problem. */
+TEST_CASE("Solver: a damaged saved position errors once, then solves from the start", "[solver][resume]") {
+  std::string text;
+  {
+    auto p = puzzle_c::load("examples/PelikanBurr.xmpuzzle");
+    REQUIRE(p != nullptr);
+    p->getProblem(0)->removeAllSolutions();
+    solveThread_c solver(*p->getProblem(0), solveThread_c::PAR_REDUCE);
+    REQUIRE(solver.start(true));  // prepare only: the problem is now solving
+    solver.waitUntilFinished();
+    REQUIRE(p->getProblem(0)->getSolveState() == SS_SOLVING);
+    std::ostringstream out;
+    xmlWriter_c xml(out);
+    p->save(xml);
+    text = out.str();
+  }
+  const size_t at = text.find("<assembler version=\"");
+  REQUIRE(at != std::string::npos);
+  const size_t body = text.find('>', at) + 1;
+  text.replace(body, text.find("</assembler>", body) - body, "x");
+
+  std::istringstream in(text);
+  xmlParser_c pars(in);
+  puzzle_c puz(pars);
+  problem_c * pr = puz.getProblem(0);
+  REQUIRE(pr->getSolveState() == SS_SOLVING);
+  {
+    solveThread_c solver(*pr, solveThread_c::PAR_REDUCE);
+    REQUIRE(solver.start());
+    solver.waitUntilFinished();
+    CHECK(solver.currentAction() == solveThread_c::ACT_ERROR);
+  }
+  CHECK(pr->getSolveState() == SS_UNSOLVED);
+  {
+    solveThread_c solver(*pr, solveThread_c::PAR_REDUCE);
+    REQUIRE(solver.start());
+    solver.waitUntilFinished();
+    CHECK(solver.currentAction() == solveThread_c::ACT_FINISHED);
+  }
+  CHECK(pr->getNumAssemblies() > 0);
+}
+
+namespace {
+
+/* The twelve pentominoes in a w x h x 1 tray, built in memory. */
+std::unique_ptr<puzzle_c> pentominoPuzzle(unsigned int w, unsigned int h) {
+  static const std::vector<std::vector<std::string>> shapes = {
+    {".##", "##.", ".#."},           // F
+    {"#####"},                       // I
+    {"#...", "####"},                // L
+    {"##..", ".###"},                // N
+    {"##", "##", "#."},              // P
+    {"###", ".#.", ".#."},           // T
+    {"#.#", "###"},                  // U
+    {"#..", "#..", "###"},           // V
+    {"#..", "##.", ".##"},           // W
+    {".#.", "###", ".#."},           // X
+    {"..#.", "####"},                // Y
+    {"##.", ".#.", ".##"},           // Z
+  };
+  auto puz = std::make_unique<puzzle_c>(new gridType_c(gridType_c::GT_BRICKS));
+  const unsigned int tray = puz->addShape(w, h, 1);
+  for (unsigned int y = 0; y < h; y++)
+    for (unsigned int x = 0; x < w; x++)
+      puz->getShape(tray)->setState(x, y, 0, voxel_c::VX_FILLED);
+  const unsigned int prob = puz->addProblem();
+  problem_c * pr = puz->getProblem(prob);
+  pr->setResultId(tray);
+  for (const auto & art : shapes) {
+    const unsigned int id = puz->addShape((unsigned int)art[0].size(), (unsigned int)art.size(), 1);
+    for (unsigned int y = 0; y < art.size(); y++)
+      for (unsigned int x = 0; x < art[y].size(); x++)
+        if (art[y][x] == '#')
+          puz->getShape(id)->setState(x, y, 0, voxel_c::VX_FILLED);
+    pr->setShapeMaximum(id, 1);
+    pr->setShapeMinimum(id, 1);
+  }
+  return puz;
+}
+
+/* Counts assemblies; safe to call from several threads at once. */
+class CountingCallback : public assembler_cb {
+public:
+  std::atomic<unsigned long> assemblies{0};
+  bool assembly(std::unique_ptr<assembly_c>) override {
+    assemblies.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+};
+
+/* Count the assemblies of problem 0 the way burrTxt runs a solver type. */
+unsigned long countAssemblies(puzzle_c & puz, solverType_e type, unsigned int threads) {
+  problem_c * pr = puz.getProblem(0);
+  std::unique_ptr<assembler_c> assm = puz.getGridType()->findAssembler(*pr, true, type);
+  REQUIRE(assm != nullptr);
+  assm->setNumThreads(threads);
+  REQUIRE(assm->createMatrix(false, false, false) == assembler_c::ERR_NONE);
+  assm->reduce();
+  CountingCallback cb;
+  if (type == SOLVER_BT2)
+    bt2Assemble(assm.get(), &cb, bt2ChooseAssemblerWorkers(assm.get()));
+  else
+    assm->assemble(&cb);
+  return cb.assemblies.load();
+}
+
+} // namespace
+
+/* The twelve pentominoes fill a 3 x 20 tray in 2 ways and a 6 x 10 tray in
+ * 2339 (turned-over and mirrored copies not counted). A search split over
+ * threads must find each once: its parts must not overlap. */
+TEST_CASE("Pentominoes: every solver type finds the published counts at any thread count",
+          "[solver][assembler][pentomino]") {
+  std::unique_ptr<puzzle_c> narrow = pentominoPuzzle(20, 3);
+  for (solverType_e type : {SOLVER_CLASSIC, SOLVER_BT2})
+    for (unsigned int threads : {1u, 2u, 5u}) {
+      INFO(solverTypeLabel(type) << ", " << threads << " threads");
+      CHECK(countAssemblies(*narrow, type, threads) == 2);
+    }
+  std::unique_ptr<puzzle_c> wide = pentominoPuzzle(10, 6);
+  CHECK(countAssemblies(*wide, SOLVER_BT2, 1) == 2339);
+  CHECK(countAssemblies(*wide, SOLVER_BT2, 4) == 2339);
+}
+
+/* Hidden: assembly speed of each solver type on the 6 x 10 pentomino tray.
+ *   ./build/test_burrtools "[.bench][pentomino]" */
+TEST_CASE("Pentominoes: benchmark", "[.bench][pentomino]") {
+  std::unique_ptr<puzzle_c> wide = pentominoPuzzle(10, 6);
+  wide->save(std::filesystem::path("tmp/pentomino_6x10.xmpuzzle"));
+  for (solverType_e type : {SOLVER_CLASSIC, SOLVER_BT2})
+    for (unsigned int threads : {1u, 4u, 8u}) {
+      const auto t0 = std::chrono::steady_clock::now();
+      const unsigned long n = countAssemblies(*wide, type, threads);
+      const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      printf("pentomino 6x10, %s, %u threads: %lu assemblies in %.3f s\n",
+             solverTypeLabel(type), threads, n, s);
+    }
 }

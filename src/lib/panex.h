@@ -1,5 +1,24 @@
 /* BurrTools
  *
+ * BurrTools is the legal property of its developers, whose
+ * names are listed in the COPYRIGHT file, which is included
+ * within the source distribution.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ */
+/*
  * The Panex Solver: fewest rod transfers for stacking puzzles with Panex
  * columns, searched from both ends so that large towers can be solved.
  */
@@ -29,8 +48,8 @@ std::string unsupported(const problem_c & prob, bool anyRules = false);
  */
 std::string savedSearch(const problem_c & prob, const std::string & workDir = "");
 
-/** Seconds of solving the saved search of this problem holds; 0 when there is none. */
-unsigned long long savedSeconds(const problem_c & prob, const std::string & workDir = "");
+/** Milliseconds of solving the saved search of this problem holds; 0 when there is none. */
+unsigned long long savedMs(const problem_c & prob, const std::string & workDir = "");
 
 /**
  * The folder where this problem's saved search lives, whether there is one

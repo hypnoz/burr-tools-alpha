@@ -1,3 +1,23 @@
+/* BurrTools
+ *
+ * BurrTools is the legal property of its developers, whose
+ * names are listed in the COPYRIGHT file, which is included
+ * within the source distribution.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ */
 #include "stacking.h"
 
 #include "assembly.h"
@@ -14,6 +34,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <queue>
 #include <sstream>
@@ -188,7 +209,7 @@ std::string checkStack(const problem_c & prob, const rodSet_c & board,
     if (below < 0 || above < 0)
       continue;
     if (pieces[above].size > pieces[below].size)
-      return "On rod " + std::to_string(rodNo + 1) + " of " + which + ", " +
+      return "On " + rodName(board, rodNo) + " of " + which + ", " +
              diskLabel(prob, rod[i]) + " (size " + std::to_string(pieces[above].size) +
              ") sits on the smaller " + diskLabel(prob, rod[i - 1]) + " (size " +
              std::to_string(pieces[below].size) + "), but size matters is on.";
@@ -271,6 +292,23 @@ Config configFromMap(const problem_c & prob, bool goal, const std::vector<piece_
     }
   }
   return cfg;
+}
+
+/* An attribute as a count from 0 to most; fallback when missing or not a
+ * number in range (an edited file can hold anything). */
+/* Rods, or discs a rod holds, that a file may ask for. */
+const unsigned int MAX_FILE_COUNT = 1000;
+
+unsigned int countAttribute(xmlParser_c & pars, const char * name, unsigned int fallback,
+                            unsigned int most) {
+  const std::string s = pars.getAttributeValue(name);
+  if (s.empty())
+    return fallback;
+  char * end = nullptr;
+  const long v = std::strtol(s.c_str(), &end, 10);
+  if (end == s.c_str() || v < 0 || (unsigned long)v > most)
+    return fallback;
+  return (unsigned int)v;
 }
 
 /* What the animation needs to place a disc: the board, its discs and where each rod stands. */
@@ -487,35 +525,18 @@ void loadRodSets(puzzle_c & puz, xmlParser_c & pars) {
     pars.require(xmlParser_c::START_TAG, "");
     if (pars.getName() == "rodSet") {
       rodSet_c r;
-      std::string s;
       r.name = pars.getAttributeValue("name");
-      s = pars.getAttributeValue("rods");
-      if (!s.empty())
-        r.rodCount = (unsigned int)atoi(s.c_str());
-      if (r.rodCount < 1)
-        r.rodCount = 1;
-      s = pars.getAttributeValue("grow");
-      if (!s.empty())
-        r.growHeight = atoi(s.c_str()) != 0;
-      s = pars.getAttributeValue("height");
-      if (!s.empty())
-        r.definedHeight = (unsigned int)atoi(s.c_str());
-      s = pars.getAttributeValue("sizeMatters");
-      if (!s.empty())
-        r.sizeMatters = atoi(s.c_str()) != 0;
-      s = pars.getAttributeValue("distanceMatters");
-      if (!s.empty())
-        r.distanceMatters = atoi(s.c_str()) != 0;
-      s = pars.getAttributeValue("moveOver");
-      if (!s.empty())
-        r.canMoveOver = atoi(s.c_str()) != 0;
-      s = pars.getAttributeValue("panex");
-      if (!s.empty())
-        r.panexColumns = atoi(s.c_str()) != 0;
-      s = pars.getAttributeValue("pocket");
-      if (!s.empty() && atoi(s.c_str()) > 0) {
+      r.rodCount = std::max(1u, countAttribute(pars, "rods", r.rodCount, MAX_FILE_COUNT));
+      r.growHeight = countAttribute(pars, "grow", r.growHeight, 1) != 0;
+      r.definedHeight = std::max(1u, countAttribute(pars, "height", r.definedHeight, MAX_FILE_COUNT));
+      r.sizeMatters = countAttribute(pars, "sizeMatters", r.sizeMatters, 1) != 0;
+      r.distanceMatters = countAttribute(pars, "distanceMatters", r.distanceMatters, 1) != 0;
+      r.canMoveOver = countAttribute(pars, "moveOver", r.canMoveOver, 1) != 0;
+      r.panexColumns = countAttribute(pars, "panex", r.panexColumns, 1) != 0;
+      const unsigned int pocket = countAttribute(pars, "pocket", 0, MAX_FILE_COUNT);
+      if (pocket > 0) {
         r.pocketColumn = true;
-        r.pocketHeight = (unsigned int)atoi(s.c_str());
+        r.pocketHeight = pocket;
       }
       puz.addRodSet(r);
       pars.skipSubTree();
@@ -1189,7 +1210,8 @@ unsigned int boardSpan(const problem_c & prob) {
   boardLayout_c lay = layoutBoard(prob, false);
   if (lay.rodCount == 0)
     return 4;
-  unsigned int span = (unsigned int)(lay.rodX.back() + lay.spacing);
+  /* The pocket is the last rod but stands first: take the widest. */
+  unsigned int span = (unsigned int)(*std::max_element(lay.rodX.begin(), lay.rodX.end()) + lay.spacing);
   if (span < 4)
     span = 4;
   return span;

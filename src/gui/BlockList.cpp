@@ -992,17 +992,17 @@ struct DiskSizeInput : public Fl_Int_Input, public layoutable_c {
 };
 
 static void cb_disk_name(Fl_Widget * w, void *) {
-  DiskNameButton * b = (DiskNameButton *)w;
+  DiskNameButton * b = static_cast<DiskNameButton *>(w);
   b->owner->onName(b->index);
 }
 
 static void cb_disk_delta(Fl_Widget * w, void *) {
-  DiskDeltaButton * b = (DiskDeltaButton *)w;
+  DiskDeltaButton * b = static_cast<DiskDeltaButton *>(w);
   b->owner->onDelta(b->index, b->dir);
 }
 
 static void cb_disk_size(Fl_Widget * w, void *) {
-  DiskSizeInput * b = (DiskSizeInput *)w;
+  DiskSizeInput * b = static_cast<DiskSizeInput *>(w);
   b->owner->onSize(b->index);
 }
 

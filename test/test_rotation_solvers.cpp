@@ -68,3 +68,220 @@ TEST_CASE("EnigmaTIC with Check Rotations: Classic, Crowell, and BurrTools 2 agr
   SECTION("Andrew Crowell")   { requireEnigmaRotationSolution(SOLVER_CROWELL); }
   SECTION("BurrTools 2")      { requireEnigmaRotationSolution(SOLVER_BT2); }
 }
+
+#include "lib/rotationrules.h"
+
+#include <chrono>
+#include <cstdio>
+#include <random>
+
+namespace {
+
+/* Every rotation rule answer for many random but consistent cases: a small
+ * piece and the cells it turns into about a pivot, among random other
+ * cells. The hash pins the rules' behaviour, so a faster implementation
+ * must give exactly the same answers. */
+uint64_t rotationRulesHash(unsigned int cases, double * seconds) {
+  using cell_t = rotationRules_c::cell_t;
+  std::mt19937 rng(12345);
+  rotationRules_c rules;
+  uint64_t h = 1469598103934665603ull;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (unsigned int k = 0; k < cases; k++) {
+    /* A piece: 2-5 cells around a centre cell. */
+    const int cx = 4, cy = 4, cz = 4;
+    std::vector<cell_t> piece{cell_t(cx, cy, cz)};
+    const int n = 2 + (int)(rng() % 4);
+    while ((int)piece.size() < n) {
+      const cell_t & b = piece[rng() % piece.size()];
+      static const int d[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+      const int * dd = d[rng() % 6];
+      cell_t c(b.x + dd[0], b.y + dd[1], b.z + dd[2]);
+      bool have = false;
+      for (const cell_t & p : piece)
+        have = have || (p.x == c.x && p.y == c.y && p.z == c.z);
+      if (!have)
+        piece.push_back(c);
+    }
+    /* Others: random cells in a 9x9x9 box, not on the piece. */
+    std::vector<cell_t> others;
+    const unsigned int density = 5 + rng() % 30;
+    for (int x = 0; x < 9; x++)
+      for (int y = 0; y < 9; y++)
+        for (int z = 0; z < 9; z++) {
+          bool onPiece = false;
+          for (const cell_t & p : piece)
+            onPiece = onPiece || (p.x == x && p.y == y && p.z == z);
+          if (!onPiece && rng() % 100 < density)
+            others.push_back(cell_t(x, y, z));
+        }
+    /* Turn about the centre cell, every axis and sense. */
+    const rotationRules_c::pivot_t pivot(2 * cx, 2 * cy, 2 * cz);
+    for (unsigned int axis = 0; axis < 3; axis++)
+      for (unsigned int sense = 0; sense < 2; sense++) {
+        std::vector<cell_t> end;
+        for (const cell_t & p : piece) {
+          int dx = p.x - cx, dy = p.y - cy, dz = p.z - cz, ex = dx, ey = dy, ez = dz;
+          const int s = sense ? -1 : 1;
+          if (axis == 0) { ey = -s * dz; ez = s * dy; }
+          else if (axis == 1) { ex = s * dz; ez = -s * dx; }
+          else { ex = -s * dy; ey = s * dx; }
+          end.push_back(cell_t(cx + ex, cy + ey, cz + ez));
+        }
+        const bool ok = rules.allowRotation(others, piece, end, pivot, axis, sense);
+        const bool blocked = rules.axisBlocked(others, piece, axis);
+        h = (h ^ (ok ? 3u : 1u) ^ (blocked ? 8u : 4u)) * 1099511628211ull;
+      }
+  }
+  *seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  return h;
+}
+
+} // namespace
+
+TEST_CASE("rotation rules: the same answers as before (hash)", "[rotation]") {
+  double s = 0;
+  const uint64_t h = rotationRulesHash(400, &s);
+  INFO("hash " << h);
+  CHECK(h == 3649067536594071595ull);
+}
+
+/* The prepared path (setBodies, preparedAxisBlocked, allowPrepared) that the
+ * Classic generator uses must say what allowRotation says, for pivots on
+ * and off the grid. */
+TEST_CASE("rotation rules: the prepared path agrees with allowRotation", "[rotation]") {
+  using cell_t = rotationRules_c::cell_t;
+  std::mt19937 rng(777);
+  rotationRules_c rules, reference;
+  unsigned int allowed = 0, mismatches = 0;
+  for (unsigned int k = 0; k < 600; k++) {
+    std::vector<cell_t> piece{cell_t(4, 4, 4)};
+    const int n = 2 + (int)(rng() % 5);
+    while ((int)piece.size() < n) {
+      const cell_t & b = piece[rng() % piece.size()];
+      static const int d[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+      const int * dd = d[rng() % 6];
+      cell_t c(b.x + dd[0], b.y + dd[1], b.z + dd[2]);
+      bool have = false;
+      for (const cell_t & p : piece)
+        have = have || (p.x == c.x && p.y == c.y && p.z == c.z);
+      if (!have)
+        piece.push_back(c);
+    }
+    std::vector<cell_t> others;
+    const unsigned int density = 2 + rng() % 25;
+    for (int x = 0; x < 9; x++)
+      for (int y = 0; y < 9; y++)
+        for (int z = 0; z < 9; z++) {
+          bool onPiece = false;
+          for (const cell_t & p : piece)
+            onPiece = onPiece || (p.x == x && p.y == y && p.z == z);
+          if (!onPiece && rng() % 100 < density)
+            others.push_back(cell_t(x, y, z));
+        }
+
+    rules.setBodies(others, piece);
+    for (unsigned int axis = 0; axis < 3; axis++) {
+      const bool blocked = rules.preparedAxisBlocked(axis);
+      if (blocked != reference.axisBlocked(others, piece, axis))
+        mismatches++;
+      for (int tries = 0; tries < 6; tries++) {
+        const rotationRules_c::pivot_t pivot(5 + (int)(rng() % 7), 5 + (int)(rng() % 7),
+                                             5 + (int)(rng() % 7));
+        for (unsigned int sense = 0; sense < 2; sense++) {
+          std::vector<cell_t> end;
+          bool onGrid = true;
+          for (const cell_t & p : piece) {
+            cell_t e;
+            onGrid = onGrid && rotationRules_c::rotateCell(p, pivot, axis, sense, e);
+            end.push_back(e);
+          }
+          const bool want = onGrid && reference.allowRotation(others, piece, end, pivot, axis, sense);
+          if (rules.allowPrepared(pivot, axis, sense, false) != want)
+            mismatches++;
+          /* A blocked axis allows nothing, which is what lets the generator
+           * skip its pivots. */
+          if (blocked && want)
+            mismatches++;
+          if (!blocked && rules.allowPrepared(pivot, axis, sense, true) != want)
+            mismatches++;
+          if (want)
+            allowed++;
+        }
+      }
+    }
+  }
+  CHECK(mismatches == 0);
+  /* The cases must exercise both answers. */
+  CHECK(allowed > 100);
+}
+
+/* Hidden: time the rules on many cases. */
+TEST_CASE("rotation rules: benchmark", "[.bench][rotation]") {
+  double s = 0;
+  const uint64_t h = rotationRulesHash(20000, &s);
+  printf("rotation rules: 20000 cases in %.2f s, hash %llu\n", s, (unsigned long long)h);
+}
+
+/* The rules must not care how the whole scene is turned in space: a piece
+ * among others, and the same scene turned a quarter about Z (which turns
+ * the X axis into Y and Y into -X), get the same answer for the matching
+ * rotation. The Classic generator's one-node-per-arrangement search depends
+ * on it. */
+TEST_CASE("rotation rules: a turned scene gets the same answers", "[rotation]") {
+  using cell_t = rotationRules_c::cell_t;
+  std::mt19937 rng(4242);
+  rotationRules_c a, b;
+  unsigned int differ = 0, allowed = 0;
+  auto turned = [](const cell_t & c) { return cell_t(-c.y - 1, c.x, c.z); };
+  for (unsigned int k = 0; k < 500; k++) {
+    std::vector<cell_t> piece{cell_t(4, 4, 4)};
+    const int n = 2 + (int)(rng() % 6);
+    while ((int)piece.size() < n) {
+      const cell_t & from = piece[rng() % piece.size()];
+      static const int d[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+      const int * dd = d[rng() % 6];
+      cell_t c(from.x + dd[0], from.y + dd[1], from.z + dd[2]);
+      bool have = false;
+      for (const cell_t & p : piece)
+        have = have || (p.x == c.x && p.y == c.y && p.z == c.z);
+      if (!have)
+        piece.push_back(c);
+    }
+    std::vector<cell_t> others;
+    const unsigned int density = 2 + rng() % 20;
+    for (int x = 0; x < 9; x++)
+      for (int y = 0; y < 9; y++)
+        for (int z = 0; z < 9; z++) {
+          bool onPiece = false;
+          for (const cell_t & p : piece)
+            onPiece = onPiece || (p.x == x && p.y == y && p.z == z);
+          if (!onPiece && rng() % 100 < density)
+            others.push_back(cell_t(x, y, z));
+        }
+    std::vector<cell_t> piece2, others2;
+    for (const cell_t & c : piece)
+      piece2.push_back(turned(c));
+    for (const cell_t & c : others)
+      others2.push_back(turned(c));
+    a.setBodies(others, piece);
+    b.setBodies(others2, piece2);
+    for (unsigned int axis = 0; axis < 3; axis++)
+      for (int t = 0; t < 8; t++) {
+        const rotationRules_c::pivot_t pivot(5 + (int)(rng() % 7), 5 + (int)(rng() % 7),
+                                             5 + (int)(rng() % 7));
+        const rotationRules_c::pivot_t pivot2(-pivot.hy - 2, pivot.hx, pivot.hz);
+        for (unsigned int sense = 0; sense < 2; sense++) {
+          const unsigned int axis2 = axis == 0 ? 1 : axis == 1 ? 0 : 2;
+          const unsigned int sense2 = axis == 1 ? 1 - sense : sense;
+          const bool ra = a.allowPrepared(pivot, axis, sense, false);
+          if (ra)
+            allowed++;
+          if (ra != b.allowPrepared(pivot2, axis2, sense2, false))
+            differ++;
+        }
+      }
+  }
+  CHECK(differ == 0);
+  CHECK(allowed > 1000);
+}

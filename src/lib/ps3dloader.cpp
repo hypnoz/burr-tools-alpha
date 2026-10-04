@@ -41,7 +41,7 @@ std::unique_ptr<puzzle_c> loadPuzzlerSolver3D(std::istream * str) {
 
   int state = 0;
   int linenum = 0;
-  int sx, sy, sz;
+  int sx = 0, sy = 0, sz = 0;
   int piece = 0;
 
   while (getline(*str,line,'\n'))  {
@@ -66,7 +66,10 @@ std::unique_ptr<puzzle_c> loadPuzzlerSolver3D(std::istream * str) {
 
         s >> sx >> c >> sy >> c >> sz;
 
-        if ((sx > 500) || (sy > 500) || (sz > 500)) {
+        /* A size line that does not read as three numbers is not a
+         * PuzzleSolver3D file we can take. */
+        if (!s || (sx <= 0) || (sy <= 0) || (sz <= 0) ||
+            (sx > 500) || (sy > 500) || (sz > 500)) {
           return nullptr;
         }
 
@@ -87,7 +90,9 @@ std::unique_ptr<puzzle_c> loadPuzzlerSolver3D(std::istream * str) {
 
       for (int z = 0; z < sz; z++)
         for (int x = 0; x < sx; x++) {
-          char c = line[z*(sx+1)+x];
+          const size_t at = (size_t)(z*(sx+1)+x);
+          /* a short line is empty to its end */
+          char c = at < line.size() ? line[at] : ' ';
           if (c == ',') {
             return nullptr;
           }
@@ -107,7 +112,7 @@ std::unique_ptr<puzzle_c> loadPuzzlerSolver3D(std::istream * str) {
   // find mark and remove duplicate shapes from problem
   unsigned s = pr->getNumberOfParts();
 
-  for (unsigned int s1 = 0; s1 < s-1; s1++)
+  for (unsigned int s1 = 0; s1 + 1 < s; s1++)
     for (unsigned int s2 = s1+1; s2 < s; s2++)
       if (pr->getPartShape(s1)->identicalWithRots(pr->getPartShape(s2), false, false)) {
         unsigned int sh1 = pr->getShapeIdOfPart(s1);

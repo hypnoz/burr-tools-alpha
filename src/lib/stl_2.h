@@ -61,8 +61,8 @@ class stlExporter_2_c : public stlExporter_c {
   private:
 
     // no copying and assigning
-    stlExporter_2_c(const stlExporter_2_c&);
-    void operator=(const stlExporter_2_c&);
+    stlExporter_2_c(const stlExporter_2_c&) = delete;
+    void operator=(const stlExporter_2_c&) = delete;
 };
 
 #endif

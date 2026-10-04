@@ -12,8 +12,7 @@ Always use [`just`](justfile) to execute build, test, and quality control tasks.
 just                # Show available recipes (default)
 just build          # Compile BurrTools binaries (build/burrtools, build/burrTxt, build/burrTxt2, build/test_burrtools)
 just test           # Fast test suite: Catch2 (minus stress cases) + Python wrapper
-just test-slow      # Stress cases only, chiefly the Minkowski random-shapes case
-just test-all       # Everything, fast and slow. This is what CI runs
+just test-all       # Same as `just test` in this fork (upstream splits fast/slow suites; this fork has one)
 just test-regression # Regression test comparing burrTxt/burrTxt2 against known-good 0.7.1 release output (run before creating a PR)
 just check          # Fast static code analysis with cppcheck (~5s, always run before finishing tasks)
 just check-tidy     # Deep static analysis with clang-tidy on BurrTools sources
@@ -106,13 +105,21 @@ just build-tsan     # ThreadSanitizer (critical for solver data races)
    - After making code modifications, always verify that `just build`, `just test-all` (regression tests, fast and slow), and `just check` (static analysis) pass cleanly. `just test` is the quick loop to use while iterating; run `just test-all` before calling a task done, since it is what CI runs.
    - Always run `just test-regression` before creating a PR to verify that solver output matches the known-good 0.7.1 release output across all example puzzles.
 7. **Benchmarking & Optimization Work:**
-   - When modifying solver algorithms or proposing optimizations, agents MUST use the standardized benchmark infrastructure in [`bench/bench_solve.py`](bench/bench_solve.py) across the curated 10-puzzle corpus.
+   - When modifying solver algorithms or proposing optimizations, measure across several puzzles (see section 4). Upstream's `bench/` infrastructure is not in this fork.
    - Never evaluate optimizations on a single puzzle in isolation.
    - Always implement runtime environment variable toggles (e.g. `BURRTOOLS_NO_SIMD=1`) to allow clean, interleaved A/B benchmarking from the exact same build without recompilation.
 
 ---
 
 ## 4. Benchmarking & Performance Verification
+
+> **This fork:** `bench/`, `just bench`, `just test-slow` and the
+> `puzzles/BTFiles` corpus exist only on `upstream/master` and are not in
+> this branch. Until they are merged, time solves directly over several
+> examples, e.g.
+> `for p in PelikanBurr SolidSixPieceBurrs DraculasDentalDesaster; do /usr/bin/time -l ./build/burrTxt --json examples/$p.xmpuzzle; done`
+> (the `--json` output carries `solvetime`; `-l` adds peak RSS on macOS).
+> The rest of this section describes upstream's tooling.
 
 Always use the standardized benchmark infrastructure in [`bench/`](bench/) to validate optimizations across the full puzzle corpus. **Never benchmark on a single puzzle in isolation and extrapolate results.** All AI agents working on performance optimizations in this repository MUST follow this protocol.
 

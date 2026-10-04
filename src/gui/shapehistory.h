@@ -12,6 +12,9 @@
 #ifndef __SHAPE_HISTORY_H__
 #define __SHAPE_HISTORY_H__
 
+#include "../lib/stacking.h"
+
+#include <memory>
 #include <vector>
 #include <stdint.h>
 
@@ -70,31 +73,32 @@ private:
   };
 
   struct partSnap_c {
-    unsigned int shapeId;
-    unsigned int min;
-    unsigned int max;
+    unsigned int shapeId = 0;
+    unsigned int min = 0;
+    unsigned int max = 0;
     std::vector<groupSnap_c> groups;
   };
 
   struct problemSnap_c {
-    bool resultValid;
-    unsigned int resultId;
+    bool resultValid = false;
+    unsigned int resultId = 0;
     std::vector<partSnap_c> parts;
+    /* Stacking: dropping a disc's part on restore also takes it off the
+     * rods, so the stacks are kept too. */
+    stacking::stackMap_c start, goal;
   };
 
   struct snapshot_c {
-    std::vector<voxel_c*> shapes;
+    std::vector<std::unique_ptr<voxel_c>> shapes;
     std::vector<problemSnap_c> problems;
-    unsigned int selectedShape;
-    snapshot_c(void) : selectedShape((unsigned int)-1) {}
-    ~snapshot_c(void);
+    unsigned int selectedShape = (unsigned int)-1;
   };
 
   static const unsigned int MAX_UNDO = 200;
   static const int GRID_PAINT_COALESCE_MS = 500;
   static const int TRANSFORM_COALESCE_MS = 150;
 
-  std::vector<snapshot_c*> snapshots;
+  std::vector<std::unique_ptr<snapshot_c>> snapshots;
   unsigned int cursor;
   unsigned int savedCursor;
   bool inStroke;
@@ -103,18 +107,18 @@ private:
   unsigned int lastShape;
   int64_t lastTimeMs;
 
-  static voxel_c * cloneShape(const voxel_c * src);
+  static std::unique_ptr<voxel_c> cloneShape(const voxel_c * src);
   static int64_t nowMs(void);
 
-  snapshot_c * capture(const puzzle_c * puzzle, unsigned int selectedShape) const;
+  std::unique_ptr<snapshot_c> capture(const puzzle_c * puzzle, unsigned int selectedShape) const;
   void restore(puzzle_c * puzzle, const snapshot_c * snap) const;
   void clearSnapshots(void);
   bool canCoalesce(actionKind_e kind, unsigned int selectedShape) const;
   void pushOrReplace(puzzle_c * puzzle, actionKind_e kind, unsigned int selectedShape);
 
   // no copying
-  shapeHistory_c(const shapeHistory_c&);
-  void operator=(const shapeHistory_c&);
+  shapeHistory_c(const shapeHistory_c&) = delete;
+  void operator=(const shapeHistory_c&) = delete;
 };
 
 #endif

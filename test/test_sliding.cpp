@@ -17,10 +17,13 @@
 #include "tools/xml.h"
 
 #include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 using namespace bttest;
 
@@ -644,4 +647,225 @@ TEST_CASE("sliding: the solver says when no solution is proven", "[sliding][solv
   const std::string note = solver.getSolverNote();
   CHECK(note.find("Every reachable arrangement was searched") != std::string::npos);
   CHECK(note.find("Allow Nested Slides") != std::string::npos);
+}
+
+/* Not part of the suite (hidden tag): a throughput and memory benchmark for
+ * the position-table search. A 4x4 tray with fifteen unit pieces and the
+ * last two swapped in the goal, which no sliding can reach, so the search
+ * runs until its limit. Run with
+ *   /usr/bin/time -l ./build/test_burrtools "[.bench]"
+ */
+TEST_CASE("sliding: benchmark, fifteen pieces in a 4x4 tray", "[.bench][sliding]") {
+  puzzle_c puz(new gridType_c(gridType_c::GT_SLIDING));
+  unsigned int trayId = sliding::addStartGoalShape(puz, 4, 4);
+  voxel_c * tray = puz.getShape(trayId);
+  for (unsigned int k = 0; k < 15; k++) {
+    unsigned int id = puz.addShape(1, 1, 1);
+    puz.getShape(id)->setState(0, 0, 0, voxel_c::VX_FILLED);
+    tray->setColor(k % 4, k / 4, 0, id + 1);
+    const unsigned int g = k == 13 ? 14 : k == 14 ? 13 : k;
+    tray->setGoalPiece((unsigned)tray->getIndex(g % 4, g / 4, 0), id + 1);
+  }
+  sliding::syncSlidingProblems(puz);
+  problem_c * pr = puz.getProblem(0);
+
+  assembly_c start(puz.getGridType());
+  for (unsigned int k = 0; k < 15; k++)
+    start.addPlacement(0, k % 4, k / 4, 0);
+
+  sliding::slideSearch_c search;
+  search.maxStates = 3000000;
+  CHECK(sliding::findSlidePath(*pr, start, search) == nullptr);
+  /* The legacy search (BURRTOOLS_SLIDE_LEGACY) runs out of memory first. */
+  CHECK((search.outcome == sliding::SLIDE_LIMIT || search.outcome == sliding::SLIDE_MEMORY));
+}
+
+namespace {
+
+/* Set or clear an environment switch. MinGW does not declare setenv; an
+ * empty value removes the variable on Windows. */
+void slideEnv(const char * name, bool on) {
+#ifdef _WIN32
+  (void)_putenv_s(name, on ? "1" : "");
+#else
+  if (on) setenv(name, "1", 1);
+  else unsetenv(name);
+#endif
+}
+
+/* A sliding puzzle built from rectangles: each piece is its own shape,
+ * w x h, with its top-left cell at (x, y); goal says where it must end, or
+ * is negative when it may end anywhere. */
+struct slideBlock_c {
+  unsigned int w, h;
+  int x, y;
+  int goalX, goalY;
+};
+
+struct slideFixture_c {
+  std::unique_ptr<puzzle_c> puz;
+  std::unique_ptr<assembly_c> start;
+  problem_c * pr = nullptr;
+};
+
+slideFixture_c slideFixture(unsigned int trayW, unsigned int trayH,
+                            const std::vector<slideBlock_c> & blocks) {
+  slideFixture_c f;
+  f.puz = std::make_unique<puzzle_c>(new gridType_c(gridType_c::GT_SLIDING));
+  unsigned int trayId = sliding::addStartGoalShape(*f.puz, trayW, trayH);
+  voxel_c * tray = f.puz->getShape(trayId);
+  f.start = std::make_unique<assembly_c>(f.puz->getGridType());
+  for (const slideBlock_c & b : blocks) {
+    unsigned int id = f.puz->addShape(b.w, b.h, 1);
+    for (unsigned int y = 0; y < b.h; y++)
+      for (unsigned int x = 0; x < b.w; x++) {
+        f.puz->getShape(id)->setState(x, y, 0, voxel_c::VX_FILLED);
+        tray->setColor(b.x + x, b.y + y, 0, id + 1);
+        if (b.goalX >= 0)
+          tray->setGoalPiece((unsigned)tray->getIndex(b.goalX + x, b.goalY + y, 0), id + 1);
+      }
+    f.start->addPlacement(0, b.x, b.y, 0);
+  }
+  sliding::syncSlidingProblems(*f.puz);
+  f.pr = f.puz->getProblem(0);
+  return f;
+}
+
+/* Every step of a slide path moves exactly one piece. */
+bool oneMoverPerStep(const separation_c & path) {
+  for (unsigned int step = 0; step < path.getMoves(); step++) {
+    unsigned int moved = 0;
+    for (unsigned int i = 0; i < path.getPieceNumber(); i++)
+      if (path.getState(step)->getX(i) != path.getState(step + 1)->getX(i) ||
+          path.getState(step)->getY(i) != path.getState(step + 1)->getY(i))
+        moved++;
+    if (moved != 1)
+      return false;
+  }
+  return true;
+}
+
+/* Klotski, the classic "Heng Dao Li Ma" start: a 4x5 tray, the 2x2 block
+ * to bring to the bottom centre past four upright 1x2, one flat 2x1 and
+ * four unit pieces. */
+const std::vector<slideBlock_c> KLOTSKI = {
+  {2, 2, 1, 0, 1, 3},
+  {1, 2, 0, 0, -1, -1}, {1, 2, 3, 0, -1, -1}, {1, 2, 0, 2, -1, -1}, {1, 2, 3, 2, -1, -1},
+  {2, 1, 1, 2, -1, -1},
+  {1, 1, 1, 3, -1, -1}, {1, 1, 2, 3, -1, -1}, {1, 1, 0, 4, -1, -1}, {1, 1, 3, 4, -1, -1},
+};
+
+} // namespace
+
+/* The published answer for Klotski, counting one piece going anywhere it
+ * can reach as one move, is 81; the puzzle has 25,955 arrangements when
+ * like pieces are not told apart. */
+TEST_CASE("sliding: Klotski takes 81 moves, like pieces searched as one", "[sliding]") {
+  /* Ten million text keys when the pieces are told apart: too much for the
+   * legacy search in a test. */
+  if (std::getenv("BURRTOOLS_SLIDE_LEGACY"))
+    return;
+  slideFixture_c f = slideFixture(4, 5, KLOTSKI);
+  sliding::slideSearch_c search;
+  search.maxStates = sliding::FULL_SEARCH;
+  std::unique_ptr<separation_c> path = sliding::findSlidePath(*f.pr, *f.start, search);
+  REQUIRE(path != nullptr);
+  CHECK(path->getMoves() == 81);
+  CHECK(oneMoverPerStep(*path));
+  if (!std::getenv("BURRTOOLS_NO_SLIDE_SYMMETRY"))
+    CHECK(search.visited <= 25955);
+  /* The path starts where the pieces were put and ends at the goal. */
+  for (unsigned int i = 0; i < KLOTSKI.size(); i++) {
+    CHECK(path->getState(0)->getX(i) == KLOTSKI[i].x);
+    CHECK(path->getState(0)->getY(i) == KLOTSKI[i].y);
+  }
+  CHECK(path->getState(81)->getX(0) == 1);
+  CHECK(path->getState(81)->getY(0) == 3);
+}
+
+/* Searching like pieces as one must not change the answer: same number of
+ * moves as telling them apart, and as the legacy search. */
+TEST_CASE("sliding: like pieces searched as one give the same shortest path", "[sliding]") {
+  /* A 4x3 tray: a 2x1 bar to take from the top left to the bottom right
+   * through six unit pieces, two of them with goals of their own. */
+  const std::vector<slideBlock_c> blocks = {
+    {2, 1, 0, 0, 2, 2},
+    {1, 1, 2, 0, -1, -1}, {1, 1, 3, 0, -1, -1}, {1, 1, 0, 1, -1, -1}, {1, 1, 1, 1, -1, -1},
+    {1, 1, 2, 1, 0, 0}, {1, 1, 0, 2, 3, 0},
+  };
+  unsigned int moves[3] = {0, 0, 0};
+  unsigned long visited[3] = {0, 0, 0};
+  const char * switches[3] = {nullptr, "BURRTOOLS_NO_SLIDE_SYMMETRY", "BURRTOOLS_SLIDE_LEGACY"};
+  /* A switch the run was started with stays on throughout. */
+  const bool legacyAsked = std::getenv("BURRTOOLS_SLIDE_LEGACY") != nullptr;
+  const bool apartAsked = std::getenv("BURRTOOLS_NO_SLIDE_SYMMETRY") != nullptr;
+  const bool asked[3] = {false, apartAsked, legacyAsked};
+  for (int k = 0; k < 3; k++) {
+    slideFixture_c f = slideFixture(4, 3, blocks);
+    if (switches[k])
+      slideEnv(switches[k], true);
+    sliding::slideSearch_c search;
+    search.maxStates = sliding::FULL_SEARCH;
+    std::unique_ptr<separation_c> path = sliding::findSlidePath(*f.pr, *f.start, search);
+    if (switches[k] && !asked[k])
+      slideEnv(switches[k], false);
+    REQUIRE(path != nullptr);
+    CHECK(oneMoverPerStep(*path));
+    moves[k] = path->getMoves();
+    visited[k] = search.visited;
+  }
+  CHECK(moves[0] == moves[1]);
+  CHECK(moves[0] == moves[2]);
+  if (!legacyAsked && !apartAsked)
+    CHECK(visited[0] < visited[1]);
+}
+
+/* Hidden: Klotski searched to the end, with like pieces as one and told
+ * apart. Run with ./build/test_burrtools "[.bench][klotski]". */
+TEST_CASE("sliding: benchmark, every Klotski arrangement", "[.bench][sliding][klotski]") {
+  for (int k = 0; k < 2; k++) {
+    slideFixture_c f = slideFixture(4, 5, KLOTSKI);
+    slideEnv("BURRTOOLS_NO_SLIDE_SYMMETRY", k == 1);
+    sliding::slideSearch_c search;
+    search.maxStates = sliding::FULL_SEARCH;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::unique_ptr<separation_c> path = sliding::findSlidePath(*f.pr, *f.start, search);
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    printf("klotski %s: %u moves, %lu arrangements visited, %.3f s\n",
+           k ? "pieces told apart" : "like pieces as one",
+           path ? path->getMoves() : 0, search.visited, s);
+  }
+  slideEnv("BURRTOOLS_NO_SLIDE_SYMMETRY", false);
+}
+
+/* Thirteen pieces with 32 places each need 65 bits to number an
+ * arrangement: one more than a 64-bit key holds. The table search then runs
+ * on 128-bit keys and must agree with the legacy search. */
+TEST_CASE("sliding: a tray too big for 64-bit keys is searched with 128-bit ones", "[sliding]") {
+  std::vector<slideBlock_c> blocks = {
+    {1, 1, 0, 0, 7, 3}, {1, 1, 7, 3, 0, 0},
+  };
+  for (int k = 0; k < 11; k++)
+    blocks.push_back({1, 1, 1 + k % 6, 1 + k / 6, -1, -1});
+  const bool legacyAsked = std::getenv("BURRTOOLS_SLIDE_LEGACY") != nullptr;
+
+  slideFixture_c f = slideFixture(8, 4, blocks);
+  sliding::slideSearch_c search;
+  search.maxStates = sliding::FULL_SEARCH;
+  std::unique_ptr<separation_c> path = sliding::findSlidePath(*f.pr, *f.start, search);
+  REQUIRE(path != nullptr);
+  CHECK(oneMoverPerStep(*path));
+  CHECK(path->getMoves() == 3);
+  if (!legacyAsked)
+    CHECK(search.memoryStates == sliding::memoryStates(7 * 16, false));
+
+  slideFixture_c g = slideFixture(8, 4, blocks);
+  slideEnv("BURRTOOLS_SLIDE_LEGACY", true);
+  sliding::slideSearch_c legacy;
+  legacy.maxStates = sliding::FULL_SEARCH;
+  std::unique_ptr<separation_c> old = sliding::findSlidePath(*g.pr, *g.start, legacy);
+  if (!legacyAsked)
+    slideEnv("BURRTOOLS_SLIDE_LEGACY", false);
+  REQUIRE(old != nullptr);
+  CHECK(old->getMoves() == path->getMoves());
 }

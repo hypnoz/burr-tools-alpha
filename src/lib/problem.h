@@ -32,6 +32,7 @@
 #include <atomic>
 #include <vector>
 #include <set>
+#include <map>
 #include <string>
 #include <mutex>
 
@@ -105,7 +106,16 @@ private:
    * in this vector if the user decides to only count, or not keep them
    * all. This vector contains the solutions that were kept
    */
-  std::vector<std::unique_ptr<solution_c>> solutions;
+  /* Shared so that a viewer can keep the solution it shows alive while a
+   * running solver drops it from the list (see shareSavedSolution). */
+  std::vector<std::shared_ptr<solution_c>> solutions;
+
+  /**
+   * What keepSolutionsSorted knows: the first sortedUpTo solutions are in
+   * sortSolutions(sortedBy) order. -1 when nothing is known.
+   */
+  int sortedBy = -1;
+  size_t sortedUpTo = 0;
 
 public:
   /**
@@ -140,6 +150,9 @@ private:
    * Classic \<solutions\> is used when this is false.
    */
   bool solutionsWithRotations;
+
+  /** Solver tab settings for this problem, see getSolverOptions. */
+  std::map<std::string, std::string> solverOptions;
 
   /**
    * this set contains the pairs of colours that are allowed when a piece
@@ -571,8 +584,25 @@ public:
   bool getSolutionsWithRotations(void) const { return solutionsWithRotations; }
   void setSolutionsWithRotations(bool v) { solutionsWithRotations = v; }
 
+  /**
+   * Solver tab settings chosen for this problem, as name/value pairs. The
+   * library only stores them; the GUI decides what they mean. Saved as the
+   * attributes of \<solverOptions\>, which older BurrTools skip.
+   */
+  const std::map<std::string, std::string> & getSolverOptions(void) const { return solverOptions; }
+  void setSolverOptions(const std::map<std::string, std::string> & o) { solverOptions = o; }
+
   const solution_c * getSavedSolution(unsigned int sol) const { bt_assert(sol < solutions.size()); return solutions[sol].get(); }
   solution_c * getSavedSolution(unsigned int sol) { bt_assert(sol < solutions.size()); return solutions[sol].get(); }
+  /**
+   * The solution, kept alive for as long as the caller holds it, even if
+   * it leaves the list meanwhile: what a view shows while a solve runs.
+   */
+  std::shared_ptr<const solution_c> shareSavedSolution(unsigned int sol) const {
+    std::lock_guard<std::recursive_mutex> lock(solutionMutex);
+    bt_assert(sol < solutions.size());
+    return solutions[sol];
+  }
   //@}
 
 
@@ -583,6 +613,13 @@ public:
 
   /** sort solutions by 0=assembly, 1=level, 2=sumMoves, 3=pieces */
   void sortSolutions(int by);
+
+  /**
+   * sortSolutions(by), but cheap when the list was sorted that way before and
+   * solutions were only added or removed since: the new ones are inserted
+   * where they belong instead of sorting the whole list again.
+   */
+  void keepSolutionsSorted(int by);
 
   /** sort solutions using solver "Sort by" indices (0=unsorted, 1=moves, 2=level, 3=rotations), highest first */
   void sortSolutionsBySolverMethod(int method);

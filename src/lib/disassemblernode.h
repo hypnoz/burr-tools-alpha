@@ -343,8 +343,8 @@ public:
 private:
 
   // no copying and assigning
-  disassemblerNode_c(const disassemblerNode_c&);
-  void operator=(const disassemblerNode_c&);
+  disassemblerNode_c(const disassemblerNode_c&) = delete;
+  void operator=(const disassemblerNode_c&) = delete;
 };
 
 #endif

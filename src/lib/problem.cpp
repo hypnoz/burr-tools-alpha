@@ -84,7 +84,7 @@ problem_c::problem_c(const problem_c * orig, puzzle_c & puz) :
   puzzle(puz), result(orig->result), goalShape(orig->goalShape),
   rodSetId(orig->rodSetId),
   startMap(orig->startMap), goalMap(orig->goalMap),
-  solutionsWithRotations(false),
+  solutionsWithRotations(false), solverOptions(orig->solverOptions),
   solveState(SS_UNSOLVED), numAssemblies(0), numSolutions(0), usedMs(0)
 {
   for (std::set<uint32_t>::iterator i = orig->colorConstraints.begin(); i != orig->colorConstraints.end(); ++i)
@@ -181,6 +181,13 @@ void problem_c::save(xmlWriter_c & xml) const
 
   stacking::saveProblem(*this, xml);
 
+  if (!solverOptions.empty()) {
+    xml.newTag("solverOptions");
+    for (const auto & o : solverOptions)
+      xml.newAttrib(o.first, o.second);
+    xml.endTag("solverOptions");
+  }
+
   xml.newTag("bitmap");
   for (std::set<uint32_t>::iterator i = colorConstraints.begin(); i != colorConstraints.end(); ++i)
   {
@@ -253,8 +260,11 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
     maxHoles = atoi(str.c_str());
 
   str = pars.getAttributeValue("state");
-  if (str.length())
-    solveState = (solveState_e)atoi(str.c_str());
+  if (str.length()) {
+    const int st = atoi(str.c_str());
+    if (st == SS_SOLVING || st == SS_SOLVED || st == SS_UNKNOWN)
+      solveState = (solveState_e)st;
+  }
 
   if (solveState != SS_UNSOLVED)
   {
@@ -400,6 +410,7 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
         /* Prefer the rotation-aware block; drop any classic solutions already read */
         solutionsWithRotations = true;
         solutions.clear();
+        sortedBy = -1;
       } else if (solutionsWithRotations) {
         /* Classic block is ignored once rotation solutions are present */
         pars.skipSubTree();
@@ -415,7 +426,7 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
         pars.require(xmlParser_c::START_TAG, "");
 
         if (pars.getName() == "solution")
-          solutions.push_back(std::make_unique<solution_c>(pars, pieces, puzzle.getGridType()));
+          solutions.push_back(std::make_shared<solution_c>(pars, pieces, puzzle.getGridType()));
         else
           pars.skipSubTree();
 
@@ -458,6 +469,12 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
     else if (pars.getName() == "stacking")
     {
       stacking::loadProblem(*this, pars);
+    }
+    else if (pars.getName() == "solverOptions")
+    {
+      for (int a = 0; a < pars.getAttributeCount(); a++)
+        solverOptions[pars.getAttributeName(a)] = pars.getAttributeValue(a);
+      pars.skipSubTree();
     }
     else if (pars.getName() == "pending")
     {
@@ -772,6 +789,7 @@ void problem_c::setShapeMinimum(unsigned int shape, unsigned int count)
           if (!solutions[s]->getAssembly()->isPlaced(pieceIdx+count-1))
           {
             solutions.erase(solutions.begin()+s);
+            sortedBy = -1;
           }
           else
           {
@@ -818,6 +836,7 @@ void problem_c::setShapeMaximum(unsigned int shape, unsigned int count)
           if (solutions[s]->getAssembly()->isPlaced(pieceIdx))
           {
             solutions.erase(solutions.begin()+s);
+            sortedBy = -1;
           }
           else
           {
@@ -854,6 +873,7 @@ void problem_c::setShapeMaximum(unsigned int shape, unsigned int count)
           {
             // too many pieces placed -> delete solution
             solutions.erase(solutions.begin()+s);
+            sortedBy = -1;
           }
           else
           {
@@ -980,7 +1000,7 @@ void problem_c::addSolution(assembly_c * assm, unsigned long assemblyNumber) {
   bt_assert(solveState == SS_SOLVING);
 
   std::lock_guard<std::recursive_mutex> guard(solutionMutex);
-  solutions.push_back(std::make_unique<solution_c>(assm, (unsigned int)assemblyNumber));
+  solutions.push_back(std::make_shared<solution_c>(assm, (unsigned int)assemblyNumber));
 }
 
 void problem_c::addSolution(assembly_c * assm, separation_c * disasm, unsigned int pos) {
@@ -996,10 +1016,13 @@ void problem_c::addSolution(assembly_c * assm, separation_c * disasm, unsigned l
 
   std::lock_guard<std::recursive_mutex> lock(solutionMutex);
 
-  if (pos < solutions.size())
-    solutions.insert(solutions.begin()+pos, std::make_unique<solution_c>(assm, (unsigned int)assemblyNumber, disasm, (unsigned int)solutionNumber));
+  if (pos < solutions.size()) {
+    solutions.insert(solutions.begin()+pos, std::make_shared<solution_c>(assm, (unsigned int)assemblyNumber, disasm, (unsigned int)solutionNumber));
+    if (pos < sortedUpTo)
+      sortedUpTo = pos;
+  }
   else
-    solutions.push_back(std::make_unique<solution_c>(assm, (unsigned int)assemblyNumber, disasm, (unsigned int)solutionNumber));
+    solutions.push_back(std::make_shared<solution_c>(assm, (unsigned int)assemblyNumber, disasm, (unsigned int)solutionNumber));
 }
 
 void problem_c::addSolution(assembly_c * assm, separationInfo_c * disasm, unsigned int pos) {
@@ -1015,15 +1038,19 @@ void problem_c::addSolution(assembly_c * assm, separationInfo_c * disasm, unsign
 
   std::lock_guard<std::recursive_mutex> lock(solutionMutex);
 
-  if (pos < solutions.size())
-    solutions.insert(solutions.begin()+pos, std::make_unique<solution_c>(assm, (unsigned int)assemblyNumber, disasm, (unsigned int)solutionNumber));
+  if (pos < solutions.size()) {
+    solutions.insert(solutions.begin()+pos, std::make_shared<solution_c>(assm, (unsigned int)assemblyNumber, disasm, (unsigned int)solutionNumber));
+    if (pos < sortedUpTo)
+      sortedUpTo = pos;
+  }
   else
-    solutions.push_back(std::make_unique<solution_c>(assm, (unsigned int)assemblyNumber, disasm, (unsigned int)solutionNumber));
+    solutions.push_back(std::make_shared<solution_c>(assm, (unsigned int)assemblyNumber, disasm, (unsigned int)solutionNumber));
 }
 
 void problem_c::removeAllSolutions(void) {
   std::lock_guard<std::recursive_mutex> guard(solutionMutex);
   solutions.clear();
+  sortedBy = -1;
   solutionsWithRotations = false;
   pending.clear();
   assm.reset();
@@ -1063,6 +1090,8 @@ void problem_c::removeSolution(unsigned int sol) {
   std::lock_guard<std::recursive_mutex> lock(solutionMutex);
   bt_assert(sol < solutions.size());
   solutions.erase(solutions.begin()+sol);
+  if (sol < sortedUpTo)
+    sortedUpTo--;
 }
 
 assembler_c::errState problem_c::setAssembler(std::unique_ptr<assembler_c> a) {
@@ -1075,20 +1104,15 @@ assembler_c::errState problem_c::setAssembler(std::unique_ptr<assembler_c> a) {
     // when we could not load, return with error and reset to unsolved
     if (err != assembler_c::ERR_NONE) {
 
-      /* A parallel search that was interrupted saves no usable resume point.
-       * The partial results that are here came from a search that can only be
-       * redone from the start, and keeping them would mean the next run
-       * reports all of them a second time. So drop them, and clear the saved
-       * state as well so the next solve starts from a clean slate rather than
-       * failing on the same unusable data for ever.
+      /* The saved position cannot be used (an interrupted parallel search,
+       * another version, or damaged data), so the search can only be redone
+       * from the start. The partial results came from it, and keeping them
+       * would mean the next run reports them a second time. Drop them and
+       * the saved state, so the next solve starts clean instead of failing
+       * on the same data again (with the state left behind, it asserted).
        */
-      if (err == assembler_c::ERR_CAN_NOT_RESTORE_INTERRUPTED) {
-        removeAllSolutions();
-        assemblerVersion = "";
-        return err;
-      }
-
-      solveState = SS_UNSOLVED;
+      removeAllSolutions();
+      assemblerVersion = "";
       return err;
     }
 
@@ -1178,36 +1202,36 @@ unsigned int problem_c::getPartIndexToPieceId(unsigned int pieceId) const {
   return pieceId;
 }
 
-static bool comp_0_assembly(const std::unique_ptr<solution_c> & s1, const std::unique_ptr<solution_c> & s2)
+static bool comp_0_assembly(const std::shared_ptr<solution_c> & s1, const std::shared_ptr<solution_c> & s2)
 {
   return s1->getAssemblyNumber() < s2->getAssemblyNumber();
 }
 
-static bool comp_1_level(const std::unique_ptr<solution_c> & s1, const std::unique_ptr<solution_c> & s2)
+static bool comp_1_level(const std::shared_ptr<solution_c> & s1, const std::shared_ptr<solution_c> & s2)
 {
   return s1->getDisassemblyInfo() && s2->getDisassemblyInfo() &&
       (s1->getDisassemblyInfo()->compare(s2->getDisassemblyInfo()) < 0);
 }
 
-static bool comp_2_moves(const std::unique_ptr<solution_c> & s1, const std::unique_ptr<solution_c> & s2)
+static bool comp_2_moves(const std::shared_ptr<solution_c> & s1, const std::shared_ptr<solution_c> & s2)
 {
   return s1->getDisassemblyInfo() && s2->getDisassemblyInfo() &&
       (s1->getDisassemblyInfo()->sumMoves() < s2->getDisassemblyInfo()->sumMoves());
 }
 
-static bool comp_3_pieces(const std::unique_ptr<solution_c> & s1, const std::unique_ptr<solution_c> & s2)
+static bool comp_3_pieces(const std::shared_ptr<solution_c> & s1, const std::shared_ptr<solution_c> & s2)
 {
   return s1->getAssembly()->comparePieces(s2->getAssembly()) > 0;
 }
 
-static bool comp_srt_unsort(const std::unique_ptr<solution_c> & s1, const std::unique_ptr<solution_c> & s2)
+static bool comp_srt_unsort(const std::shared_ptr<solution_c> & s1, const std::shared_ptr<solution_c> & s2)
 {
   if (s1->getSolutionNumber() != s2->getSolutionNumber())
     return s1->getSolutionNumber() > s2->getSolutionNumber();
   return s1->getAssemblyNumber() > s2->getAssemblyNumber();
 }
 
-static bool comp_srt_moves_desc(const std::unique_ptr<solution_c> & s1, const std::unique_ptr<solution_c> & s2)
+static bool comp_srt_moves_desc(const std::shared_ptr<solution_c> & s1, const std::shared_ptr<solution_c> & s2)
 {
   const disassembly_c * d1 = s1->getDisassemblyInfo();
   const disassembly_c * d2 = s2->getDisassemblyInfo();
@@ -1220,7 +1244,7 @@ static bool comp_srt_moves_desc(const std::unique_ptr<solution_c> & s1, const st
   return comp_srt_unsort(s1, s2);
 }
 
-static bool comp_srt_level_desc(const std::unique_ptr<solution_c> & s1, const std::unique_ptr<solution_c> & s2)
+static bool comp_srt_level_desc(const std::shared_ptr<solution_c> & s1, const std::shared_ptr<solution_c> & s2)
 {
   const disassembly_c * d1 = s1->getDisassemblyInfo();
   const disassembly_c * d2 = s2->getDisassemblyInfo();
@@ -1233,7 +1257,7 @@ static bool comp_srt_level_desc(const std::unique_ptr<solution_c> & s1, const st
   return comp_srt_unsort(s1, s2);
 }
 
-static bool comp_srt_rotations_desc(const std::unique_ptr<solution_c> & s1, const std::unique_ptr<solution_c> & s2)
+static bool comp_srt_rotations_desc(const std::shared_ptr<solution_c> & s1, const std::shared_ptr<solution_c> & s2)
 {
   const disassembly_c * d1 = s1->getDisassemblyInfo();
   const disassembly_c * d2 = s2->getDisassemblyInfo();
@@ -1247,18 +1271,56 @@ static bool comp_srt_rotations_desc(const std::unique_ptr<solution_c> & s1, cons
 }
 
 
+typedef bool (*solutionLess_t)(const std::shared_ptr<solution_c> &, const std::shared_ptr<solution_c> &);
+
+static solutionLess_t sortComparator(int by) {
+  switch (by) {
+    case 0: return comp_0_assembly;
+    case 1: return comp_1_level;
+    case 2: return comp_2_moves;
+    case 3: return comp_3_pieces;
+  }
+  return nullptr;
+}
+
 void problem_c::sortSolutions(int by) {
   std::lock_guard<std::recursive_mutex> lock(solutionMutex);
-  switch (by) {
-    case 0: stable_sort(solutions.begin(), solutions.end(), comp_0_assembly); break;
-    case 1: stable_sort(solutions.begin(), solutions.end(), comp_1_level   ); break;
-    case 2: stable_sort(solutions.begin(), solutions.end(), comp_2_moves   ); break;
-    case 3: stable_sort(solutions.begin(), solutions.end(), comp_3_pieces  ); break;
+  solutionLess_t less = sortComparator(by);
+  if (!less)
+    return;
+  stable_sort(solutions.begin(), solutions.end(), less);
+  sortedBy = by;
+  sortedUpTo = solutions.size();
+}
+
+void problem_c::keepSolutionsSorted(int by) {
+  std::lock_guard<std::recursive_mutex> lock(solutionMutex);
+  solutionLess_t less = sortComparator(by);
+  if (!less)
+    return;
+  if (by != sortedBy || sortedUpTo > solutions.size()) {
+    sortSolutions(by);
+    return;
   }
+  /* Each new one goes after the sorted ones it is not less than, as
+   * stable_sort of the whole list would put it. A long tail is sorted and
+   * merged instead. */
+  const size_t n = solutions.size();
+  if (n - sortedUpTo > 64) {
+    stable_sort(solutions.begin() + sortedUpTo, solutions.end(), less);
+    std::inplace_merge(solutions.begin(), solutions.begin() + sortedUpTo, solutions.end(), less);
+  } else {
+    for (size_t i = sortedUpTo; i < n; i++) {
+      auto at = std::upper_bound(solutions.begin(), solutions.begin() + i, solutions[i], less);
+      std::rotate(at, solutions.begin() + i, solutions.begin() + i + 1);
+    }
+  }
+  sortedUpTo = n;
 }
 
 void problem_c::sortSolutionsBySolverMethod(int method) {
   std::lock_guard<std::recursive_mutex> lock(solutionMutex);
+  sortedBy = -1;
   switch (method) {
     case 0: stable_sort(solutions.begin(), solutions.end(), comp_srt_unsort); break;
     case 1: stable_sort(solutions.begin(), solutions.end(), comp_srt_moves_desc); break;

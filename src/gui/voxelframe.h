@@ -31,6 +31,7 @@
 #include <FL/gl.h>
 #pragma GCC diagnostic pop
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -193,7 +194,7 @@ class voxelFrame_c : public Fl_Gl_Window {
 
   private:
 
-    assembly_c * curAssembly; // the currently shown assembly (if there is one)
+    std::unique_ptr<assembly_c> curAssembly; // the currently shown assembly (if there is one)
     const problem_c * curProblem; // problem for the shown assembly (for orientation updates)
     std::vector<unsigned int> shapeOrients; // last applied orientation per piece space
 
@@ -263,11 +264,15 @@ class voxelFrame_c : public Fl_Gl_Window {
       std::string title;
 
       /* mid-tumble animation (angle==0 means inactive) */
-      float animAngle;
-      float animAxisX, animAxisY, animAxisZ;
-      float animPivotX, animPivotY, animPivotZ;
+      float animAngle = 0;
+      float animAxisX = 0, animAxisY = 0, animAxisZ = 0;
+      float animPivotX = 0, animPivotY = 0, animPivotZ = 0;
 
     };
+
+    /* Free a shape's display list and meshes, so they are built again;
+     * pick false keeps the picking mesh. */
+    void dropMeshes(shapeInfo & si, bool pick = true);
 
     struct colorInfo {
       float r = 0.0f, g = 0.0f, b = 0.0f;
@@ -282,13 +287,13 @@ class voxelFrame_c : public Fl_Gl_Window {
     int markerType;
     int markerShape = -1;
 
-    rotater_c * rotater;
+    std::unique_ptr<rotater_c> rotater;
     int rotMethod;
     double size;
 
     VoxelViewCallbacks * cb;
 
-    viewCube_c * viewCube;
+    std::unique_ptr<viewCube_c> viewCube;
     Fl_Callback * homeCb;
     void * homeUser;
     bool drawViewCube;

@@ -177,8 +177,8 @@ class symmetries_c {
   private:
 
     // no copying and assigning
-    symmetries_c(const symmetries_c&);
-    void operator=(const symmetries_c&);
+    symmetries_c(const symmetries_c&) = delete;
+    void operator=(const symmetries_c&) = delete;
 };
 
 #endif

@@ -117,8 +117,8 @@ public:
 private:
 
   // no copying and assigning
-  grouping_c(const grouping_c&);
-  void operator=(const grouping_c&);
+  grouping_c(const grouping_c&) = delete;
+  void operator=(const grouping_c&) = delete;
 };
 
 #endif

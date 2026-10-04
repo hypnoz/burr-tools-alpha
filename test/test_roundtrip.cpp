@@ -11,6 +11,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -202,6 +203,38 @@ TEST_CASE("puzzle: an in-memory puzzle survives a save and reload", "[roundtrip]
   puzzle_c restored(pars);
 
   REQUIRE(bttest::puzzlesRoundtripEqual(original, restored));
+}
+
+TEST_CASE("problem: Solver tab settings are saved per problem", "[roundtrip]") {
+  gridType_c gt(gridType_c::GT_BRICKS);
+  puzzle_c original(new gridType_c(gridType_c::GT_BRICKS));
+  std::unique_ptr<voxel_c> bar = bttest::fromLayers(gt, { { "###" } });
+  original.addShape(original.getGridType()->getVoxel(*bar));
+
+  /* one problem with settings, one without: a problem never set keeps no tag */
+  const unsigned int withOpts = original.addProblem();
+  const unsigned int withoutOpts = original.addProblem();
+  const std::map<std::string, std::string> opts = {
+    { "disassemble", "1" }, { "justCount", "0" }, { "solverType", "bt2" }, { "sortBy", "level" },
+  };
+  original.getProblem(withOpts)->setSolverOptions(opts);
+
+  std::ostringstream saved;
+  {
+    xmlWriter_c xml(saved);
+    original.save(xml);
+  }
+
+  std::istringstream reloaded(saved.str());
+  xmlParser_c pars(reloaded);
+  puzzle_c restored(pars);
+
+  REQUIRE(restored.getProblem(withOpts)->getSolverOptions() == opts);
+  REQUIRE(restored.getProblem(withoutOpts)->getSolverOptions().empty());
+
+  /* a copied problem keeps the settings */
+  const unsigned int copy = restored.addProblem(restored.getProblem(withOpts));
+  REQUIRE(restored.getProblem(copy)->getSolverOptions() == opts);
 }
 
 TEST_CASE("puzzle: a comment made up only of XML-special characters survives a save and reload", "[roundtrip]") {

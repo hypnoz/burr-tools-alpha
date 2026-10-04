@@ -19,6 +19,7 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include "assembler_1.h"
+#include "assembler_resume.h"
 
 #include "bt_assert.h"
 #include "problem.h"
@@ -553,7 +554,6 @@ int assembler_1_c::prepare(bool hasRange, unsigned int rangeMin, unsigned int ra
         }
       }
 
-      // TODO: also add when piece ranges are used
       if (mirrorCheck || pieceRanges) {
         /* all the shapes are either self mirroring or have a mirror pair
          * so we create the mirror structure and we do the mirror check
@@ -2958,66 +2958,27 @@ assembler_c::errState assembler_1_c::setPosition(const char * string, const char
   pos += stringToVector(string+pos, finished_b);
 
   if (interrupted >= 2) {
-    const char * s = string + pos;
-    char * end = nullptr;
-    auto next = [&](unsigned long long & v) {
-      v = std::strtoull(s, &end, 10);
-      if (end == s)
-        return false;
-      s = end;
-      return true;
-    };
-    auto expect = [&](char c) {
-      while (*s == ' ')
-        s++;
-      if (*s != c)
-        return false;
-      s++;
-      return true;
-    };
-    unsigned long long n = 0;
-    if (interrupted == 3) {
-      if (!expect('K') || !next(n))
-        return ERR_CAN_NOT_RESTORE_SYNTAX;
-      simdSkip = n;
-    } else {
-      if (!expect('T') || !next(n))
-        return ERR_CAN_NOT_RESTORE_SYNTAX;
-      parallelTasks.resize((size_t)n);
-      for (SubtreeTask_1 & t : parallelTasks)
-        for (std::vector<unsigned int> * v : {&t.task_stack, &t.next_row_stack, &t.column_stack,
-                                              &t.rows, &t.hidden_rows}) {
-          unsigned long long k = 0;
-          if (!next(k))
-            return ERR_CAN_NOT_RESTORE_SYNTAX;
-          v->resize((size_t)k);
-          for (unsigned int & x : *v) {
-            unsigned long long val = 0;
-            if (!next(val))
-              return ERR_CAN_NOT_RESTORE_SYNTAX;
-            x = (unsigned int)val;
-          }
-        }
-      if (!expect('C'))
-        return ERR_CAN_NOT_RESTORE_SYNTAX;
-      while (*s == ' ')
-        s++;
-      taskCompleted.assign(parallelTasks.size(), 0);
-      for (size_t i = 0; i < parallelTasks.size(); i++, s++) {
-        if (*s != '0' && *s != '1')
-          return ERR_CAN_NOT_RESTORE_SYNTAX;
-        taskCompleted[i] = *s == '1';
-      }
-      unsigned long long m = 0;
-      if (!expect('S') || !next(m))
-        return ERR_CAN_NOT_RESTORE_SYNTAX;
-      for (unsigned long long i = 0; i < m; i++) {
-        unsigned long long sig = 0;
-        if (!next(sig))
-          return ERR_CAN_NOT_RESTORE_SYNTAX;
-        emittedSignatures.insert(sig);
-      }
-    }
+    assemblerResume::tail_c<SubtreeTask_1> tail;
+    size_t done = 0;
+    if (!assemblerResume::readTail(string + pos, interrupted, tail, done,
+          [](assemblerResume::reader_c & r, SubtreeTask_1 & t) {
+            for (std::vector<unsigned int> * v : {&t.task_stack, &t.next_row_stack, &t.column_stack,
+                                                  &t.rows, &t.hidden_rows}) {
+              unsigned long long k = 0;
+              if (!r.next(k))
+                return false;
+              v->resize((size_t)k);
+              for (unsigned int & x : *v)
+                if (!r.next(x))
+                  return false;
+            }
+            return true;
+          }))
+      return ERR_CAN_NOT_RESTORE_SYNTAX;
+    simdSkip = tail.simdSkip;
+    parallelTasks = std::move(tail.tasks);
+    taskCompleted = std::move(tail.completed);
+    emittedSignatures = std::move(tail.signatures);
     parallelInterrupted = true;
   }
 
@@ -3098,25 +3059,15 @@ void assembler_1_c::save(xmlWriter_c & xml) const
   vectorToStream(finished_a, str);
   vectorToStream(finished_b, str);
 
-  if (flag == 3) {
-    str << " K " << std::max(simdSkip, simdDone);
-  } else if (flag == 2) {
-    str << " T " << parallelTasks.size();
-    for (const SubtreeTask_1 & t : parallelTasks) {
-      str << " ";
-      vectorToStream(t.task_stack, str);
-      vectorToStream(t.next_row_stack, str);
-      vectorToStream(t.column_stack, str);
-      vectorToStream(t.rows, str);
-      vectorToStream(t.hidden_rows, str);
-    }
-    str << " C ";
-    for (uint8_t c : taskCompleted)
-      str << (c ? '1' : '0');
-    str << " S " << emittedSignatures.size();
-    for (uint64_t sig : emittedSignatures)
-      str << " " << sig;
-  }
+  assemblerResume::writeTail(str, flag, std::max(simdSkip, simdDone), parallelTasks, taskCompleted,
+      emittedSignatures, [](std::ostream & o, const SubtreeTask_1 & t) {
+        o << " ";
+        vectorToStream(t.task_stack, o);
+        vectorToStream(t.next_row_stack, o);
+        vectorToStream(t.column_stack, o);
+        vectorToStream(t.rows, o);
+        vectorToStream(t.hidden_rows, o);
+      });
 
   xml.endTag("assembler");
 }

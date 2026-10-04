@@ -18,11 +18,6 @@
 
 #include <chrono>
 
-shapeHistory_c::snapshot_c::~snapshot_c(void) {
-  for (unsigned int i = 0; i < shapes.size(); i++)
-    delete shapes[i];
-}
-
 shapeHistory_c::shapeHistory_c(void) :
   cursor(0),
   savedCursor(0),
@@ -39,8 +34,6 @@ shapeHistory_c::~shapeHistory_c(void) {
 }
 
 void shapeHistory_c::clearSnapshots(void) {
-  for (unsigned int i = 0; i < snapshots.size(); i++)
-    delete snapshots[i];
   snapshots.clear();
   cursor = 0;
   savedCursor = 0;
@@ -51,8 +44,8 @@ void shapeHistory_c::clearSnapshots(void) {
   lastTimeMs = 0;
 }
 
-voxel_c * shapeHistory_c::cloneShape(const voxel_c * src) {
-  voxel_c * v = src->getGridType()->getVoxel(src);
+std::unique_ptr<voxel_c> shapeHistory_c::cloneShape(const voxel_c * src) {
+  std::unique_ptr<voxel_c> v(src->getGridType()->getVoxel(src));
   v->setName(src->getName());
   return v;
 }
@@ -113,21 +106,17 @@ bool shapeHistory_c::canCoalesce(actionKind_e kind, unsigned int selectedShape) 
 }
 
 void shapeHistory_c::pushOrReplace(puzzle_c * puzzle, actionKind_e kind, unsigned int selectedShape) {
-  snapshot_c * snap = capture(puzzle, selectedShape);
+  std::unique_ptr<snapshot_c> snap = capture(puzzle, selectedShape);
 
   if (canCoalesce(kind, selectedShape)) {
-    delete snapshots[cursor];
-    snapshots[cursor] = snap;
+    snapshots[cursor] = std::move(snap);
   } else {
-    while (snapshots.size() > cursor + 1) {
-      delete snapshots.back();
-      snapshots.pop_back();
-    }
-    snapshots.push_back(snap);
+    if (snapshots.size() > cursor + 1)
+      snapshots.resize(cursor + 1);
+    snapshots.push_back(std::move(snap));
     cursor = (unsigned int)(snapshots.size() - 1);
 
     while (snapshots.size() > MAX_UNDO + 1) {
-      delete snapshots.front();
       snapshots.erase(snapshots.begin());
       if (cursor > 0)
         cursor--;
@@ -156,7 +145,7 @@ unsigned int shapeHistory_c::undo(puzzle_c * puzzle) {
     return (unsigned int)-1;
   cursor--;
   lastKind = AK_NONE;
-  restore(puzzle, snapshots[cursor]);
+  restore(puzzle, snapshots[cursor].get());
   return snapshots[cursor]->selectedShape;
 }
 
@@ -165,7 +154,7 @@ unsigned int shapeHistory_c::redo(puzzle_c * puzzle) {
     return (unsigned int)-1;
   cursor++;
   lastKind = AK_NONE;
-  restore(puzzle, snapshots[cursor]);
+  restore(puzzle, snapshots[cursor].get());
   return snapshots[cursor]->selectedShape;
 }
 
@@ -177,8 +166,8 @@ bool shapeHistory_c::isModifiedFromSave(void) const {
   return cursor != savedCursor;
 }
 
-shapeHistory_c::snapshot_c * shapeHistory_c::capture(const puzzle_c * puzzle, unsigned int selectedShape) const {
-  snapshot_c * snap = new snapshot_c();
+std::unique_ptr<shapeHistory_c::snapshot_c> shapeHistory_c::capture(const puzzle_c * puzzle, unsigned int selectedShape) const {
+  auto snap = std::make_unique<snapshot_c>();
   snap->selectedShape = selectedShape;
 
   for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++)
@@ -204,6 +193,8 @@ shapeHistory_c::snapshot_c * shapeHistory_c::capture(const puzzle_c * puzzle, un
       }
       ps.parts.push_back(part);
     }
+    ps.start = pr->startStacks();
+    ps.goal = pr->goalStacks();
     snap->problems.push_back(ps);
   }
 
@@ -223,7 +214,7 @@ void shapeHistory_c::restore(puzzle_c * puzzle, const snapshot_c * snap) const {
   std::vector<voxel_c*> clones;
   clones.reserve(snap->shapes.size());
   for (unsigned int i = 0; i < snap->shapes.size(); i++)
-    clones.push_back(cloneShape(snap->shapes[i]));
+    clones.push_back(cloneShape(snap->shapes[i].get()).release());
   puzzle->adoptShapes(clones);
 
   unsigned int np = puzzle->getNumberOfProblems();
@@ -247,5 +238,8 @@ void shapeHistory_c::restore(puzzle_c * puzzle, const snapshot_c * snap) const {
 
     if (ps.resultValid && ps.resultId < puzzle->getNumberOfShapes())
       pr->setResultId(ps.resultId);
+
+    pr->editStart() = ps.start;
+    pr->editGoal() = ps.goal;
   }
 }

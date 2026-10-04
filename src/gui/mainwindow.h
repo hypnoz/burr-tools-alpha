@@ -28,11 +28,13 @@
 #include "../lib/stacking.h"
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <vector>
 
 class VoxelEditGroup_c;
 class RodIndexBar_c;
+class solution_c;
 class StackValidBar_c;
 class ChangeSize;
 class ToolTab;
@@ -84,9 +86,15 @@ class mainWindow_c : public LFl_Double_Window {
   puzzle_c * puzzle;
   shapeHistory_c * shapeHistory;
   guiGridType_c * ggt;  // this is the guigridtype for the puzzle, is must always be in sync
-  char * fname;
-  disasmToMoves_c * disassemble;
-  solveThread_c *assmThread;
+  /** The puzzle's file; empty for one never saved. */
+  std::string fname;
+  /** Remember the puzzle's file and name the window after it. */
+  void setFileName(const std::string & f);
+  std::unique_ptr<disasmToMoves_c> disassemble;
+  /* The solution the Solver tab shows. Held so that a running solve that
+   * drops it from the list cannot free what the views still draw. */
+  std::shared_ptr<const solution_c> shownSolution;
+  std::unique_ptr<solveThread_c> assmThread;
   bool SolutionEmpty;
   bool changed;
   int editSymmetries;
@@ -140,10 +148,17 @@ class mainWindow_c : public LFl_Double_Window {
   bool autosaving = false;
   unsigned int autosaveProblem = 0;
   std::string autosavePath(void) const;
+  std::string autosavePathFor(const std::string & file) const;
   bool writeAutosave(void);
+  /* Save the puzzle to path through a temporary file, so a failed save
+   * never leaves a half-written file in its place. */
+  bool writePuzzleFile(const std::string & path);
+  /* A solve is running on this problem: its solution list is changing. */
+  bool solvingProblem(unsigned int prob) const;
   void removeAutosave(void);
 
   FlatButton *BtnPrepare, *BtnStart, *BtnCont, *BtnStop, *BtnPlacement, *BtnStep, *BtnMovement;
+  FlatButton *BtnAbort = nullptr;
   FlatButton *BtnNewShape, *BtnDelShape, *BtnCpyShape, *BtnRenShape, *BtnUndo, *BtnRedo, *BtnShapeLeft, *BtnShapeRight, *BtnWeightInc, *BtnWeightDec, *BtnDetails;
   FlatButton *BtnNewStartGoal, *BtnDelStartGoal;
   Fl_Widget *startGoalRow, *startGoalGap;
@@ -177,7 +192,6 @@ class mainWindow_c : public LFl_Double_Window {
   LFl_Button *notesUpdate;
   LFl_Button *notesRevert;
   LStatusLine *StatusLine;
-  static Fl_Menu_Item menu_MainMenu[];
 
   ColorSelector * colorSelector;
 
@@ -338,6 +352,8 @@ class mainWindow_c : public LFl_Double_Window {
   bool threadStopped(void);
 
   void updateInterface(void);
+  void updateEntitiesTab(bool slidingPuzzle);
+  void updateSolverTab(bool stackingPuzzle, unsigned int prob);
   void selectEntitiesTab(bool resetZoom = false);
   void updateUndoRedoButtons(void);
   void recordShapeAction(int kind);
@@ -367,7 +383,6 @@ public:
   void update(void);
 
   /* return an index into the main menu array with the given text */
-  static int findMenuEntry(const char * txt);
   void initViewMenuIcons(void);
 
   /* the callback functions, as they are called from normal functions we need
@@ -450,6 +465,12 @@ public:
   void cb_BtnStart(bool prep_only);
   void cb_BtnCont(bool prep_only, int forProblem = -1);
   void cb_BtnStop(void);
+  /* Stop the selected problem's solve at once and throw away everything
+   * kept of it: results, the paused state, a saved stacking search, the
+   * autosave copy. */
+  void cb_BtnAbort(void);
+  /* Abort has something to throw away for this problem. */
+  bool abortable(unsigned int prob) const;
   void cb_BtnPlacementBrowser(void);
   void cb_BtnMovementBrowser(void);
   void cb_BtnAssemblerStep(void);
@@ -458,6 +479,12 @@ public:
   void cb_SolutionAnim(Fl_Value_Slider*);
   void cb_SolverOptions(Fl_Widget* o);
   void updateSolverOptionCheckboxes(void);
+  /** Copy the Solver tab settings into the problem selected there. */
+  void storeSolverOptions(void);
+  /** Set the Solver tab to the settings saved with a problem, if it has any. */
+  void applySolverOptions(unsigned int prob);
+  /** The Solver tab checkbox saved under this name, or null. */
+  Fl_Check_Button * solverOptionBox(const char * name);
 
   void cb_PcVis(void);
 
@@ -478,6 +505,7 @@ public:
   void cb_SolverTypeHelp(void);
   void cb_SolverType(void) {
     updateSolverOptionCheckboxes();
+    storeSolverOptions();
     updateInterface();
   }
   void cb_SortByHelp(void);

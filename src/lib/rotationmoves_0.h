@@ -48,7 +48,6 @@ class rotationMoves_0_c : public rotationMoves_c {
 
   private:
 
-    const problem_c & problem;
     movementCache_c * cache;
     const symmetries_c * sym;
     rotationRules_c rules;
@@ -63,9 +62,23 @@ class rotationMoves_0_c : public rotationMoves_c {
     bool active;
 
     std::vector<rotationRules_c::pivot_t> pivotCells;
+    /* The moving subset's cells and everyone else's, for the current node
+     * and subset: the same for every pivot, axis and sense tried. Filled by
+     * loadSubset. */
+    std::vector<rotationRules_c::cell_t> subsetStart;
+    std::vector<rotationRules_c::cell_t> subsetOccupied;
+    /* Each piece's cells at the current node; empty for a removed piece. */
+    std::vector<std::vector<rotationRules_c::cell_t>> pieceCells;
+    /* The pieces still in the puzzle at the current node, one bit each. */
+    unsigned int presentMask = 0;
+    /* Keep the first piece's orientation fixed (see tryCurrentCandidate).
+     * Sound because the rules do not care how the whole puzzle is turned.
+     * BURRTOOLS_NO_ROT_ANCHOR=1 turns it off for A/B runs. */
+    bool anchor;
 
     void collectWorldCells(unsigned int pieceIdx, std::vector<rotationRules_c::cell_t> & out) const;
-    void rebuildPivotCells(unsigned int subsetMask, unsigned int axis);
+    void loadSubset(unsigned int subsetMask);
+    void rebuildPivotCells(unsigned int axis);
     disassemblerNode_c * tryCurrentCandidate(void);
 
     static void rotateVector(int * x, int * y, int * z, unsigned int axis, unsigned int sense);
@@ -85,8 +98,8 @@ class rotationMoves_0_c : public rotationMoves_c {
   private:
 
     // no copying and assigning
-    rotationMoves_0_c(const rotationMoves_0_c&);
-    void operator=(const rotationMoves_0_c&);
+    rotationMoves_0_c(const rotationMoves_0_c&) = delete;
+    void operator=(const rotationMoves_0_c&) = delete;
 };
 
 #endif

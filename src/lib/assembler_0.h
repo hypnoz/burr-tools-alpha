@@ -354,8 +354,8 @@ public:
 private:
 
   // no copying and assigning
-  assembler_0_c(const assembler_0_c&);
-  void operator=(const assembler_0_c&);
+  assembler_0_c(const assembler_0_c&) = delete;
+  void operator=(const assembler_0_c&) = delete;
 };
 
 #endif

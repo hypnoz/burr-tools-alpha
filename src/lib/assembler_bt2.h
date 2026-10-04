@@ -323,9 +323,9 @@ public:
 
 private:
 
-  // no copying and assigning
+  /* Copied once per worker thread (see assembler_bt2.cpp); no assigning. */
   assembler_bt2_c(const assembler_bt2_c&);
-  void operator=(const assembler_bt2_c&);
+  void operator=(const assembler_bt2_c&) = delete;
 };
 
 #endif

@@ -45,6 +45,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string>
 
 /* image info contains the information for one image to be exported
  * this information is the setup required to produce this image, also
@@ -260,19 +261,18 @@ void imageExport_c::nextImage(bool finish) {
     snprintf(statText, 20, "save page %u", curPage);
     status->label(statText);
 
-    char name[1000];
-
+    char page[16];
+    snprintf(page, sizeof(page), "%03u.png", curPage);
+    std::string name = std::string(Pname->value()) + Fname->value() + page;
     if (Pname->value() && Pname->value()[0] && Pname->value()[strlen(Pname->value())-1] != '/')
-      snprintf(name, 1000, "%s/%s%03u.png", Pname->value(), Fname->value(), curPage);
-    else
-      snprintf(name, 1000, "%s%s%03u.png", Pname->value(), Fname->value(), curPage);
+      name = std::string(Pname->value()) + "/" + Fname->value() + page;
 
     /* saveToPNG reports failure by returning 0 and printing to stderr. The
      * return value is what matters here: a program started from a macOS
      * bundle or a Windows shortcut has no stderr anyone can read, so the
      * path is recorded for PostDraw() to report in a dialog instead.
      */
-    if (!i->saveToPNG(name))
+    if (!i->saveToPNG(name.c_str()))
       failedPath = name;
 
     i.reset();

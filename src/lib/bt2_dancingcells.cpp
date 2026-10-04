@@ -153,7 +153,8 @@ void bt2Cells_c::finishSetup(void) {
       Node n;
       n.item = it;
       n.loc = itemBase[it] + fill[it];
-      SET[n.loc] = o;
+      n.option = o;
+      SET[n.loc] = (unsigned int)nodes.size();
       fill[it]++;
       nodes.push_back(n);
       opt.len++;
@@ -216,7 +217,10 @@ void bt2Cells_c::restoreSizes(const Save & s) {
   active = s.active;
 }
 
-bool bt2Cells_c::hideFromItem(unsigned int opt, unsigned int item) {
+/* Take one node's option out of its item's live options. False when that
+ * leaves a primary item with none. */
+bool bt2Cells_c::hideNode(unsigned int node) {
+  const unsigned int item = nodes[node].item;
   if (!isActiveItem(item))
     return true;
 
@@ -224,40 +228,18 @@ bool bt2Cells_c::hideFromItem(unsigned int opt, unsigned int item) {
   if (sz == 0)
     return !isPrimary(item);
 
-  unsigned int loc = 0;
-  bool found = false;
-  unsigned int start = itemBase[item];
-  unsigned int end = options[opt].start + options[opt].len;
-  for (unsigned int n = options[opt].start; n < end; n++) {
-    if (nodes[n].item == item) {
-      loc = nodes[n].loc;
-      found = true;
-      break;
-    }
-  }
-  if (!found)
-    return true;
-
-  unsigned int lastLoc = start + sz - 1;
-  if (loc < start || loc > lastLoc)
+  const unsigned int loc = nodes[node].loc;
+  const unsigned int lastLoc = itemBase[item] + sz - 1;
+  /* Hidden already. */
+  if (loc > lastLoc)
     return true;
 
   if (loc != lastLoc) {
-    unsigned int other = SET[lastLoc];
+    const unsigned int other = SET[lastLoc];
     SET[loc] = other;
-    SET[lastLoc] = opt;
-    for (unsigned int n = options[other].start; n < options[other].start + options[other].len; n++) {
-      if (nodes[n].item == item) {
-        nodes[n].loc = loc;
-        break;
-      }
-    }
-    for (unsigned int n = options[opt].start; n < end; n++) {
-      if (nodes[n].item == item) {
-        nodes[n].loc = lastLoc;
-        break;
-      }
-    }
+    SET[lastLoc] = node;
+    nodes[other].loc = loc;
+    nodes[node].loc = lastLoc;
   }
 
   itemSize[item] = sz - 1;
@@ -266,11 +248,16 @@ bool bt2Cells_c::hideFromItem(unsigned int opt, unsigned int item) {
   return true;
 }
 
-bool bt2Cells_c::discardOption(unsigned int opt) {
+/* Hide an option from every item it has, bar the one named in covering:
+ * that item is about to be covered, so what its set holds no longer
+ * matters. */
+bool bt2Cells_c::discardOption(unsigned int opt, unsigned int covering) {
   unsigned int start = options[opt].start;
   unsigned int end = start + options[opt].len;
   for (unsigned int n = start; n < end; n++) {
-    if (!hideFromItem(opt, nodes[n].item))
+    if (nodes[n].item == covering)
+      continue;
+    if (!hideNode(n))
       return false;
   }
   return true;
@@ -284,17 +271,18 @@ bool bt2Cells_c::selectOption(unsigned int opt) {
     if (!isActiveItem(item))
       continue;
 
-    std::vector<unsigned int> others;
+    /* The item's other options, noted first: discarding them reorders SET. */
+    std::vector<unsigned int> & others = othersBuf;
+    others.clear();
     unsigned int base = itemBase[item];
     unsigned int sz = itemSize[item];
-    others.reserve(sz);
     for (unsigned int k = 0; k < sz; k++) {
-      unsigned int other = SET[base + k];
+      unsigned int other = nodes[SET[base + k]].option;
       if (other != opt)
         others.push_back(other);
     }
     for (unsigned int k = 0; k < others.size(); k++) {
-      if (!discardOption(others[k]))
+      if (!discardOption(others[k], item))
         return false;
     }
     deactivate(item);
@@ -342,12 +330,12 @@ bool bt2Cells_c::fastTrack(const std::vector<unsigned int> & force) {
     unsigned int item = force[i];
     if (!isActiveItem(item))
       continue;
-    std::vector<unsigned int> opts;
+    std::vector<unsigned int> & opts = optsBuf;
+    opts.clear();
     unsigned int sz = itemSize[item];
     unsigned int base = itemBase[item];
-    opts.reserve(sz);
     for (unsigned int k = 0; k < sz; k++)
-      opts.push_back(SET[base + k]);
+      opts.push_back(nodes[SET[base + k]].option);
     for (unsigned int k = 0; k < opts.size(); k++) {
       if (!selectOption(opts[k]))
         return false;
@@ -384,54 +372,26 @@ void bt2Cells_c::emitSolution(void) {
     cbFn(cbUser, solRows.empty() ? 0 : &solRows[0], (unsigned int)solRows.size());
 }
 
-void bt2Cells_c::forwardToNextBranch(void) {
-  popFrame();
-  while (activeFrames > 0) {
-    Frame & f = frames[activeFrames - 1];
-    switch (f.state) {
-      case 0:
-        return;
-      case 2:
-        SOL.resize(f.solMark);
-        popFrame();
-        break;
-      case 1:
-        popFrame();
-        break;
-      case 3:
-        if (!SOL.empty())
-          SOL.pop_back();
-        restoreSizes(f.save);
-        discardOption(f.x);
-        f.state = 1;
-        pushFrame();
-        return;
-      default:
-        popFrame();
-        break;
-    }
-  }
-}
-
 bt2Cells_c * bt2Cells_c::split(void) {
   if (!setupDone || finished())
     return 0;
 
-  bool haveState3 = false;
+  /* The shallowest branch still open: an option chosen there, the search
+   * without it not yet begun. The copy takes that other half -- the largest
+   * piece of work to give away -- and this search keeps what it is in. */
   for (unsigned int i = 0; i < activeFrames; i++) {
-    if (frames[i].state == 3) {
-      haveState3 = true;
-      break;
-    }
-  }
-
-  if (haveState3) {
+    if (frames[i].state != 3)
+      continue;
     bt2Cells_c * other = new bt2Cells_c(*this);
-    forwardToNextBranch();
-    if (other->finished()) {
-      delete other;
-      return 0;
-    }
+    Frame & f = other->frames[i];
+    other->activeFrames = i + 1;
+    other->SOL.resize(f.solMark);
+    other->restoreSizes(f.save);
+    other->discardOption(f.x);
+    f.state = 1;
+    other->pushFrame();
+    /* Here, coming back up to that frame is now the end of it. */
+    frames[i].state = 1;
     return other;
   }
 
@@ -455,7 +415,9 @@ bt2Cells_c * bt2Cells_c::split(void) {
     delete other;
     return 0;
   }
-  other->frames[other->activeFrames - 1].state = 3;
+  /* State 1, not 3: the copy searches with opt chosen and stops there. The
+   * searches without opt are this one's (it discards opt below). */
+  other->frames[other->activeFrames - 1].state = 1;
   other->pushFrame();
 
   discardOption(opt);
@@ -517,7 +479,7 @@ void bt2Cells_c::solve(unsigned int maxIterations, std::atomic<bool> * abort) {
         }
         iterations++;
 
-        std::vector<unsigned int> force;
+        std::vector<unsigned int> & force = forceBuf;
         unsigned int chosen = 0;
         bool contra = false;
         bool branched = findBranch(force, chosen, contra);
@@ -546,6 +508,7 @@ void bt2Cells_c::solve(unsigned int maxIterations, std::atomic<bool> * abort) {
         }
 
         f.x = firstOptionOf(chosen);
+        f.solMark = (unsigned int)SOL.size();
         storeSizes(f.save);
         if (selectOption(f.x)) {
           f.state = 3;

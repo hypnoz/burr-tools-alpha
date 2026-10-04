@@ -35,7 +35,6 @@
 #include <queue>
 #include <string>
 #include <thread>
-#include <time.h>
 #include <vector>
 
 class problem_c;
@@ -44,8 +43,8 @@ class separation_c;
 
 struct disasmTask_c {
   std::unique_ptr<assembly_c> assembly;
-  unsigned long assemblyNumber;
-  unsigned long solutionNumber;
+  unsigned long assemblyNumber = 0;
+  unsigned long solutionNumber = 0;
 };
 
 /** Snapshot of solver timing and counts for the Debug statistics pane. */
@@ -113,6 +112,13 @@ class solveThread_c : public assembler_cb, public thread_c {
     /* some activities might have a parameter, return that */
     unsigned int currentActionParameter(void);
 
+    /**
+     * How far the running assembler is, 0..1; 0 while there is none. Use
+     * this from the GUI instead of the problem's assembler, which this
+     * thread may be replacing.
+     */
+    float assemblerFinished(void) const;
+
     /** block until the solver thread has finished (success, pause, or error) */
     void waitUntilFinished(void);
 
@@ -132,14 +138,8 @@ class solveThread_c : public assembler_cb, public thread_c {
       return errParam;
     }
 
-  private:
-
-    time_t startTime = 0;
-
   public:
 
-    /* how much time has passed since calling start */
-    unsigned long getTime(void) { return time(0) - startTime; }
     /** Milliseconds since this run started. */
     unsigned long long getTimeMs(void) const {
       return (unsigned long long)std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -240,9 +240,10 @@ class solveThread_c : public assembler_cb, public thread_c {
 
   public:
 
+    /** Keep at most limit solutions (0: no limit), and only every drop-th. */
     void setSolutionLimits(unsigned int limit, unsigned int drop = 1) {
       solutionLimit = limit;
-      solutionDrop = drop;
+      solutionDrop = drop ? drop : 1;
     }
 
   private:
@@ -263,13 +264,24 @@ class solveThread_c : public assembler_cb, public thread_c {
 
     std::vector<std::unique_ptr<disassembler_c>> disassemblers;
 
-    /* the worker publishes the assembler here once it is fully constructed so
-     * that currentActionParameter() and getStats(), called from the GUI thread,
-     * can query its progress. Atomic with release/acquire so the GUI never sees
-     * a half-constructed object (which would be a vptr race on the virtual call).
+    /* The worker publishes the assembler here once it is fully constructed so
+     * that currentActionParameter(), assemblerFinished(), getStats() and stop(),
+     * called from the GUI thread, can use it. Every use from another thread
+     * holds assmMutex, and the worker takes it to publish or withdraw the
+     * assembler, always before the assembler can be freed: so the GUI never
+     * sees a half-built or a freed one. Use it through withAssembler.
      */
-    std::atomic<assembler_c *> assm;
-    unsigned int assemblerThreadCount;
+    std::atomic<assembler_c *> assm{nullptr};
+    mutable std::mutex assmMutex;
+    /* How far the assembler had got when it was withdrawn. */
+    std::atomic<float> lastFinished{0};
+    void publishAssembler(assembler_c * a);
+    template <class F> void withAssembler(F f) const {
+      std::lock_guard<std::mutex> lock(assmMutex);
+      if (assembler_c * a = assm.load(std::memory_order_acquire))
+        f(a);
+    }
+    std::atomic<unsigned int> assemblerThreadCount{1};
 
     std::mutex assemblyCallbackMutex;
 
@@ -290,8 +302,14 @@ class solveThread_c : public assembler_cb, public thread_c {
     std::atomic<unsigned long long> assemblyMs;
     std::atomic<unsigned long long> drainMs;
     std::chrono::steady_clock::time_point statsOrigin;
-    std::chrono::steady_clock::time_point phaseOrigin;
-    enum { PHASE_NONE, PHASE_PREPARE, PHASE_REDUCE, PHASE_ASSEMBLE, PHASE_DRAIN } statsPhase;
+    enum phase_e { PHASE_NONE, PHASE_PREPARE, PHASE_REDUCE, PHASE_ASSEMBLE, PHASE_DRAIN };
+    /* The phase under way and when it began (steady_clock ticks): written by
+     * the worker, read by getStats on the GUI thread. */
+    std::atomic<phase_e> statsPhase{PHASE_NONE};
+    std::atomic<long long> phaseOrigin{0};
+    void beginPhase(phase_e ph);
+    /* End the phase under way, storing how long it took in total. */
+    void endPhase(std::atomic<unsigned long long> & total);
 
     /* GUI-thread-only state for the disassembly progress-bar creep. */
     mutable bool disasmCreepActive;
@@ -363,7 +381,6 @@ public:
     return solverNote;
   }
 
-  /** Arrangements the current sliding search has visited so far. */
   /** Moves the Panex Solver has searched from both ends together. */
   unsigned long getSearchDepth(void) const {
     return searchDepth.load(std::memory_order_relaxed);
@@ -373,6 +390,7 @@ public:
   unsigned long getSearchTraced(void) const {
     return searchTraced.load(std::memory_order_relaxed);
   }
+  /** Arrangements (sliding) or stackings (stacking) searched so far. */
   unsigned long getSlideProgress(void) const {
     return slideProgress.load(std::memory_order_relaxed);
   }
@@ -400,9 +418,8 @@ private:
 
 private:
 
-  // no copying and assigning
-  solveThread_c(const solveThread_c&);
-  void operator=(const solveThread_c&);
+  solveThread_c(const solveThread_c&) = delete;
+  void operator=(const solveThread_c&) = delete;
 };
 
 #endif

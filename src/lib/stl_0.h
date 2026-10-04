@@ -56,8 +56,8 @@ class stlExporter_0_c : public stlExporter_c {
 private:
 
   // no copying and assigning
-  stlExporter_0_c(const stlExporter_0_c&);
-  void operator=(const stlExporter_0_c&);
+  stlExporter_0_c(const stlExporter_0_c&) = delete;
+  void operator=(const stlExporter_0_c&) = delete;
 
 };
 

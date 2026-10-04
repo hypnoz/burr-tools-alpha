@@ -71,8 +71,8 @@ class thread_c {
     void start_thread(void);
 
     // no copying and assigning
-    thread_c(const thread_c&);
-    void operator=(const thread_c&);
+    thread_c(const thread_c&) = delete;
+    void operator=(const thread_c&) = delete;
 
 };
 

@@ -461,21 +461,26 @@ void gridEditor_c::draw() {
         break;
       }
 
-      // Start/goal trays draw the piece's S# in the voxel instead of a colour swatch.
+      /* Start/goal trays: a cell marked for a piece takes that piece's
+       * colour, as in the 3D view (the mark is the shape number plus one). */
       if (slidingLabel && space->getState(x, y, currentZ) != voxel_c::VX_EMPTY) {
         unsigned int mark = (slidingLabel == 2)
           ? space->getGoalPiece(x, y, currentZ)
           : space->getColor(x, y, currentZ);
-        if (mark) {
-          char buf[16];
-          snprintf(buf, sizeof(buf), "S%u", mark);
-          fl_color(fl_rgb_color(slidingColors::LABEL_R, slidingColors::LABEL_G, slidingColors::LABEL_B));
-          fl_font(FL_HELVETICA_BOLD, (sy > 18) ? 14 : 10);
-          int tw = 0, th = 0;
-          fl_measure(buf, tw, th);
-          int cx = tx + (int)x * sx + (sx - tw) / 2;
-          int cy = ty - ((int)y + 1) * sy + (sy + th) / 2 - fl_descent();
-          fl_draw(buf, cx, cy);
+        if (mark && mark <= puzzle->getNumberOfShapes()) {
+          const unsigned int piece = mark - 1;
+          if ((x+y+currentZ) & 1)
+            fl_color(int(255*darkPieceColor(pieceColorR(piece))),
+                     int(255*darkPieceColor(pieceColorG(piece))),
+                     int(255*darkPieceColor(pieceColorB(piece))));
+          else
+            fl_color(int(255*lightPieceColor(pieceColorR(piece))),
+                     int(255*lightPieceColor(pieceColorG(piece))),
+                     int(255*lightPieceColor(pieceColorB(piece))));
+          if (space->getState(x, y, currentZ) == voxel_c::VX_VARIABLE)
+            drawVariableTile(x, y, currentZ, tx, ty, sx, sy);
+          else
+            drawNormalTile(x, y, currentZ, tx, ty, sx, sy);
         }
       } else if (!trayTiles &&
           (space->getState(x, y, currentZ) != voxel_c::VX_EMPTY)) {

@@ -64,7 +64,6 @@
 
 voxelFrame_c::voxelFrame_c(int x,int y,int w,int h) :
   Fl_Gl_Window(x,y,w,h),
-  curAssembly(0),
   curProblem(0),
   trans(ScaleRotateTranslate),
   mX1(0), mY1(0), mZ(0), mX2(0), mY2(0),
@@ -89,9 +88,9 @@ voxelFrame_c::voxelFrame_c(int x,int y,int w,int h) :
 
   Fl::use_high_res_GL(1);
   if (config.rotationMethod() == 0)
-    rotater = new arcBall_c(w, h);
+    rotater = std::make_unique<arcBall_c>(w, h);
   else
-    rotater = new method2_c(w, h);
+    rotater = std::make_unique<method2_c>(w, h);
   rotMethod = config.rotationMethod();
 };
 
@@ -99,24 +98,16 @@ void voxelFrame_c::setRotaterMethod(int method)
 {
   if (method == rotMethod) return;
 
-  delete rotater;
-
   if (method == 0)
-    rotater = new arcBall_c(pixel_w(), pixel_h());
+    rotater = std::make_unique<arcBall_c>(pixel_w(), pixel_h());
   else
-    rotater = new method2_c(pixel_w(), pixel_h());
+    rotater = std::make_unique<method2_c>(pixel_w(), pixel_h());
 
   rotMethod = method;
 }
 
 voxelFrame_c::~voxelFrame_c(void) {
   clearSpaces();
-  if (curAssembly) {
-    delete curAssembly;
-    curAssembly = 0;
-  }
-  delete rotater;
-  delete viewCube;
 }
 
 // this is used to shift one side of the cubes so that they slightly differ
@@ -481,58 +472,88 @@ static void drawAxisLetter(const char *letter, int sx, int sy) {
   gl_draw(letter, sx - tw / 2, sy + th / 3);
 }
 
-/* Stroke letters in a 4 by 6 cell, y up. Drawn in the shape's own plane so
- * the word turns with the piece. */
-static void strokeLetter(char ch, float ox, float oy, float z, float s) {
-  struct Seg { float x0, y0, x1, y1; };
-  const Seg * segs = nullptr;
-  int n = 0;
+/* Stroke letters in a 4 by 6 cell, y up, baseline 0.6, cap height 5.4.
+ * Each letter is one or more polylines; the round ones (S, G, O and the
+ * bowl of R) are arcs cut into short segments, so they read as curves.
+ * Drawn in the shape's own plane so the word turns with the piece. */
+typedef std::vector<std::pair<float, float> > strokeLine_t;
 
-  static const Seg S[] = {
-    {3.2f, 5.4f, 0.8f, 5.4f}, {0.8f, 5.4f, 0.8f, 3.2f}, {0.8f, 3.2f, 3.2f, 3.2f},
-    {3.2f, 3.2f, 3.2f, 0.6f}, {3.2f, 0.6f, 0.8f, 0.6f}
-  };
-  static const Seg T[] = {
-    {0.3f, 5.4f, 3.7f, 5.4f}, {2.0f, 5.4f, 2.0f, 0.6f}
-  };
-  static const Seg A[] = {
-    {0.4f, 0.6f, 2.0f, 5.4f}, {2.0f, 5.4f, 3.6f, 0.6f}, {1.05f, 2.5f, 2.95f, 2.5f}
-  };
-  static const Seg R[] = {
-    {0.6f, 0.6f, 0.6f, 5.4f}, {0.6f, 5.4f, 2.7f, 5.4f}, {2.7f, 5.4f, 3.5f, 4.5f},
-    {3.5f, 4.5f, 3.5f, 3.7f}, {3.5f, 3.7f, 2.7f, 2.9f}, {2.7f, 2.9f, 0.6f, 2.9f},
-    {1.8f, 2.9f, 3.6f, 0.6f}
-  };
-  static const Seg G[] = {
-    {3.2f, 4.5f, 2.2f, 5.4f}, {2.2f, 5.4f, 0.8f, 5.4f}, {0.8f, 5.4f, 0.6f, 4.4f},
-    {0.6f, 4.4f, 0.6f, 1.6f}, {0.6f, 1.6f, 0.8f, 0.6f}, {0.8f, 0.6f, 2.4f, 0.6f},
-    {2.4f, 0.6f, 3.3f, 1.5f}, {3.3f, 1.5f, 3.3f, 3.0f}, {3.3f, 3.0f, 1.9f, 3.0f}
-  };
-  static const Seg O[] = {
-    {0.7f, 0.8f, 0.7f, 5.2f}, {0.7f, 5.2f, 3.3f, 5.2f}, {3.3f, 5.2f, 3.3f, 0.8f},
-    {3.3f, 0.8f, 0.7f, 0.8f}
-  };
-  static const Seg L[] = {
-    {0.8f, 5.4f, 0.8f, 0.6f}, {0.8f, 0.6f, 3.4f, 0.6f}
-  };
+/* Points along an elliptic arc about (cx, cy), from angle a0 to a1 in
+ * degrees (either way round), appended to line. */
+static void strokeArc(strokeLine_t & line, float cx, float cy, float rx, float ry,
+                      float a0, float a1) {
+  const int steps = std::max(4, (int)(std::fabs(a1 - a0) / 7.5f));
+  for (int i = 0; i <= steps; i++) {
+    const float a = (a0 + (a1 - a0) * (float)i / (float)steps) * 3.14159265f / 180.0f;
+    line.push_back(std::make_pair(cx + rx * std::cos(a), cy + ry * std::sin(a)));
+  }
+}
 
+static const std::vector<strokeLine_t> & strokeGlyph(char ch) {
+  static std::map<char, std::vector<strokeLine_t> > glyphs;
+  auto it = glyphs.find(ch);
+  if (it != glyphs.end())
+    return it->second;
+
+  std::vector<strokeLine_t> g;
+  auto line = [&g](std::initializer_list<std::pair<float, float> > pts) {
+    g.push_back(strokeLine_t(pts));
+  };
   switch (ch) {
-    case 'S': segs = S; n = 5; break;
-    case 'T': segs = T; n = 2; break;
-    case 'A': segs = A; n = 3; break;
-    case 'R': segs = R; n = 7; break;
-    case 'G': segs = G; n = 9; break;
-    case 'O': segs = O; n = 4; break;
-    case 'L': segs = L; n = 2; break;
-    default: return;
+    case 'S': {
+      /* Two bowls meeting at mid height: the top one opens right, the
+       * bottom one left. */
+      strokeLine_t l;
+      strokeArc(l, 2.0f, 4.2f, 1.3f, 1.2f, 30.0f, 270.0f);
+      strokeArc(l, 2.0f, 1.8f, 1.3f, 1.2f, 90.0f, -150.0f);
+      g.push_back(l);
+      break;
+    }
+    case 'G': {
+      strokeLine_t l;
+      strokeArc(l, 2.0f, 3.0f, 1.45f, 2.4f, 45.0f, 360.0f);
+      l.push_back(std::make_pair(2.1f, 3.0f));
+      g.push_back(l);
+      break;
+    }
+    case 'O': {
+      strokeLine_t l;
+      strokeArc(l, 2.0f, 3.0f, 1.45f, 2.4f, 0.0f, 360.0f);
+      g.push_back(l);
+      break;
+    }
+    case 'R': {
+      strokeLine_t l{{0.6f, 0.6f}, {0.6f, 5.4f}, {2.3f, 5.4f}};
+      strokeArc(l, 2.3f, 4.15f, 1.1f, 1.25f, 90.0f, -90.0f);
+      l.push_back(std::make_pair(0.6f, 2.9f));
+      g.push_back(l);
+      line({{1.9f, 2.9f}, {3.5f, 0.6f}});
+      break;
+    }
+    case 'T':
+      line({{0.3f, 5.4f}, {3.7f, 5.4f}});
+      line({{2.0f, 5.4f}, {2.0f, 0.6f}});
+      break;
+    case 'A':
+      line({{0.4f, 0.6f}, {2.0f, 5.4f}, {3.6f, 0.6f}});
+      line({{1.05f, 2.5f}, {2.95f, 2.5f}});
+      break;
+    case 'L':
+      line({{0.8f, 5.4f}, {0.8f, 0.6f}, {3.4f, 0.6f}});
+      break;
+    default:
+      break;
   }
+  return glyphs.emplace(ch, g).first->second;
+}
 
-  glBegin(GL_LINES);
-  for (int i = 0; i < n; i++) {
-    glVertex3f(ox + segs[i].x0 * s, oy + segs[i].y0 * s, z);
-    glVertex3f(ox + segs[i].x1 * s, oy + segs[i].y1 * s, z);
+static void strokeLetter(char ch, float ox, float oy, float z, float s) {
+  for (const strokeLine_t & l : strokeGlyph(ch)) {
+    glBegin(GL_LINE_STRIP);
+    for (const auto & p : l)
+      glVertex3f(ox + p.first * s, oy + p.second * s, z);
+    glEnd();
   }
-  glEnd();
 }
 
 /* Centre the word on the shape and sit it just past the +Y edge. */
@@ -1165,16 +1186,24 @@ unsigned int voxelFrame_c::addSpace(const voxel_c * vx) {
   return shapes.size()-1;
 }
 
+void voxelFrame_c::dropMeshes(shapeInfo & si, bool pick) {
+  if (si.list) {
+    glDeleteLists(si.list, 1);
+    si.list = 0;
+  }
+  delete si.poly;
+  si.poly = nullptr;
+  if (pick) {
+    delete si.pickPoly;
+    si.pickPoly = nullptr;
+  }
+}
+
 void voxelFrame_c::clearSpaces(void) {
 
   for (unsigned int i = 0; i < shapes.size(); i++) {
-    if (shapes[i].list) glDeleteLists(shapes[i].list, 1);
+    dropMeshes(shapes[i]);
     delete shapes[i].shape;
-    if (shapes[i].poly)
-      delete shapes[i].poly;
-    shapes[i].poly = 0;
-    delete shapes[i].pickPoly;
-    shapes[i].pickPoly = 0;
   }
 
   shapes.clear();
@@ -1343,18 +1372,7 @@ void voxelFrame_c::setDrawingMode(unsigned int nr, drawingMode mode) {
   if (shapes[nr].mode != mode) {
     shapes[nr].mode = mode;
 
-    if (shapes[nr].list) {
-      glDeleteLists(shapes[nr].list, 1);
-      shapes[nr].list = 0;
-    }
-
-    if (shapes[nr].poly)
-    {
-      delete shapes[nr].poly;
-      shapes[nr].poly = 0;
-      delete shapes[nr].pickPoly;
-      shapes[nr].pickPoly = 0;
-    }
+    dropMeshes(shapes[nr]);
   }
 
   redraw();
@@ -1465,7 +1483,13 @@ void voxelFrame_c::showSingleShape(const puzzle_c * puz, unsigned int shapeNum) 
     const float grey = slidingColors::VIEW_GREY;
     for (int side = 0; side < 2; side++) {
       const bool goal = side == 1;
-      const float offset = goal ? (float)X + 1.5f : 0.0f;
+      /* Each tray is drawn centred on its offset, so START at -step/2 and
+       * GOAL at +step/2 puts the pair's middle at the centre the view
+       * turns about. The gap leaves room for START's X axis and its label,
+       * which reach past its edge, before GOAL's axes begin. */
+      const float gap = 4.0f;
+      const float step = (float)X + gap;
+      const float offset = goal ? 0.5f * step : -0.5f * step;
       voxel_c * tray = gt->getVoxel(X, Y, Z + 1, voxel_c::VX_EMPTY);
       std::map<unsigned int, voxel_c *> stamps;
       for (unsigned int z = 0; z < Z; z++)
@@ -1733,7 +1757,7 @@ void voxelFrame_c::applyDefaultRotation(void) {
   if (!rotater)
     return;
   if (stackingHome && viewCube)
-    viewCube->snapToPart(viewCube_c::EDGE_PY_PZ, rotater);
+    viewCube->snapToPart(viewCube_c::EDGE_PY_PZ, rotater.get());
   else
     rotater->resetRotation();
 }
@@ -1829,10 +1853,7 @@ void voxelFrame_c::addStackBoard(const gridType_c * gt, const stacking::boardLay
 }
 
 void voxelFrame_c::showRodSet(const puzzle_c * puz, unsigned int rodSet) {
-  if (curAssembly) {
-    delete curAssembly;
-    curAssembly = 0;
-  }
+  curAssembly.reset();
   curProblem = 0;
   shapeOrients.clear();
   hideMarker();
@@ -1880,10 +1901,7 @@ void voxelFrame_c::showRodSet(const puzzle_c * puz, unsigned int rodSet) {
 }
 
 void voxelFrame_c::showStacking(const problem_c * puz, bool goal) {
-  if (curAssembly) {
-    delete curAssembly;
-    curAssembly = 0;
-  }
+  curAssembly.reset();
   curProblem = 0;
   shapeOrients.clear();
   hideMarker();
@@ -1925,10 +1943,7 @@ void voxelFrame_c::showStacking(const problem_c * puz, bool goal) {
 }
 
 void voxelFrame_c::showStackingAssembly(const problem_c * puz, unsigned int solNum) {
-  if (curAssembly) {
-    delete curAssembly;
-    curAssembly = 0;
-  }
+  curAssembly.reset();
   curProblem = 0;
   shapeOrients.clear();
   hideMarker();
@@ -1940,8 +1955,8 @@ void voxelFrame_c::showStackingAssembly(const problem_c * puz, unsigned int solN
   }
 
   curProblem = puz;
-  curAssembly = new assembly_c(puz->getSavedSolution(solNum)->getAssembly());
-  const assembly_c * assm = curAssembly;
+  curAssembly = std::make_unique<assembly_c>(puz->getSavedSolution(solNum)->getAssembly());
+  const assembly_c * assm = curAssembly.get();
   stacking::boardLayout_c lay = stacking::layoutBoard(*puz, false);
   const gridType_c * gt = puz->getPuzzle().getGridType();
 
@@ -1993,10 +2008,7 @@ void voxelFrame_c::showAssembly(const problem_c * puz, unsigned int solNum) {
   stackingHome = false;
   bt_assert(puz->resultValid());
 
-  if (curAssembly) {
-    delete curAssembly;
-    curAssembly = 0;
-  }
+  curAssembly.reset();
   curProblem = 0;
   shapeOrients.clear();
 
@@ -2009,8 +2021,8 @@ void voxelFrame_c::showAssembly(const problem_c * puz, unsigned int solNum) {
     unsigned int num;
 
     curProblem = puz;
-    curAssembly = new assembly_c(puz->getSavedSolution(solNum)->getAssembly());
-    const assembly_c * assm = curAssembly;
+    curAssembly = std::make_unique<assembly_c>(puz->getSavedSolution(solNum)->getAssembly());
+    const assembly_c * assm = curAssembly.get();
 
     unsigned int piece = 0;
 
@@ -2179,19 +2191,9 @@ void voxelFrame_c::showPlacement(const problem_c * puz, unsigned int piece, unsi
     // or we only place the shape and only remove the openGL list and polyhedron
     if (placeOnly)
     {
+      delete shapes[0].shape;
       shapes[0].shape = vx;
-      if (shapes[0].list)
-      {
-        glDeleteLists(shapes[0].list, 1);
-        shapes[0].list = 0;
-      }
-      if (shapes[0].poly)
-      {
-        delete shapes[0].poly;
-        shapes[0].poly = 0;
-        delete shapes[0].pickPoly;
-        shapes[0].pickPoly = 0;
-      }
+      dropMeshes(shapes[0]);
     }
     else
     {
@@ -2246,8 +2248,7 @@ void voxelFrame_c::updatePositions(piecePositions_c *shifting) {
           if (piece != p) continue;
           voxel_c * vx = curProblem->getPuzzle().getGridType()->getVoxel(curProblem->getPartShape(part));
           bt_assert2(vx->transform(t));
-          if (shapes[p].list) { glDeleteLists(shapes[p].list, 1); shapes[p].list = 0; }
-          if (shapes[p].poly) { delete shapes[p].poly; shapes[p].poly = 0; }
+          dropMeshes(shapes[p], false);
           delete shapes[p].shape;
           shapes[p].shape = vx;
           shapeOrients[p] = t;
@@ -2991,7 +2992,7 @@ void voxelFrame_c::draw() {
   drawDebugRotationLegend();
 
   if (drawViewCube && pickx < 0 && viewCube && w() >= 48 && h() >= 48)
-    viewCube->draw(rotater, w(), h(), pixels_per_unit());
+    viewCube->draw(rotater.get(), w(), h(), pixels_per_unit());
 
   if (_useLightning)
     glEnable(GL_LIGHTING);
@@ -3013,7 +3014,7 @@ int voxelFrame_c::handle(int event) {
     if (event == FL_ENTER)
       return 1;
 
-    viewCube_c::Action a = viewCube->handle(event, rotater, w(), h());
+    viewCube_c::Action a = viewCube->handle(event, rotater.get(), w(), h());
     if (a == viewCube_c::ACT_HOME) {
       userRotated = false;
       if (homeCb)

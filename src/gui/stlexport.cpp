@@ -47,6 +47,7 @@
 #include <FL/Fl.H>
 #include <FL/fl_ask.H>
 #include <FL/Fl_File_Chooser.H>
+#include <string>
 
 #pragma GCC diagnostic pop
 
@@ -139,10 +140,9 @@ void stlExport_c::cb_Update3DView(void)
 static void cb_stlFileChooser_stub(Fl_Widget* /*o*/, void* v) { ((stlExport_c*)(v))->cb_FileChooser(); }
 void stlExport_c::cb_FileChooser(void)
 {
-  char curFile[500];
-  snprintf(curFile, 500, "%s/%s", Pname->value(), Fname->value());
+  const std::string curFile = std::string(Pname->value()) + "/" + Fname->value();
 
-  const char * f = bt_file_chooser_save("Choose STL File to write", "STL Files\t*.stl", curFile);
+  const char * f = bt_file_chooser_save("Choose STL File to write", "STL Files\t*.stl", curFile.c_str());
 
   if (f)
   {
@@ -151,20 +151,7 @@ void stlExport_c::cb_FileChooser(void)
     if (div)
     {
       Fname->value(div+1);
-
-      int i = 0;
-      while (true)
-      {
-        curFile[i] = f[i];
-        i++;
-        if (f[i] == 0) break;
-        if (i >= 499) break;
-        if (div == f+i) break;
-      }
-
-      curFile[i] = 0;
-
-      Pname->value(curFile);
+      Pname->value(std::string(f, div).c_str());
     }
 
   }
@@ -381,7 +368,7 @@ stlExport_c::stlExport_c(puzzle_c * p, const std::string & puzzleFile) : LFl_Dou
 
 void stlExport_c::exportSTL(int shape)
 {
-  char name[1000];
+  std::string name;
 
   voxel_c *v = puzzle->getShape(shape);
 
@@ -389,14 +376,13 @@ void stlExport_c::exportSTL(int shape)
 
   stl->setBinaryMode(Binary->value() != 0);
 
-  if (Pname->value() && Pname->value()[0] && Pname->value()[strlen(Pname->value())-1] != '/') {
-      snprintf(name, 1000, "%s/%s", Pname->value(), Fname->value());
-  } else {
-      snprintf(name, 1000, "%s%s", Pname->value(), Fname->value());
-  }
+  if (Pname->value() && Pname->value()[0] && Pname->value()[strlen(Pname->value())-1] != '/')
+    name = std::string(Pname->value()) + "/" + Fname->value();
+  else
+    name = std::string(Pname->value()) + Fname->value();
 
   // Native save dialogs already confirm overwrite; still ask for a typed path.
-  if (fileExists(name))
+  if (fileExists(name.c_str()))
   {
     if (fl_choice("File exists overwrite?", "Cancel", "Overwrite", 0) == 0)
     {
@@ -405,7 +391,7 @@ void stlExport_c::exportSTL(int shape)
   }
 
   try {
-    stl->write(name, *v);
+    stl->write(name.c_str(), *v);
   }
 
   catch (stlException_c e) {

@@ -32,7 +32,7 @@
 #include <FL/Fl.H>
 #pragma GCC diagnostic pop
 
-#include <time.h>
+#include <chrono>
 #include <string.h>
 
 #include "../lib/bt_assert.h"
@@ -54,25 +54,28 @@ static void handleSystemOpen(const char * filename) {
     g_ui->openFromSystem(filename);
 }
 
-class my_Fl : public Fl {
+/* The solver display, autosave and the end of a solve are all picked up by
+ * mainWindow_c::update, called every half second for as long as the program
+ * runs. It is called from here, not from an FLTK timeout, so that an
+ * assert_exception it throws reaches the rescue save in main without
+ * unwinding through the system's event loop. */
+static int runWithUpdates(mainWindow_c * ui) {
 
-public:
+  const auto period = std::chrono::milliseconds(500);
+  auto next = std::chrono::steady_clock::now() + period;
 
-  static int run(mainWindow_c * ui) {
-
-    time_t start = time(0);
-
-    while (Fl::first_window()) {
-      wait(0.5);
-      if (time(0)-start >= 1) {
-        ui->update();
-        start = time(0);
-      }
+  while (Fl::first_window()) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next) {
+      ui->update();
+      next = std::chrono::steady_clock::now() + period;
+      continue;
     }
-
-    return 0;
+    Fl::wait(std::chrono::duration<double>(next - now).count());
   }
-};
+
+  return 0;
+}
 
 int main(int argc, char ** argv) {
 
@@ -112,7 +115,7 @@ int main(int argc, char ** argv) {
 
     ui->show(argc, argv);
 
-    res = my_Fl::run(ui);
+    res = runWithUpdates(ui);
   }
 
   catch (assert_exception& a) {

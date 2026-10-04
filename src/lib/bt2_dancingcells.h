@@ -38,8 +38,9 @@ public:
   unsigned long getIterations(void) const { return iterations; }
   unsigned int depth(void) const { return activeFrames; }
 
-  /* Clone current remaining matrix/stack, then advance this instance past the
-   * current branch (Andreas MCCSolver::split + forwardToNextBranch). */
+  /* Hand part of the search still to do to a copy, which the caller owns;
+   * null when there is nothing to hand over. The two searches never visit
+   * the same branch. */
   bt2Cells_c * split(void);
 
   const std::vector<unsigned int> & currentRowIds(void) const { return solRows; }
@@ -53,9 +54,11 @@ private:
     unsigned int len;
   };
 
+  /* One item of one option: where it sits in that item's part of SET. */
   struct Node {
     unsigned int item;
     unsigned int loc;
+    unsigned int option;
   };
 
   struct Save {
@@ -82,6 +85,9 @@ private:
   std::vector<Node> nodes;
   std::vector<unsigned int> itemBase;
   std::vector<unsigned int> itemSize;
+  /* Each item's options, as node numbers, the live ones first (a sparse
+   * set). Holding the node, not the option, lets an option be hidden from
+   * an item without searching the option for that item. */
   std::vector<unsigned int> SET;
   std::vector<unsigned int> itemOrder;
   std::vector<unsigned int> itemIndex;
@@ -100,6 +106,11 @@ private:
   solution_fn cbFn;
   unsigned long iterations;
 
+  /* Scratch lists, kept so the search allocates nothing per step. */
+  std::vector<unsigned int> othersBuf;
+  std::vector<unsigned int> optsBuf;
+  std::vector<unsigned int> forceBuf;
+
   bool isPrimary(unsigned int item) const { return item < nPrimary; }
   bool isActiveItem(unsigned int item) const { return itemIndex[item] < active; }
 
@@ -107,8 +118,10 @@ private:
   void storeSizes(Save & s) const;
   void restoreSizes(const Save & s);
 
-  bool hideFromItem(unsigned int opt, unsigned int item);
-  bool discardOption(unsigned int opt);
+  bool hideNode(unsigned int node);
+  /* No item has this number: discardOption then hides from them all. */
+  static const unsigned int NO_ITEM = 0xFFFFFFFFu;
+  bool discardOption(unsigned int opt, unsigned int covering = NO_ITEM);
   bool selectOption(unsigned int opt);
 
   bool findBranch(std::vector<unsigned int> & force, unsigned int & chosen, bool & contradiction);
@@ -118,10 +131,9 @@ private:
   void popFrame(void);
   void convertSolution(void);
   void emitSolution(void);
-  void forwardToNextBranch(void);
 
   unsigned int firstOptionOf(unsigned int item) const {
-    return SET[itemBase[item]];
+    return nodes[SET[itemBase[item]]].option;
   }
 };
 

@@ -142,7 +142,7 @@ void solveThread_c::runStacking(void) {
     search.autosaveMinutes = (parameters & PAR_PANEX_NO_AUTOSAVE) ? 0 : 20;
     /* Time used counts every run of a saved search, before this one too. */
     if (search.resume)
-      puzzle.addTime((unsigned long)panex::savedSeconds(puzzle));
+      puzzle.addTimeMs(panex::savedMs(puzzle));
     std::unique_ptr<separation_c> path = panex::solve(puzzle, search);
     puzzle.addTimeMs(getTimeMs());
     puzzle.incNumAssemblies();
@@ -218,6 +218,14 @@ void solveThread_c::run(void){
      */
     assembler_c * a = 0;
 
+    /* However run ends, withdraw the assembler before anything can free it:
+     * the GUI may remove the problem's solutions, and with them its
+     * assembler, as soon as this thread has stopped. */
+    struct withdraw_c {
+      solveThread_c * t;
+      ~withdraw_c() { t->publishAssembler(nullptr); }
+    } withdraw{this};
+
     /* first check, if there is an assembler available with the
      * problem, if there is one take that
      */
@@ -241,7 +249,7 @@ void solveThread_c::run(void){
 
     if (puzzle.getAssembler()) {
       a = puzzle.getAssembler();
-      assm.store(a, std::memory_order_release);
+      publishAssembler(a);
       a->applySolutionFilterFlags(parameters & PAR_KEEP_MIRROR, parameters & PAR_KEEP_ROTATIONS, parameters & PAR_COMPLETE_ROTATIONS);
     }
     else {
@@ -249,46 +257,29 @@ void solveThread_c::run(void){
       /* otherwise we have to create a new one
        */
       action.store(ACT_PREPARATION, std::memory_order_relaxed);
-      statsPhase = PHASE_PREPARE;
-      phaseOrigin = std::chrono::steady_clock::now();
+      beginPhase(PHASE_PREPARE);
       std::unique_ptr<assembler_c> new_assm = puzzle.getPuzzle().getGridType()->findAssembler(puzzle, false, solverType);
       a = new_assm.get();
-      assm.store(a, std::memory_order_release);
+      publishAssembler(a);
 
       errState = a->createMatrix(parameters & PAR_KEEP_MIRROR, parameters & PAR_KEEP_ROTATIONS, parameters & PAR_COMPLETE_ROTATIONS, strictColors);
-      prepareMs.store(elapsedMs(phaseOrigin), std::memory_order_relaxed);
-      statsPhase = PHASE_NONE;
+      endPhase(prepareMs);
       if (errState != assembler_c::ERR_NONE) {
-
         errParam = a->getErrorsParam();
-
+        publishAssembler(nullptr);  // before new_assm goes
         action.store(ACT_ERROR, std::memory_order_relaxed);
-
-        assm.store(0, std::memory_order_release);
         return;
       }
 
-      if (stopPressed.load(std::memory_order_relaxed)) {
-        assm.store(0, std::memory_order_release);
-        action.store(ACT_PAUSING, std::memory_order_relaxed);
-        return;
-      }
-
-      if (parameters & PAR_REDUCE) {
-
-        if (!stopPressed.load(std::memory_order_relaxed))
-          action.store(ACT_REDUCE, std::memory_order_relaxed);
-
-        statsPhase = PHASE_REDUCE;
-        phaseOrigin = std::chrono::steady_clock::now();
-        if (!stopPressed.load(std::memory_order_relaxed))
-          a->reduce();
-        reduceMs.store(elapsedMs(phaseOrigin), std::memory_order_relaxed);
-        statsPhase = PHASE_NONE;
+      if (!stopPressed.load(std::memory_order_relaxed) && (parameters & PAR_REDUCE)) {
+        action.store(ACT_REDUCE, std::memory_order_relaxed);
+        beginPhase(PHASE_REDUCE);
+        a->reduce();
+        endPhase(reduceMs);
       }
 
       if (stopPressed.load(std::memory_order_relaxed)) {
-        assm.store(0, std::memory_order_release);
+        publishAssembler(nullptr);  // before new_assm goes
         action.store(ACT_PAUSING, std::memory_order_relaxed);
         return;
       }
@@ -298,14 +289,14 @@ void solveThread_c::run(void){
        * also restores the assembler state to a state that might
        * be saved within the problem
        */
-      assm.store(0, std::memory_order_release);
+      publishAssembler(nullptr);
       errState = puzzle.setAssembler(std::move(new_assm));
       if (errState != assembler_c::ERR_NONE) {
         action.store(ACT_ERROR, std::memory_order_relaxed);
         return;
       }
       a = puzzle.getAssembler();
-      assm.store(a, std::memory_order_release);
+      publishAssembler(a);
     }
 
     if (return_after_prep) {
@@ -319,8 +310,7 @@ void solveThread_c::run(void){
         puzzle.getPuzzle().getShape(i)->initHotspot();
 
       action.store(ACT_ASSEMBLING, std::memory_order_relaxed);
-      statsPhase = PHASE_ASSEMBLE;
-      phaseOrigin = std::chrono::steady_clock::now();
+      beginPhase(PHASE_ASSEMBLE);
       /* What a paused run had not finished with comes first: assemblies it
        * had counted go straight to be taken apart, the rest as if just found. */
       for (problem_c::pendingAssembly_c & p : puzzle.takePending()) {
@@ -342,21 +332,19 @@ void solveThread_c::run(void){
 #endif
       }
       if (solverType == SOLVER_BT2) {
-        assemblerThreadCount = bt2ChooseAssemblerWorkers(a);
-        assemblerThreadCount = bt2Assemble(a, this, assemblerThreadCount);
+        const unsigned int workers = bt2ChooseAssemblerWorkers(a);
+        assemblerThreadCount.store(workers, std::memory_order_relaxed);
+        assemblerThreadCount.store(bt2Assemble(a, this, workers), std::memory_order_relaxed);
       } else {
-        assemblerThreadCount = a->getEffectiveThreads();
+        assemblerThreadCount.store(a->getEffectiveThreads(), std::memory_order_relaxed);
         a->assemble(this);
       }
-      assemblyMs.store(elapsedMs(phaseOrigin), std::memory_order_relaxed);
-      statsPhase = PHASE_NONE;
+      endPhase(assemblyMs);
 
       if (!stopPressed.load(std::memory_order_relaxed)) {
-        statsPhase = PHASE_DRAIN;
-        phaseOrigin = std::chrono::steady_clock::now();
+        beginPhase(PHASE_DRAIN);
         flushDisassemblyQueue();
-        drainMs.store(elapsedMs(phaseOrigin), std::memory_order_relaxed);
-        statsPhase = PHASE_NONE;
+        endPhase(drainMs);
       } else {
         /* An assembly queued just as Pause emptied the queue would otherwise
          * wait there for workers that are gone: keep it for the next run. */
@@ -387,6 +375,7 @@ void solveThread_c::run(void){
   catch (assert_exception & a) {
 
     ae = a;
+    publishAssembler(nullptr);
     action.store(ACT_ASSERT, std::memory_order_relaxed);
     if (puzzle.getAssembler())
       puzzle.removeAllSolutions();
@@ -436,8 +425,6 @@ solutionLimit(10),
 solutionDrop(1),
 stopPressed(false),
 return_after_prep(false),
-assm(0),
-assemblerThreadCount(1),
 disasmWorkerStop(false),
 disasmWorkerCount(0),
 disasmPending(0),
@@ -449,7 +436,6 @@ prepareMs(0),
 reduceMs(0),
 assemblyMs(0),
 drainMs(0),
-statsPhase(PHASE_NONE),
 disasmCreepActive(false),
 disasmCreepShown(0)
 {
@@ -668,7 +654,8 @@ void solveThread_c::processDisassembly(disasmTask_c & task, int _solutionAction,
   std::unique_ptr<assembly_c> a = std::move(task.assembly);
 
   if (a->placementCount() <= 1) {
-    puzzle.addSolution(a.release(), task.assemblyNumber);
+    if (_solutionAction == SOL_DISASM)
+      puzzle.addSolution(a.release(), task.assemblyNumber);
     puzzle.incNumSolutions();
     return;
   }
@@ -695,91 +682,46 @@ void solveThread_c::processDisassembly(disasmTask_c & task, int _solutionAction,
   {
     problem_c::SolutionsLock solutionsLock(puzzle);
 
-    bool ins = false;
+    /* Save the solution at pos (the end by default), with its take-apart or
+     * only the summary of it. */
+    auto add = [&](unsigned int pos = 0xFFFFFFFF) {
+      if (parameters & PAR_DROP_DISASSEMBLIES)
+        puzzle.addSolution(a.release(), new separationInfo_c(s.get()), task.assemblyNumber, task.solutionNumber, pos);
+      else
+        puzzle.addSolution(a.release(), s.release(), task.assemblyNumber, task.solutionNumber, pos);
+    };
+    /* The sorted modes keep the best solutionLimit: drop the last. */
+    auto trim = [&]() {
+      if (solutionLimit && (puzzle.getNumberOfSavedSolutions() > solutionLimit))
+        puzzle.removeSolution(puzzle.getNumberOfSavedSolutions()-1);
+    };
 
     switch(sortMethod) {
       case SRT_COMPLETE_MOVES:
-        {
-          unsigned int lev = s->sumMoves();
-          unsigned int insertPos = findInsertIndexByMoves(lev);
-
-          if (insertPos < puzzle.getNumberOfSavedSolutions()) {
-            if (parameters & PAR_DROP_DISASSEMBLIES) {
-              puzzle.addSolution(a.release(), new separationInfo_c(s.get()), task.assemblyNumber, task.solutionNumber, insertPos);
-            } else
-              puzzle.addSolution(a.release(), s.release(), task.assemblyNumber, task.solutionNumber, insertPos);
-            ins = true;
-          }
-
-          if (!ins) {
-            if (parameters & PAR_DROP_DISASSEMBLIES) {
-              puzzle.addSolution(a.release(), new separationInfo_c(s.get()), task.assemblyNumber, task.solutionNumber);
-            } else
-              puzzle.addSolution(a.release(), s.release(), task.assemblyNumber, task.solutionNumber);
-          }
-
-          if (solutionLimit && (puzzle.getNumberOfSavedSolutions() > solutionLimit))
-            puzzle.removeSolution(puzzle.getNumberOfSavedSolutions()-1);
-        }
+        add(findInsertIndexByMoves(s->sumMoves()));
+        trim();
         break;
       case SRT_ROTATIONS:
-        {
-          unsigned int lev = s->sumRotations();
-          unsigned int insertPos = findInsertIndexByRotations(lev);
-
-          if (insertPos < puzzle.getNumberOfSavedSolutions()) {
-            if (parameters & PAR_DROP_DISASSEMBLIES) {
-              puzzle.addSolution(a.release(), new separationInfo_c(s.get()), task.assemblyNumber, task.solutionNumber, insertPos);
-            } else
-              puzzle.addSolution(a.release(), s.release(), task.assemblyNumber, task.solutionNumber, insertPos);
-            ins = true;
-          }
-
-          if (!ins) {
-            if (parameters & PAR_DROP_DISASSEMBLIES) {
-              puzzle.addSolution(a.release(), new separationInfo_c(s.get()), task.assemblyNumber, task.solutionNumber);
-            } else
-              puzzle.addSolution(a.release(), s.release(), task.assemblyNumber, task.solutionNumber);
-          }
-
-          if (solutionLimit && (puzzle.getNumberOfSavedSolutions() > solutionLimit))
-            puzzle.removeSolution(puzzle.getNumberOfSavedSolutions()-1);
-        }
+        add(findInsertIndexByRotations(s->sumRotations()));
+        trim();
         break;
       case SRT_LEVEL:
         {
+          unsigned int pos = 0xFFFFFFFF;
           for (unsigned int i = 0; i < puzzle.getNumberOfSavedSolutions(); i++) {
-
             const disassembly_c * s2 = puzzle.getSavedSolution(i)->getDisassemblyInfo();
-
             if (s2 && (s2->compare(s.get()) < 0)) {
-              if (parameters & PAR_DROP_DISASSEMBLIES) {
-                puzzle.addSolution(a.release(), new separationInfo_c(s.get()), task.assemblyNumber, task.solutionNumber, i);
-              } else
-                puzzle.addSolution(a.release(), s.release(), task.assemblyNumber, task.solutionNumber, i);
-              ins = true;
+              pos = i;
               break;
             }
           }
-
-          if (!ins)  {
-            if (parameters & PAR_DROP_DISASSEMBLIES) {
-              puzzle.addSolution(a.release(), new separationInfo_c(s.get()), task.assemblyNumber, task.solutionNumber);
-            } else
-              puzzle.addSolution(a.release(), s.release(), task.assemblyNumber, task.solutionNumber);
-          }
-
-          if (solutionLimit && (puzzle.getNumberOfSavedSolutions() > solutionLimit))
-            puzzle.removeSolution(puzzle.getNumberOfSavedSolutions()-1);
+          add(pos);
+          trim();
         }
         break;
       case SRT_UNSORT:
-        if (task.solutionNumber % (solutionDrop * dropMultiplicator) == 0) {
-          if (parameters & PAR_DROP_DISASSEMBLIES) {
-            puzzle.addSolution(a.release(), new separationInfo_c(s.get()), task.assemblyNumber, task.solutionNumber);
-          } else
-            puzzle.addSolution(a.release(), s.release(), task.assemblyNumber, task.solutionNumber);
-        }
+        if (task.solutionNumber % (solutionDrop * dropMultiplicator) == 0)
+          add();
         break;
     }
   }
@@ -792,12 +734,13 @@ void solveThread_c::processDisassembly(disasmTask_c & task, int _solutionAction,
 void solveThread_c::applyLiveSort(void) {
 
   /* keep the list sorted by the method the user picked in the GUI, if any, so
-   * the sort stays applied as new solutions arrive. The list is bounded by the
-   * solution limit, so this is cheap. sortSolutions locks the list itself.
+   * the sort stays applied as new solutions arrive. Only the new solutions
+   * are placed, so this stays cheap however long the list grows. It locks
+   * the list itself.
    */
   int ls = liveSort.load(std::memory_order_relaxed);
   if (ls >= 0 && puzzle.getNumberOfSavedSolutions() >= 2)
-    puzzle.sortSolutions(ls);
+    puzzle.keepSolutionsSorted(ls);
 }
 
 void solveThread_c::trimSavedSolutions(int _solutionAction) {
@@ -917,7 +860,8 @@ bool solveThread_c::assembly(std::unique_ptr<assembly_c> a) {
   case SOL_COUNT_DISASM:
     {
       if (a->placementCount() <= 1) {
-        puzzle.addSolution(a.release());
+        if (_solutionAction == SOL_DISASM)
+          puzzle.addSolution(a.release());
         puzzle.incNumSolutions();
         break;
       }
@@ -956,8 +900,9 @@ void solveThread_c::stopInternal(void) {
   stopPressed.store(true, std::memory_order_release);
   action.store(ACT_WAIT_TO_STOP, std::memory_order_relaxed);
 
-  if (puzzle.getAssembler())
-    puzzle.getAssembler()->stop();
+  /* The assembler as published by the worker: the GUI thread must not read
+   * the problem's, which the worker may be replacing. */
+  withAssembler([](assembler_c * running) { running->stop(); });
 
   cancelDisassemblyWork();
 }
@@ -972,15 +917,15 @@ void solveThread_c::stopSoft(void) {
   const unsigned int act = action.load(std::memory_order_relaxed);
   if (act != ACT_ASSEMBLING && act != ACT_DISASSEMBLING)
     return;
-  if (puzzle.getAssembler())
-    puzzle.getAssembler()->stop();
+  /* The assembler as published by the worker: the GUI thread must not read
+   * the problem's, which the worker may be replacing. */
+  withAssembler([](assembler_c * running) { running->stop(); });
 }
 
 bool solveThread_c::start(bool stop_after_prep) {
 
   stopPressed.store(false, std::memory_order_relaxed);
   return_after_prep = stop_after_prep;
-  startTime = time(0);
   statsOrigin = std::chrono::steady_clock::now();
 
   dropMultiplicator = 1;
@@ -1000,7 +945,8 @@ bool solveThread_c::start(bool stop_after_prep) {
       a = puzzle.getNumSolutions();
   }
 
-  while (a+solutionDrop > 2 * solutionLimit * solutionDrop) {
+  /* With no limit every solution is kept: nothing to thin out. */
+  while (solutionLimit && a+solutionDrop > 2 * solutionLimit * solutionDrop) {
     dropMultiplicator *= 2;
     a = (a+1) / 2;
   }
@@ -1012,22 +958,40 @@ bool solveThread_c::start(bool stop_after_prep) {
   return thread_c::start();
 }
 
+void solveThread_c::publishAssembler(assembler_c * a) {
+  std::lock_guard<std::mutex> lock(assmMutex);
+  if (!a)
+    if (assembler_c * old = assm.load(std::memory_order_relaxed))
+      lastFinished.store(old->getFinished(), std::memory_order_relaxed);
+  assm.store(a, std::memory_order_release);
+}
+
+void solveThread_c::beginPhase(phase_e ph) {
+  phaseOrigin.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+  statsPhase.store(ph, std::memory_order_release);
+}
+
+void solveThread_c::endPhase(std::atomic<unsigned long long> & total) {
+  const std::chrono::steady_clock::time_point t0{
+      std::chrono::steady_clock::duration(phaseOrigin.load(std::memory_order_relaxed))};
+  total.store(elapsedMs(t0), std::memory_order_relaxed);
+  statsPhase.store(PHASE_NONE, std::memory_order_release);
+}
+
+float solveThread_c::assemblerFinished(void) const {
+  float f = lastFinished.load(std::memory_order_relaxed);
+  withAssembler([&f](assembler_c * a) { f = a->getFinished(); });
+  return f;
+}
+
 unsigned int solveThread_c::currentActionParameter(void) {
 
-  switch(action.load(std::memory_order_relaxed)) {
-  case ACT_REDUCE:
-  case ACT_PREPARATION:
-    {
-      assembler_c * a = assm.load(std::memory_order_acquire);
-      if (a)
-        return a->getReducePiece();
-      else
-        return 0;
-    }
-
-  default:
+  const unsigned int act = action.load(std::memory_order_relaxed);
+  if (act != ACT_REDUCE && act != ACT_PREPARATION)
     return 0;
-  }
+  unsigned int piece = 0;
+  withAssembler([&piece](assembler_c * a) { piece = a->getReducePiece(); });
+  return piece;
 }
 
 namespace {
@@ -1166,7 +1130,7 @@ solveStats_c solveThread_c::getStats(void) const {
   s.hardwareThreads = std::thread::hardware_concurrency();
   if (s.hardwareThreads < 1)
     s.hardwareThreads = 1;
-  s.assemblerThreads = assemblerThreadCount;
+  s.assemblerThreads = assemblerThreadCount.load(std::memory_order_relaxed);
   if (s.assemblerThreads < 1)
     s.assemblerThreads = 1;
   s.disasmWorkers = disasmWorkerCount.load(std::memory_order_relaxed);
@@ -1179,23 +1143,25 @@ solveStats_c solveThread_c::getStats(void) const {
   s.disasmWorkMs = disasmMsTotal.load(std::memory_order_relaxed);
   s.avgDisasmSeconds = getAverageDisassemblySeconds();
 
-  if (assembler_c * a = assm.load(std::memory_order_acquire)) {
+  withAssembler([&s](assembler_c * a) {
     s.dlxIterations = a->getIterations();
     s.assemblyProgress = a->getFinished();
-  }
+  });
 
+  const phase_e phase = statsPhase.load(std::memory_order_acquire);
   unsigned long long extra = 0;
-  if (statsPhase != PHASE_NONE)
-    extra = elapsedMs(phaseOrigin);
+  if (phase != PHASE_NONE)
+    extra = elapsedMs(std::chrono::steady_clock::time_point{
+        std::chrono::steady_clock::duration(phaseOrigin.load(std::memory_order_relaxed))});
 
   s.prepareMs = prepareMs.load(std::memory_order_relaxed);
   s.reduceMs = reduceMs.load(std::memory_order_relaxed);
   s.assemblyMs = assemblyMs.load(std::memory_order_relaxed);
   s.drainMs = drainMs.load(std::memory_order_relaxed);
-  if (statsPhase == PHASE_PREPARE) s.prepareMs += extra;
-  else if (statsPhase == PHASE_REDUCE) s.reduceMs += extra;
-  else if (statsPhase == PHASE_ASSEMBLE) s.assemblyMs += extra;
-  else if (statsPhase == PHASE_DRAIN) s.drainMs += extra;
+  if (phase == PHASE_PREPARE) s.prepareMs += extra;
+  else if (phase == PHASE_REDUCE) s.reduceMs += extra;
+  else if (phase == PHASE_ASSEMBLE) s.assemblyMs += extra;
+  else if (phase == PHASE_DRAIN) s.drainMs += extra;
 
   s.elapsedMs = elapsedMs(statsOrigin);
 

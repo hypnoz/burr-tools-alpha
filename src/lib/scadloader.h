@@ -39,11 +39,12 @@
  * Either returns a puzzle, or nil when failed / nothing usable was found.
  */
 
+#include <memory>
 #include <iostream>
 
 class puzzle_c;
 
-puzzle_c * loadOpenScadPuzzle(std::istream * str);
+std::unique_ptr<puzzle_c> loadOpenScadPuzzle(std::istream * str);
 
 /* Write puzzlecad OpenSCAD using the MagellanTIC.scad layout as a template.
  * sourceName is placed in the header comment. problemIndex selects which

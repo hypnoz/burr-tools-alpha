@@ -569,12 +569,12 @@ static void resizeSpace(bool toAll, const ChangeSize *changeSize, puzzle_c * puz
       puzzle->getShape(s)->resize(nx, ny, nz, 0);
     }
 
-  } else
+  }
 
-    // we always do this, is may be that the shape is not changed in the loop above because
-    // that loop and only increase the size, so smaller sizes for the selected shape must be done
-    // here
-    puzzle->getShape(shape)->resize(
+  /* Always, as the comment upstream said (the code had an `else`): the loop
+   * above only grows shapes, so shrinking the selected one, with "apply to
+   * all" on too, happens here. */
+  puzzle->getShape(shape)->resize(
         factor*changeSize->getX(), factor*changeSize->getY(), factor*changeSize->getZ(), 0);
 }
 

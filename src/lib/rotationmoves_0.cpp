@@ -29,6 +29,7 @@
 #include "symmetries.h"
 #include "voxel.h"
 
+#include <cstdlib>
 #include <vector>
 
 /* Cube orientation indices for ±90° about X/Y/Z (see tabs_0/rotmatrix.inc) */
@@ -79,23 +80,17 @@ static bool rotateDoubledPoint(int * x, int * y, int * z,
   return true;
 }
 
-static bool rotateCell(const rotationRules_c::cell_t & cell,
-                       const rotationRules_c::pivot_t & pivot,
-                       unsigned int axis,
-                       unsigned int sense,
-                       rotationRules_c::cell_t & out) {
-
-  int x = cell.x, y = cell.y, z = cell.z;
-  if (!rotateDoubledPoint(&x, &y, &z, pivot, axis, sense))
-    return false;
-  out = rotationRules_c::cell_t(x, y, z);
-  return true;
+/* BURRTOOLS_NO_ROT_FAST=1: check every candidate from scratch with
+ * rotationRules_c::allowRotation, as before, for A/B runs. The moves found
+ * and their order are the same either way. */
+static bool rotFast(void) {
+  static const bool on = getenv("BURRTOOLS_NO_ROT_FAST") == nullptr;
+  return on;
 }
 
 } // namespace
 
 rotationMoves_0_c::rotationMoves_0_c(const problem_c & puz, movementCache_c * cache_) :
-  problem(puz),
   cache(cache_),
   sym(puz.getPuzzle().getGridType()->getSymmetries()),
   searchnode(0),
@@ -104,7 +99,8 @@ rotationMoves_0_c::rotationMoves_0_c(const problem_c & puz, movementCache_c * ca
   nextpivot(0),
   nextaxis(0),
   nextsense(0),
-  active(false)
+  active(false),
+  anchor(getenv("BURRTOOLS_NO_ROT_ANCHOR") == nullptr)
 {
 }
 
@@ -177,24 +173,34 @@ void rotationMoves_0_c::collectWorldCells(unsigned int pieceIdx, std::vector<rot
           out.push_back(rotationRules_c::cell_t(px - hx + (int)x, py - hy + (int)y, pz - hz + (int)z));
 }
 
-void rotationMoves_0_c::rebuildPivotCells(unsigned int subsetMask, unsigned int axis) {
+/* The moving subset's cells and everyone else's, from the node's piece
+ * cells. Once per subset: they are the same for every axis, pivot and sense. */
+void rotationMoves_0_c::loadSubset(unsigned int subsetMask) {
+
+  subsetStart.clear();
+  subsetOccupied.clear();
+  for (unsigned int i = 0; i < pieceCells.size(); i++) {
+    std::vector<rotationRules_c::cell_t> & to = (subsetMask & (1u << i)) ? subsetStart : subsetOccupied;
+    to.insert(to.end(), pieceCells[i].begin(), pieceCells[i].end());
+  }
+
+  if (rotFast() && subsetStart.size() > 1)
+    rules.setBodies(subsetOccupied, subsetStart);
+}
+
+void rotationMoves_0_c::rebuildPivotCells(unsigned int axis) {
 
   pivotCells.clear();
 
-  std::vector<rotationRules_c::cell_t> moving;
-  moving.reserve(64);
+  const std::vector<rotationRules_c::cell_t> & moving = subsetStart;
 
-  for (unsigned int i = 0; i < pieces->size(); i++) {
-    if (!(subsetMask & (1u << i))) continue;
-    if (searchnode->is_piece_removed(i)) continue;
+  /* Nothing to turn, or a lone unit cube, which cannot free itself by
+   * spinning in place. */
+  if (moving.size() <= 1)
+    return;
 
-    std::vector<rotationRules_c::cell_t> cells;
-    collectWorldCells(i, cells);
-    for (unsigned int c = 0; c < cells.size(); c++)
-      moving.push_back(cells[c]);
-  }
-
-  if (moving.empty())
+  /* Pinched or walled in on this axis whatever the pivot: no candidates. */
+  if (rotFast() && rules.preparedAxisBlocked(axis))
     return;
 
   int umin, umax, vmin, vmax, amin;
@@ -234,6 +240,10 @@ void rotationMoves_0_c::rebuildPivotCells(unsigned int subsetMask, unsigned int 
 
   for (int du = du0; du <= du1; du++) {
     for (int dv = dv0; dv <= dv1; dv++) {
+      /* A quarter turn lands on the grid only about a cell centre or a
+       * corner: in-plane coordinates both even or both odd. */
+      if (rotFast() && ((du ^ dv) & 1))
+        continue;
       rotationRules_c::pivot_t p;
       if (axis == 0) { p.hx = da; p.hy = du; p.hz = dv; }
       else if (axis == 1) { p.hx = du; p.hy = da; p.hz = dv; }
@@ -251,59 +261,51 @@ disassemblerNode_c * rotationMoves_0_c::tryCurrentCandidate(void) {
   const unsigned int subsetMask = nextsubset;
   rotationRules_c::pivot_t pivot = pivotCells[nextpivot];
 
-  std::vector<rotationRules_c::cell_t> combinedStart;
-  combinedStart.reserve(64);
+  if (rotFast()) {
 
-  for (unsigned int i = 0; i < pieces->size(); i++) {
-    if (!(subsetMask & (1u << i))) continue;
-    if (searchnode->is_piece_removed(i)) continue;
-
-    std::vector<rotationRules_c::cell_t> cells;
-    collectWorldCells(i, cells);
-    for (unsigned int c = 0; c < cells.size(); c++)
-      combinedStart.push_back(cells[c]);
-  }
-
-  if (combinedStart.empty())
-    return 0;
-
-  /* A lone unit cube cannot free itself by spinning in place. */
-  if (combinedStart.size() == 1)
-    return 0;
-
-  std::vector<rotationRules_c::cell_t> combinedEnd;
-  combinedEnd.reserve(combinedStart.size());
-
-  for (unsigned int i = 0; i < combinedStart.size(); i++) {
-    rotationRules_c::cell_t endCell;
-    if (!rotateCell(combinedStart[i], pivot, nextaxis, nextsense, endCell))
+    if (!rules.allowPrepared(pivot, nextaxis, nextsense, true))
       return 0;
-    combinedEnd.push_back(endCell);
+
+  } else {
+
+    const std::vector<rotationRules_c::cell_t> & combinedStart = subsetStart;
+
+    std::vector<rotationRules_c::cell_t> combinedEnd;
+    combinedEnd.reserve(combinedStart.size());
+
+    for (unsigned int i = 0; i < combinedStart.size(); i++) {
+      rotationRules_c::cell_t endCell;
+      if (!rotationRules_c::rotateCell(combinedStart[i], pivot, nextaxis, nextsense, endCell))
+        return 0;
+      combinedEnd.push_back(endCell);
+    }
+
+    if (!rules.allowRotation(subsetOccupied, combinedStart, combinedEnd, pivot, nextaxis, nextsense))
+      return 0;
   }
 
-  std::vector<rotationRules_c::cell_t> occupied;
-  for (unsigned int i = 0; i < pieces->size(); i++) {
-    if (subsetMask & (1u << i)) continue;
-    if (searchnode->is_piece_removed(i)) continue;
-
-    std::vector<rotationRules_c::cell_t> cells;
-    collectWorldCells(i, cells);
-    for (unsigned int c = 0; c < cells.size(); c++)
-      occupied.push_back(cells[c]);
+  /* Turning a subset one way about a pivot and turning everything else the
+   * other way about it leave the pieces in the same places relative to each
+   * other. With anchor set the node keeps the first piece's orientation
+   * fixed and turns whichever side does not hold it, so an arrangement is
+   * one node however the whole puzzle is turned in space, not up to 24. The
+   * rules above still judged the subset as it was asked. */
+  unsigned int moveMask = subsetMask;
+  unsigned int sense = nextsense;
+  if (anchor && (subsetMask & 1u)) {
+    moveMask = presentMask & ~subsetMask;
+    sense = 1 - nextsense;
   }
-
-  if (!rules.allowRotation(occupied, combinedStart, combinedEnd, pivot, nextaxis, nextsense))
-    return 0;
 
   unsigned int primaryPiece = 0;
-  while (primaryPiece < pieces->size() && !(subsetMask & (1u << primaryPiece)))
+  while (primaryPiece < pieces->size() && !(moveMask & (1u << primaryPiece)))
     primaryPiece++;
   bt_assert(primaryPiece < pieces->size());
 
-  unsigned char rotId = rotationTransformId(nextaxis, nextsense);
+  unsigned char rotId = rotationTransformId(nextaxis, sense);
   bool changed = false;
 
-  unsigned int dir = ROTATION_DIR_BASE + nextaxis * 2 + nextsense;
+  unsigned int dir = ROTATION_DIR_BASE + nextaxis * 2 + sense;
   disassemblerNode_c * n = new disassemblerNode_c(pieces->size(), searchnode, (int)dir, 1);
   n->setRotationInfo(primaryPiece, pivot.hx, pivot.hy, pivot.hz);
 
@@ -317,14 +319,14 @@ disassemblerNode_c * rotationMoves_0_c::tryCurrentCandidate(void) {
       continue;
     }
 
-    if (subsetMask & (1u << i)) {
+    if (moveMask & (1u << i)) {
       unsigned char oldTrans = (unsigned char)searchnode->getTrans(i);
       unsigned char newTrans = sym->transAdd(oldTrans, rotId);
 
       int px = searchnode->getX(i);
       int py = searchnode->getY(i);
       int pz = searchnode->getZ(i);
-      if (!rotateDoubled(&px, &py, &pz, pivot, nextaxis, nextsense)) {
+      if (!rotateDoubled(&px, &py, &pz, pivot, nextaxis, sense)) {
         if (n->decRefCount())
           delete n;
         return 0;
@@ -363,8 +365,22 @@ void rotationMoves_0_c::init_find(disassemblerNode_c * nd, const std::vector<uns
   nextsense = 0;
   active = pcs.size() > 0;
 
-  if (active)
-    rebuildPivotCells(nextsubset, nextaxis);
+  /* Each piece's cells at this node, once; a removed piece has none. */
+  pieceCells.resize(pcs.size());
+  presentMask = 0;
+  for (unsigned int i = 0; i < pcs.size(); i++) {
+    if (nd->is_piece_removed(i)) {
+      pieceCells[i].clear();
+    } else {
+      collectWorldCells(i, pieceCells[i]);
+      presentMask |= 1u << i;
+    }
+  }
+
+  if (active) {
+    loadSubset(nextsubset);
+    rebuildPivotCells(nextaxis);
+  }
 }
 
 disassemblerNode_c * rotationMoves_0_c::find(void) {
@@ -379,7 +395,7 @@ disassemblerNode_c * rotationMoves_0_c::find(void) {
     disassemblerNode_c * node = tryCurrentCandidate();
 
     nextsense++;
-    if (nextsense >= 2) {
+    if (nextsense >= 2 || pivotCells.empty()) {
       nextsense = 0;
       nextpivot++;
       if ((unsigned int)nextpivot >= pivotCells.size()) {
@@ -393,8 +409,9 @@ disassemblerNode_c * rotationMoves_0_c::find(void) {
             if (node) return node;
             return 0;
           }
+          loadSubset(nextsubset);
         }
-        rebuildPivotCells(nextsubset, nextaxis);
+        rebuildPivotCells(nextaxis);
       }
     }
 

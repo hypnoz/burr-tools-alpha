@@ -79,19 +79,42 @@ unsigned int bt2Assemble(assembler_c * assm, assembler_cb * callback,
     return 1;
   }
 
-  /* Peel root branches until the pool is full (Andreas split at depth). */
-  cloneList_t clones;
-  clones.reserve(workerCount - 1);
-  for (unsigned int i = 1; i < workerCount; i++) {
-    std::unique_ptr<assembler_c> c = assm->splitSearch();
-    if (!c)
+  /* Peel root branches until the pool is full (Andreas split at depth). A
+   * place left empty -- the search cannot be split while its first steps
+   * are forced -- is filled later by the stealing below. */
+  cloneList_t clones(workerCount - 1);
+  for (unsigned int i = 0; i < clones.size(); i++) {
+    clones[i] = assm->splitSearch();
+    if (!clones[i])
       break;
-    clones.push_back(std::move(c));
   }
 
-  assm->clearProgressPeers();
-  for (unsigned int i = 0; i < clones.size(); i++)
-    assm->addProgressPeer(clones[i].get());
+  /* Iterations of workers that finished and were replaced. */
+  unsigned long extra = 0;
+
+  auto setPeers = [&]() {
+    assm->clearProgressPeers();
+    for (unsigned int i = 0; i < clones.size(); i++)
+      if (clones[i])
+        assm->addProgressPeer(clones[i].get());
+  };
+  /* An idle place takes work from the busiest search. True when it got some. */
+  auto steal = [&](unsigned int i) {
+    if (clones[i] && !clones[i]->searchFinished())
+      return false;
+    assembler_c * src = busiestWorker(assm, clones);
+    if (!src)
+      return false;
+    std::unique_ptr<assembler_c> n = src->splitSearch();
+    if (!n)
+      return false;
+    if (clones[i])
+      extra += clones[i]->getIterations();
+    clones[i] = std::move(n);
+    return true;
+  };
+
+  setPeers();
 
   const unsigned int slice = 8000;
 
@@ -107,20 +130,10 @@ unsigned int bt2Assemble(assembler_c * assm, assembler_cb * callback,
       if (clones[i] && !clones[i]->searchFinished())
         any = true;
     }
-    for (unsigned int i = 0; i < clones.size(); i++) {
-      if (clones[i] && clones[i]->searchFinished()) {
-        assembler_c * src = busiestWorker(assm, clones);
-        if (!src)
-          continue;
-        std::unique_ptr<assembler_c> n = src->splitSearch();
-        if (!n)
-          continue;
-        clones[i] = std::move(n);
-        assm->clearProgressPeers();
-        for (unsigned int j = 0; j < clones.size(); j++)
-          assm->addProgressPeer(clones[j].get());
-      }
-    }
+    for (unsigned int i = 0; i < clones.size(); i++)
+      if (steal(i))
+        any = true;
+    setPeers();
   }
 #else
   bool any = true;
@@ -155,18 +168,9 @@ unsigned int bt2Assemble(assembler_c * assm, assembler_cb * callback,
         any = true;
 
     /* Finished workers steal from the largest leftover (Andreas tail). */
-    for (unsigned int i = 0; i < clones.size(); i++) {
-      if (clones[i] && clones[i]->searchFinished()) {
-        assembler_c * src = busiestWorker(assm, clones);
-        if (!src)
-          continue;
-        std::unique_ptr<assembler_c> n = src->splitSearch();
-        if (!n)
-          continue;
-        clones[i] = std::move(n);
+    for (unsigned int i = 0; i < clones.size(); i++)
+      if (steal(i))
         any = true;
-      }
-    }
     if (assm->searchFinished()) {
       assembler_c * src = busiestWorker(0, clones);
       if (src) {
@@ -179,15 +183,13 @@ unsigned int bt2Assemble(assembler_c * assm, assembler_cb * callback,
       }
     }
 
-    assm->clearProgressPeers();
-    for (unsigned int i = 0; i < clones.size(); i++)
-      assm->addProgressPeer(clones[i].get());
+    setPeers();
   }
 #endif
 
-  unsigned long extra = 0;
   for (unsigned int i = 0; i < clones.size(); i++)
-    extra += clones[i]->getIterations();
+    if (clones[i])
+      extra += clones[i]->getIterations();
   assm->clearProgressPeers();
   assm->addIterations(extra);
   return workerCount;

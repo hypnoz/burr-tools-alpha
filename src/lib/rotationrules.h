@@ -21,6 +21,7 @@
 #ifndef __ROTATION_RULES_H__
 #define __ROTATION_RULES_H__
 
+#include <memory>
 #include <vector>
 
 /**
@@ -40,6 +41,10 @@
  *   the sandwich rule above. Layers with no face contact are skipped.
  * - Arc sweep: sample the continuous 90° path of beveled squares (remove
  *   0.0405, matching Fortran) with an optional mid-turn in-plane wiggle
+ *
+ * The rules give the same answer however the whole puzzle is turned in
+ * space (the tests check it). rotationMoves_0_c relies on that to search an
+ * arrangement once, not once for each way round it can lie.
  *
  * Additional named rules can be added here after physical validation.
  */
@@ -64,8 +69,8 @@ public:
     pivot_t(int hx_, int hy_, int hz_) : hx(hx_), hy(hy_), hz(hz_) {}
   };
 
-  rotationRules_c(void) {}
-  virtual ~rotationRules_c(void) {}
+  rotationRules_c(void);
+  virtual ~rotationRules_c(void);
 
   /**
    * Return true if this rotation is allowed.
@@ -94,6 +99,27 @@ public:
                    unsigned int axis) const;
 
   /**
+   * The same test as allowRotation, for a generator that tries many pivots,
+   * axes and senses of one moving body among the same other pieces:
+   * setBodies once, preparedAxisBlocked once per axis, allowPrepared per
+   * candidate. What does not depend on the pivot is worked out once, and
+   * the end cells are worked out here. Pass axisClear when
+   * preparedAxisBlocked said false for the axis. Same answers as
+   * allowRotation; the tests compare the two.
+   */
+  void setBodies(const std::vector<cell_t> & occupied, const std::vector<cell_t> & startCells);
+  bool preparedAxisBlocked(unsigned int axis) const;
+  bool allowPrepared(const pivot_t & pivot, unsigned int axis, unsigned int sense,
+                     bool axisClear) const;
+
+  /**
+   * A cell after a 90° turn about pivot. False when it does not land on the
+   * grid (the pivot's in-plane coordinates differ in parity).
+   */
+  static bool rotateCell(const cell_t & cell, const pivot_t & pivot,
+                         unsigned int axis, unsigned int sense, cell_t & out);
+
+  /**
    * Collect cells useful for Debug Rotations visualisation of one candidate.
    *
    * @param occupied    world cells occupied by pieces that are not moving
@@ -118,11 +144,22 @@ public:
                                  std::vector<cell_t> & outClearance,
                                  std::vector<cell_t> & outRestricted) const;
 
+  rotationRules_c(const rotationRules_c&) = delete;
+  void operator=(const rotationRules_c&) = delete;
+
+  /* Defined in rotationrules.cpp; opaque elsewhere. */
+  struct occupancyCache_c;
+  struct prepared_c;
+
 private:
 
-  // no copying and assigning
-  rotationRules_c(const rotationRules_c&);
-  void operator=(const rotationRules_c&);
+  /* The occupancy of the last `occupied` asked about, which a disassembler
+   * passes again for every pivot, axis and sense it tries. Not shared:
+   * each rotationRules_c belongs to one thread. */
+  mutable std::unique_ptr<occupancyCache_c> occCache;
+
+  /* The bodies of setBodies and what was worked out for them. */
+  mutable std::unique_ptr<prepared_c> prep;
 };
 
 #endif

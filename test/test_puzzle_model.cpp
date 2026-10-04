@@ -7,6 +7,8 @@
 #include "lib/gridtype.h"
 #include "lib/problem.h"
 #include "lib/puzzle.h"
+#include "lib/ps3dloader.h"
+#include "lib/scadloader.h"
 #include "lib/solution.h"
 #include "lib/symmetries.h"
 #include "lib/voxel.h"
@@ -14,6 +16,7 @@
 #include "tools/xml.h"
 
 #include <memory>
+#include <sstream>
 #include <string>
 
 using namespace bttest;
@@ -1287,5 +1290,116 @@ TEST_CASE("problem: Time used survives a save and load, to the millisecond", "[m
     puzzle_c loaded(pars);
     CHECK(loaded.getProblem(0)->getUsedMs() == 7000);
     CHECK(loaded.getProblem(0)->getUsedTime() == 7);
+  }
+}
+
+TEST_CASE("problem: keepSolutionsSorted places new solutions as a full sort would",
+          "[model][problem][solution]") {
+  /* The same additions and removals on two copies: one kept sorted as it
+   * goes, one sorted once at the end. Short and long runs of new solutions
+   * take the insert and the merge paths. */
+  std::unique_ptr<puzzle_c> incPuzzle = loadFreshPuzzle("examples/SolidSixPieceBurrs.xmpuzzle");
+  std::unique_ptr<puzzle_c> refPuzzle = loadFreshPuzzle("examples/SolidSixPieceBurrs.xmpuzzle");
+  problem_c * inc = incPuzzle->getProblem(0);
+  problem_c * ref = refPuzzle->getProblem(0);
+  REQUIRE(inc->getNumberOfSavedSolutions() > 100);
+  inc->markSolving();
+  ref->markSolving();
+
+  inc->keepSolutionsSorted(0);
+
+  /* Copies of the file's own solutions, taken from ref, which only grows
+   * at the end until the final sort, so its first n0 never move. */
+  const unsigned int n0 = ref->getNumberOfSavedSolutions();
+  auto addCopies = [ref, n0](problem_c * pr, unsigned int count, unsigned int seed) {
+    for (unsigned int i = 0; i < count; i++) {
+      const solution_c * s = ref->getSavedSolution((seed + i * 37) % n0);
+      pr->addSolution(new assembly_c(s->getAssembly()), (seed * 7 + i * 13) % 500);
+    }
+  };
+
+  for (unsigned int round = 0; round < 6; round++) {
+    const unsigned int count = (round % 2) ? 100 : 3;
+    addCopies(inc, count, round);
+    addCopies(ref, count, round);
+    inc->keepSolutionsSorted(0);
+  }
+  ref->sortSolutions(0);
+
+  const unsigned int n = ref->getNumberOfSavedSolutions();
+  REQUIRE(inc->getNumberOfSavedSolutions() == n);
+  CHECK(firstFailing(n, [inc, ref](unsigned int i) {
+    const solution_c * a = inc->getSavedSolution(i);
+    const solution_c * b = ref->getSavedSolution(i);
+    return a->getAssemblyNumber() != b->getAssemblyNumber() ||
+           a->getAssembly()->comparePieces(b->getAssembly()) != 0;
+  }) == n);
+}
+
+TEST_CASE("problem: keepSolutionsSorted stays sorted across removals",
+          "[model][problem][solution]") {
+  std::unique_ptr<puzzle_c> puzzle = loadFreshPuzzle("examples/SolidSixPieceBurrs.xmpuzzle");
+  problem_c * pr = puzzle->getProblem(0);
+  pr->markSolving();
+  pr->keepSolutionsSorted(0);
+
+  for (unsigned int round = 0; round < 6; round++) {
+    const unsigned int n = pr->getNumberOfSavedSolutions();
+    for (unsigned int i = 0; i < 5; i++)
+      pr->addSolution(new assembly_c(pr->getSavedSolution((round + i * 41) % n)->getAssembly()),
+                      (round * 31 + i * 97) % 400);
+    pr->removeSolution(round * 11);
+    pr->removeSolution(pr->getNumberOfSavedSolutions() - 2);
+    pr->keepSolutionsSorted(0);
+  }
+
+  const unsigned int n = pr->getNumberOfSavedSolutions();
+  CHECK(firstOutOfOrder(n, [pr](unsigned int i) {
+    return pr->getSavedSolution(i)->getAssemblyNumber() > pr->getSavedSolution(i + 1)->getAssemblyNumber();
+  }) == n);
+}
+
+TEST_CASE("ps3d loader: reads a file, and turns down a broken one without crashing",
+          "[model][parser]") {
+  /* Each row holds the z layers side by side, sx cells and a separator. */
+  {
+    std::istringstream in("PIECE 2x1x2\nXX X\nRESULT 2x1x2\nXX XX\n");
+    std::unique_ptr<puzzle_c> p = loadPuzzlerSolver3D(&in);
+    REQUIRE(p);
+    REQUIRE(p->getNumberOfShapes() == 2);
+    /* The short row is empty past its end. */
+    CHECK(p->getShape(0)->countState(voxel_c::VX_FILLED) == 3);
+    CHECK(p->getShape(1)->countState(voxel_c::VX_FILLED) == 4);
+  }
+  {
+    std::istringstream in("PIECE axbxc\nXX\n");
+    CHECK_FALSE(loadPuzzlerSolver3D(&in));
+  }
+  {
+    std::istringstream in("PIECE 0x1x1\n\n");
+    CHECK_FALSE(loadPuzzlerSolver3D(&in));
+  }
+  {
+    std::istringstream in("");
+    std::unique_ptr<puzzle_c> p = loadPuzzlerSolver3D(&in);
+    REQUIRE(p);
+    CHECK(p->getNumberOfShapes() == 0);
+  }
+}
+
+TEST_CASE("scad loader: reads a plate, and refuses deep nesting without crashing",
+          "[model][parser]") {
+  {
+    std::istringstream in("burr_plate([ \"xx|x.\", [\"x\", \"x\"] ]);");
+    std::unique_ptr<puzzle_c> p = loadOpenScadPuzzle(&in);
+    REQUIRE(p);
+    CHECK(p->getNumberOfShapes() == 3);  // two pieces and the result
+  }
+  {
+    std::string deep = "burr_plate($x = " + std::string(100000, '[') + std::string(100000, ']') +
+                       ", [\"x\"]);";
+    std::istringstream in(deep);
+    /* The named argument cannot be skipped, so the plate is not read. */
+    CHECK_FALSE(loadOpenScadPuzzle(&in));
   }
 }
