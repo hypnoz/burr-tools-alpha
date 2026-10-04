@@ -84,6 +84,8 @@ void cb_About_stub(Fl_Widget*, void*);
 void cb_Help_stub(Fl_Widget*, void*);
 void cb_Load_Scad_stub(Fl_Widget*, void*);
 void cb_Export_Scad_stub(Fl_Widget*, void*);
+void cb_ExportPaused_stub(Fl_Widget*, void*);
+void cb_ImportPaused_stub(Fl_Widget*, void*);
 void cb_Undo_stub(Fl_Widget*, void*);
 void cb_Redo_stub(Fl_Widget*, void*);
 void cb_ToggleNotes_stub(Fl_Widget*, void*);

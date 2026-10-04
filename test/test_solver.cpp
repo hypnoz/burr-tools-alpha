@@ -10,14 +10,17 @@
 #include "lib/disassembler_0.h"
 #include "lib/disassembly.h"
 #include "lib/gridtype.h"
+#include "lib/solvethread.h"
 #include "lib/voxel.h"
 #include "tools/xml.h"
 #include "tools/gzstream.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -471,54 +474,6 @@ static std::string extractAssemblerContent(const std::string & xml) {
   return xml.substr(a, b - a);
 }
 
-/* An interrupted parallel search must not save itself as a resumable position.
- *
- * Before this was handled, stopping a parallel solve left pos == 0, save()
- * wrote "nothing searched yet" next to an already-populated solution list, and
- * continuing re-reported every assembly found before the stop. The contract
- * now is: such a state is refused on restore with a distinct error, so the
- * caller resets rather than double counting.
- */
-TEST_CASE("Parallel assembler: an interrupted search is not restored as resumable",
-          "[assembler][parallel][resume]") {
-  auto p = puzzle_c::load("examples/PelikanBurr.xmpuzzle");
-  REQUIRE(p != nullptr);
-  auto problem = p->getProblem(0);
-  REQUIRE(problem != nullptr);
-
-  assembler_0_c assm(*problem);
-  assm.setNumThreads(4);
-  REQUIRE(assm.createMatrix(false, false, false) == assembler_c::ERR_NONE);
-
-  /* stop from the callback on the first assembly, which aborts the workers
-   * part way through the task set
-   */
-  int seen = 0;
-  assm.assemble([&seen](std::unique_ptr<assembly_c>) -> bool {
-    seen++;
-    return false;
-  });
-  REQUIRE(seen == 1);
-  REQUIRE(assm.getFinished() < 1.0f);
-
-  /* what the interrupted search would write into the .xmpuzzle */
-  std::string state;
-  {
-    std::ostringstream str;
-    xmlWriter_c xml(str);
-    assm.save(xml);
-    state = str.str();
-  }
-
-  /* a fresh assembler must refuse it rather than silently starting over */
-  assembler_0_c restored(*problem);
-  REQUIRE(restored.createMatrix(false, false, false) == assembler_c::ERR_NONE);
-
-  std::string payload = extractAssemblerContent(state);
-  CHECK(restored.setPosition(payload.c_str(), assemblerVersionOf(state).c_str())
-        == assembler_c::ERR_CAN_NOT_RESTORE_INTERRUPTED);
-}
-
 /* The leading flag added to the save payload must not break ordinary restore.
  *
  * Deliberately a not-yet-started assembler rather than a finished one: a
@@ -864,42 +819,6 @@ TEST_CASE("Parallel assembler 1 matches serial on a symmetry-breaking puzzle",
   CHECK(cb.fingerprints == serial);
 }
 
-/* Same contract as the assembler_0 case: a parallel Huang search that was
- * stopped part way saves no usable resume point, because
- * generateTasksAtDepth() has reset the master back to the root, so it must be
- * refused on restore rather than silently starting over and re-reporting.
- */
-TEST_CASE("Parallel assembler 1: an interrupted search is not restored as resumable",
-          "[assembler][parallel][resume]") {
-  auto p = puzzle_c::load("examples/CubeInCage.xmpuzzle");
-  REQUIRE(p != nullptr);
-  auto problem = p->getProblem(0);
-  REQUIRE(problem != nullptr);
-
-  assembler_1_c assm(*problem);
-  assm.setNumThreads(4);
-  REQUIRE(assm.createMatrix(false, false, false) == assembler_c::ERR_NONE);
-
-  int seen = 0;
-  assm.assemble([&seen](std::unique_ptr<assembly_c>) -> bool { seen++; return false; });
-  REQUIRE(seen == 1);
-  REQUIRE(assm.getFinished() < 1.0f);
-
-  std::string state;
-  {
-    std::ostringstream str;
-    xmlWriter_c xml(str);
-    assm.save(xml);
-    state = str.str();
-  }
-
-  assembler_1_c restored(*problem);
-  REQUIRE(restored.createMatrix(false, false, false) == assembler_c::ERR_NONE);
-  std::string payload = extractAssemblerContent(state);
-  CHECK(restored.setPosition(payload.c_str(), assemblerVersionOf(state).c_str())
-        == assembler_c::ERR_CAN_NOT_RESTORE_INTERRUPTED);
-}
-
 /* The added flag must not break ordinary restore.
  *
  * Uses a *serial* run stopped part way, which is the state the application
@@ -967,4 +886,205 @@ TEST_CASE("Parallel assembler 1 does not report stale progress on a later run",
   again.setNumThreads(4);
   REQUIRE(again.createMatrix(false, false, false) == assembler_c::ERR_NONE);
   CHECK(again.getFinished() < 1.0f);
+}
+
+/* Stops a search after stopAt assemblies the way the application does (the
+ * callback asks it to stop), then finishes it: either straight on with the
+ * same assembler, or after saving the position as it would go into the
+ * .xmpuzzle and restoring it into a fresh one. Every assembly must be
+ * reported exactly once across both parts. Covers the parallel search
+ * (threads > 1) and the single-threaded SIMD search, which used to be
+ * refused on restore or to repeat itself.
+ */
+template <class A>
+static void checkStopAndResume(const char * file, unsigned int prob, unsigned int threads,
+                               unsigned int stopAt, bool viaSave) {
+  std::multiset<std::string> all;
+  {
+    auto p = puzzle_c::load(file);
+    REQUIRE(p != nullptr);
+    RecordingAssemblerCallback cb;
+    A assm(*p->getProblem(prob));
+    assm.setNumThreads(threads);
+    REQUIRE(assm.createMatrix(false, false, false) == assembler_c::ERR_NONE);
+    assm.assemble(&cb);
+    all = cb.fingerprints;
+  }
+  REQUIRE(all.size() > stopAt);
+
+  class stopping_c : public RecordingAssemblerCallback {
+  public:
+    size_t stopAt = 0;
+    bool assembly(std::unique_ptr<assembly_c> a) override {
+      RecordingAssemblerCallback::assembly(std::move(a));
+      return fingerprints.size() < stopAt;
+    }
+  } first;
+  first.stopAt = stopAt;
+
+  auto p = puzzle_c::load(file);
+  REQUIRE(p != nullptr);
+  RecordingAssemblerCallback rest;
+  A assm(*p->getProblem(prob));
+  assm.setNumThreads(threads);
+  REQUIRE(assm.createMatrix(false, false, false) == assembler_c::ERR_NONE);
+  assm.assemble(&first);
+  REQUIRE(assm.getFinished() < 1.0f);
+
+  if (viaSave) {
+    std::string state;
+    {
+      std::ostringstream str;
+      xmlWriter_c xml(str);
+      assm.save(xml);
+      state = str.str();
+    }
+    auto p2 = puzzle_c::load(file);
+    REQUIRE(p2 != nullptr);
+    A restored(*p2->getProblem(prob));
+    restored.setNumThreads(threads);
+    REQUIRE(restored.createMatrix(false, false, false) == assembler_c::ERR_NONE);
+    std::string payload = extractAssemblerContent(state);
+    REQUIRE(restored.setPosition(payload.c_str(), assemblerVersionOf(state).c_str())
+            == assembler_c::ERR_NONE);
+    restored.assemble(&rest);
+  } else {
+    assm.assemble(&rest);
+  }
+
+  std::multiset<std::string> both = first.fingerprints;
+  both.insert(rest.fingerprints.begin(), rest.fingerprints.end());
+  CHECK(both == all);
+}
+
+TEST_CASE("Assembler 0: a stopped search resumes, saved or not, reporting each assembly once",
+          "[assembler][parallel][resume]") {
+  for (bool viaSave : {false, true}) {
+    checkStopAndResume<assembler_0_c>("examples/PelikanBurr.xmpuzzle", 0, 4, 1, viaSave);
+    checkStopAndResume<assembler_0_c>("examples/PelikanBurr.xmpuzzle", 0, 4, 5, viaSave);
+    checkStopAndResume<assembler_0_c>("examples/PelikanBurr.xmpuzzle", 0, 1, 5, viaSave);
+  }
+}
+
+TEST_CASE("Assembler 1: a stopped search resumes, saved or not, reporting each assembly once",
+          "[assembler][parallel][resume]") {
+  for (bool viaSave : {false, true}) {
+    checkStopAndResume<assembler_1_c>("examples/CubeInCage.xmpuzzle", 0, 4, 1, viaSave);
+    checkStopAndResume<assembler_1_c>("examples/CubeInCage.xmpuzzle", 0, 1, 1, viaSave);
+  }
+}
+
+/* Pause and Continue through the solve thread, as the GUI does it: wherever
+ * the pause lands -- in the assembler, with assemblies queued to be taken
+ * apart, or part way through taking one apart -- nothing may be lost or
+ * counted twice. Continue follows either straight on, or after saving the
+ * puzzle and loading it again, as after quitting BurrTools.
+ */
+static std::string savedPuzzle(const puzzle_c & p) {
+  std::ostringstream str;
+  xmlWriter_c xml(str);
+  p.save(xml);
+  return str.str();
+}
+
+TEST_CASE("Solver: pausing and continuing finds every assembly and solution once",
+          "[solver][resume]") {
+  const char * file = "examples/SolidSixPieceBurrs.xmpuzzle";
+  const int par = solveThread_c::PAR_REDUCE | solveThread_c::PAR_DISASSM;
+  unsigned long assemblies = 0, solutions = 0;
+  {
+    auto p = puzzle_c::load(file);
+    REQUIRE(p != nullptr);
+    p->getProblem(0)->removeAllSolutions();
+    solveThread_c solver(*p->getProblem(0), par);
+    REQUIRE(solver.start());
+    solver.waitUntilFinished();
+    assemblies = p->getProblem(0)->getNumAssemblies();
+    solutions = p->getProblem(0)->getNumSolutions();
+  }
+  REQUIRE(solutions > 0);
+
+  int paused = 0;
+  for (int delayMs : {20, 100, 300, 700}) {
+    for (bool viaSave : {false, true}) {
+      INFO("pause after " << delayMs << " ms, " << (viaSave ? "saved and loaded" : "straight on"));
+      auto p = puzzle_c::load(file);
+      REQUIRE(p != nullptr);
+      /* The example is saved solved; Solve starts from a clean slate. */
+      p->getProblem(0)->removeAllSolutions();
+      {
+        solveThread_c solver(*p->getProblem(0), par);
+        REQUIRE(solver.start());
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        solver.stop();
+        solver.waitUntilFinished();
+      }
+      if (p->getProblem(0)->getSolveState() != SS_SOLVED)
+        paused++;
+      if (viaSave) {
+        std::istringstream in(savedPuzzle(*p));
+        xmlParser_c pars(in);
+        p = std::make_unique<puzzle_c>(pars);
+      }
+      problem_c * pr = p->getProblem(0);
+      if (pr->getSolveState() != SS_SOLVED) {
+        solveThread_c solver(*pr, par);
+        REQUIRE(solver.start());
+        solver.waitUntilFinished();
+      }
+      CHECK(pr->getNumAssemblies() == assemblies);
+      CHECK(pr->getNumSolutions() == solutions);
+      CHECK(pr->pendingCount() == 0);
+    }
+  }
+  /* The premise: some pauses landed before the solve was over. */
+  CHECK(paused >= 2);
+}
+
+/* The autosave pause: only the assembler stops, work under way finishes, and
+ * what is saved carries on to the same totals. */
+TEST_CASE("Solver: an autosave pause saves a solve that carries on to the same totals",
+          "[solver][resume]") {
+  const char * file = "examples/SolidSixPieceBurrs.xmpuzzle";
+  const int par = solveThread_c::PAR_REDUCE | solveThread_c::PAR_DISASSM;
+  unsigned long assemblies = 0, solutions = 0;
+  {
+    auto p = puzzle_c::load(file);
+    REQUIRE(p != nullptr);
+    p->getProblem(0)->removeAllSolutions();
+    solveThread_c solver(*p->getProblem(0), par);
+    REQUIRE(solver.start());
+    solver.waitUntilFinished();
+    assemblies = p->getProblem(0)->getNumAssemblies();
+    solutions = p->getProblem(0)->getNumSolutions();
+  }
+
+  int paused = 0;
+  for (int delayMs : {30, 120, 400}) {
+    INFO("autosave pause after " << delayMs << " ms");
+    auto p = puzzle_c::load(file);
+    REQUIRE(p != nullptr);
+    p->getProblem(0)->removeAllSolutions();
+    {
+      solveThread_c solver(*p->getProblem(0), par);
+      REQUIRE(solver.start());
+      std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+      solver.stopSoft();
+      solver.waitUntilFinished();
+    }
+    if (p->getProblem(0)->getSolveState() != SS_SOLVED)
+      paused++;
+    std::istringstream in(savedPuzzle(*p));
+    xmlParser_c pars(in);
+    auto q = std::make_unique<puzzle_c>(pars);
+    problem_c * pr = q->getProblem(0);
+    if (pr->getSolveState() != SS_SOLVED) {
+      solveThread_c solver(*pr, par);
+      REQUIRE(solver.start());
+      solver.waitUntilFinished();
+    }
+    CHECK(pr->getNumAssemblies() == assemblies);
+    CHECK(pr->getNumSolutions() == solutions);
+  }
+  CHECK(paused >= 1);
 }

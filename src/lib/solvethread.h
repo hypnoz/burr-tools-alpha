@@ -140,6 +140,11 @@ class solveThread_c : public assembler_cb, public thread_c {
 
     /* how much time has passed since calling start */
     unsigned long getTime(void) { return time(0) - startTime; }
+    /** Milliseconds since this run started. */
+    unsigned long long getTimeMs(void) const {
+      return (unsigned long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - statsOrigin).count();
+    }
 
     bool disassemblyEnabled(void) const { return (parameters & PAR_DISASSM) != 0; }
     unsigned int getDisassemblyPending(void) const { return disasmPending.load(std::memory_order_relaxed); }
@@ -182,6 +187,11 @@ class solveThread_c : public assembler_cb, public thread_c {
     static const int PAR_STRICT_COLORS =     0x100;  // piece colour must equal result colour
     static const int PAR_NESTED_SLIDES =     0x200;  // sliding: a piece may carry pieces nested inside it
     static const int PAR_DEEP_SEARCH =       0x400;  // sliding: search 1,000,000 arrangements, not 250,000
+    static const int PAR_FULL_SEARCH =       0x800;  // sliding: no limit on arrangements searched
+    static const int PAR_HIGH_MEMORY =      0x1000;  // sliding: hold up to half the physical memory in arrangements
+    static const int PAR_PANEX_SOLVER =     0x2000;  // stacking: the Panex Solver, for Panex columns
+    static const int PAR_PANEX_RESUME =     0x4000;  // Panex Solver: carry on the problem's saved search
+    static const int PAR_PANEX_NO_AUTOSAVE = 0x8000; // Panex Solver: save only when paused, not every 20 minutes
 
     // create all the necessary data structures to start the thread later on
     solveThread_c(problem_c & puz, int par);
@@ -293,6 +303,10 @@ class solveThread_c : public assembler_cb, public thread_c {
     void cancelDisassemblyWork(void);
     void disasmWorkerRun(disassembler_c * workerDisassm);
     void enqueueDisassembly(std::unique_ptr<assembly_c> a);
+    /** Serialises cancelDisassemblyWork between the GUI and solver threads. */
+    std::mutex cancelMutex;
+    void enqueueDisassembly(std::unique_ptr<assembly_c> a, unsigned long assemblyNumber,
+                            unsigned long solutionNumber);
     void flushDisassemblyQueue(void);
     void processDisassembly(disasmTask_c & task, int solutionAction, disassembler_c * workerDisassm);
     unsigned int findInsertIndexByMoves(unsigned int lev) const;
@@ -322,6 +336,10 @@ public:
   // try to stop the thread at the next possible position
   void stop(void) override;
 
+  /** Pause at the next point where the run can be saved, without abandoning a
+   * slide search or a disassembly under way; for autosave. */
+  void stopSoft(void);
+
   /* true once the worker has left run() for good. ACT_ASSERT belongs here:
    * an assert in the worker ends the thread just as surely as the other three,
    * and a caller polling for the thread to finish would otherwise wait forever.
@@ -337,13 +355,48 @@ public:
 
   void run(void) override;
 
-  /** Empty unless the stacking search stopped without a path. */
-  const std::string & getStackingNote(void) const { return stackingNote; }
+  /** Empty unless the stacking or sliding search has something to report,
+   * such as no path, or a search that hit its limit. Read it once the
+   * solve has finished or paused. */
+  std::string getSolverNote(void) const {
+    std::lock_guard<std::mutex> lock(noteMutex);
+    return solverNote;
+  }
+
+  /** Arrangements the current sliding search has visited so far. */
+  /** Moves the Panex Solver has searched from both ends together. */
+  unsigned long getSearchDepth(void) const {
+    return searchDepth.load(std::memory_order_relaxed);
+  }
+  bool panexSearch(void) const { return (parameters & PAR_PANEX_SOLVER) != 0; }
+  /** Moves of the path the Panex Solver has traced back, once the ends meet. */
+  unsigned long getSearchTraced(void) const {
+    return searchTraced.load(std::memory_order_relaxed);
+  }
+  unsigned long getSlideProgress(void) const {
+    return slideProgress.load(std::memory_order_relaxed);
+  }
 
 private:
 
   void runStacking(void);
-  std::string stackingNote;
+  /* After a sliding solve: whether a missing solution is proven or not. */
+  std::string slidingSummary(void) const;
+  void setSolverNote(const std::string & note) {
+    std::lock_guard<std::mutex> lock(noteMutex);
+    solverNote = note;
+  }
+  /* Written by the worker, read by the GUI thread after the solve. */
+  mutable std::mutex noteMutex;
+  std::string solverNote;
+
+  /* Sliding search results across all start layouts of one solve. */
+  std::atomic<unsigned long> slideProgress{0};
+  std::atomic<unsigned long> searchDepth{0};
+  std::atomic<unsigned long> searchTraced{0};
+  unsigned int slideStartsCut = 0;    // starts whose search hit a limit
+  bool slideMemoryCut = false;        // one of those hit the memory ceiling
+  unsigned long slideMemoryStates = 0; // that ceiling, in arrangements
 
 private:
 

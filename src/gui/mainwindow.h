@@ -27,6 +27,8 @@
 #include "../lib/solvethread.h"
 #include "../lib/stacking.h"
 
+#include <chrono>
+#include <string>
 #include <vector>
 
 class VoxelEditGroup_c;
@@ -130,6 +132,16 @@ class mainWindow_c : public LFl_Double_Window {
   Fl_Check_Button *SolveDisasm, *CheckRotations, *JustCount, *DropDisassemblies, *KeepMirrors, *KeepRotations, *StrictColors, *CompleteRotations;
   /* Sliding only. It takes the place of Just Levels. */
   Fl_Check_Button *NestedSlides;
+  Fl_Check_Button *HighMemory;
+  Fl_Check_Button *Autosave;
+  /* Autosave of brick and sliding solves: when the solve last started or
+   * saved, and whether a pause for saving is under way. */
+  std::chrono::steady_clock::time_point autosaveFrom;
+  bool autosaving = false;
+  unsigned int autosaveProblem = 0;
+  std::string autosavePath(void) const;
+  bool writeAutosave(void);
+  void removeAutosave(void);
 
   FlatButton *BtnPrepare, *BtnStart, *BtnCont, *BtnStop, *BtnPlacement, *BtnStep, *BtnMovement;
   FlatButton *BtnNewShape, *BtnDelShape, *BtnCpyShape, *BtnRenShape, *BtnUndo, *BtnRedo, *BtnShapeLeft, *BtnShapeRight, *BtnWeightInc, *BtnWeightDec, *BtnDetails;
@@ -207,6 +219,9 @@ class mainWindow_c : public LFl_Double_Window {
   LFl_Value_Input * rodHeightInput;
   LFl_Check_Button * rodSizeMatters;
   LFl_Check_Button * rodDistance;
+  LFl_Check_Button * rodPanex;
+  LFl_Check_Button * rodPocket;
+  LFl_Value_Input * rodPocketHeight;
   bool rodFieldGuard;
 
   FlatButton *BtnNewRod, *BtnDelRod, *BtnCpyRod, *BtnRenRod, *BtnRodLeft, *BtnRodRight, *BtnRodUndo, *BtnRodRedo;
@@ -379,6 +394,8 @@ public:
   void cb_RodRedo(void);
   void cb_RodSel(void);
   void cb_RodField(void);
+  void syncPanexFields(void);
+  bool panexSelected(void) const;
   void cb_DiskList(void);
   void cb_StackMode(Fl_Widget * o);
   void cb_StackRod(void);
@@ -431,7 +448,7 @@ public:
 
   void cb_BtnPrepare(void);
   void cb_BtnStart(bool prep_only);
-  void cb_BtnCont(bool prep_only);
+  void cb_BtnCont(bool prep_only, int forProblem = -1);
   void cb_BtnStop(void);
   void cb_BtnPlacementBrowser(void);
   void cb_BtnMovementBrowser(void);
@@ -459,6 +476,10 @@ public:
   void cb_About(void);
   void cb_Tutorial(void);
   void cb_SolverTypeHelp(void);
+  void cb_SolverType(void) {
+    updateSolverOptionCheckboxes();
+    updateInterface();
+  }
   void cb_SortByHelp(void);
   void cb_Help(void);
   void cb_Config(void);
@@ -480,6 +501,10 @@ public:
   void cb_ImageExportVector(void);
   void cb_STLExport(void);
   void cb_Export_Scad(void);
+  void cb_ExportPaused(void);
+  void cb_ImportPaused(void);
+  /** The problem has a paused solve, and no solve is running. */
+  bool problemPaused(unsigned int prob) const;
   void cb_StatusWindow(void);
   void cb_DetailsClose(void);
   void cb_DetailsChanged(void);

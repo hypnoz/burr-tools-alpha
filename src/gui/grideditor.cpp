@@ -21,6 +21,7 @@
 
 #include "grideditor.h"
 #include "piececolor.h"
+#include "slidingcolors.h"
 
 #include "../lib/puzzle.h"
 #include "../lib/voxel.h"
@@ -435,9 +436,9 @@ void gridEditor_c::draw() {
         continue;
 
       // apply the chequerboard pattern
-      bool whiteTray = sliding::isStartGoalShape(space);
-      if (whiteTray) {
-        r = g = b = ((x + y + currentZ) & 1) ? 235 : 255;
+      bool trayTiles = sliding::isStartGoalShape(space);
+      if (trayTiles) {
+        r = g = b = ((x + y + currentZ) & 1) ? slidingColors::EDIT_DARK : slidingColors::EDIT_LIGHT;
       } else if ((x+y+currentZ) & 1) {
         r = int(255*darkPieceColor(pieceColorR(piecenumber)));
         g = int(255*darkPieceColor(pieceColorG(piecenumber)));
@@ -468,7 +469,7 @@ void gridEditor_c::draw() {
         if (mark) {
           char buf[16];
           snprintf(buf, sizeof(buf), "S%u", mark);
-          fl_color(fl_rgb_color(230, 110, 0));
+          fl_color(fl_rgb_color(slidingColors::LABEL_R, slidingColors::LABEL_G, slidingColors::LABEL_B));
           fl_font(FL_HELVETICA_BOLD, (sy > 18) ? 14 : 10);
           int tw = 0, th = 0;
           fl_measure(buf, tw, th);
@@ -476,7 +477,7 @@ void gridEditor_c::draw() {
           int cy = ty - ((int)y + 1) * sy + (sy + th) / 2 - fl_descent();
           fl_draw(buf, cx, cy);
         }
-      } else if (!whiteTray &&
+      } else if (!trayTiles &&
           (space->getState(x, y, currentZ) != voxel_c::VX_EMPTY)) {
 
         /* A real constraint colour is drawn as a swatch. Sliding start locks

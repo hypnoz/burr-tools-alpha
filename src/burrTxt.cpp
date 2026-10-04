@@ -33,6 +33,7 @@
 #include "lib/solution.h"
 #include "lib/sliding.h"
 #include "lib/stacking.h"
+#include "lib/panex.h"
 #include "tools/xml.h"
 #include "tools/gzstream.h"
 
@@ -44,7 +45,9 @@
 #include <unistd.h>
 #endif
 
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -59,8 +62,25 @@ bool disassemble;
 bool checkRotations;
 bool strictColors;
 bool nestedSlides;
+bool highMemory;
 /* Set from --solver once the file shows a sliding puzzle. */
 bool deepSearch;
+bool fullSearch;
+/* --solver panex, for stacking puzzles with Panex columns. */
+bool panexSolver;
+/* --restart: discard a saved Panex search instead of carrying it on. */
+bool panexRestart;
+/* --panex-dir, --panex-disk: where saved Panex searches go, and how much disk they may take. */
+std::string panexDir;
+double panexDiskGB = 0;
+
+/* Ctrl-C during a Panex search stops it and saves it; a second one quits at once. */
+static std::atomic<bool> panexStop{false};
+static void onInterrupt(int) {
+  if (panexStop.load())
+    std::_Exit(130);
+  panexStop.store(true);
+}
 
 /* The puzzle type decides which solvers and options apply. */
 enum puzzleKind_e { PK_BRICK, PK_SLIDING, PK_STACKING, PK_ANY };
@@ -191,6 +211,9 @@ public:
   problem_c * puzzle;
   std::mutex cbMutex;
   std::map<std::string, unsigned int> slideBestMoves;
+  /* Sliding starts whose search stopped at its limit, not at its end. */
+  unsigned int slideStartsCut = 0;
+  bool slideMemoryCut = false;
 
   bool hasBest;
   char bestDotlevel[200];
@@ -235,9 +258,20 @@ public:
     if (disassemble) {
 
       /* Sliding "disassemble" is the start-to-goal slide, not brick take-apart. */
-      std::unique_ptr<separation_c> da = sliding::isSliding(*puzzle)
-          ? sliding::findSlidePath(*puzzle, *a, slideStates(), nestedSlides)
-          : d->disassemble(a.get());
+      std::unique_ptr<separation_c> da;
+      if (sliding::isSliding(*puzzle)) {
+        sliding::slideSearch_c search;
+        search.maxStates = slideStates();
+        search.nested = nestedSlides;
+        search.highMemory = highMemory;
+        da = sliding::findSlidePath(*puzzle, *a, search);
+        if (search.outcome == sliding::SLIDE_LIMIT || search.outcome == sliding::SLIDE_MEMORY)
+          slideStartsCut++;
+        if (search.outcome == sliding::SLIDE_MEMORY)
+          slideMemoryCut = true;
+      } else {
+        da = d->disassemble(a.get());
+      }
 
       if (da) {
         bool countIt = true;
@@ -355,6 +389,8 @@ static void print_json_result(const json_result_c & stats) {
 }
 
 static unsigned int slideStates(void) {
+  if (fullSearch)
+    return sliding::FULL_SEARCH;
   return deepSearch ? sliding::DEEP_SEARCH_STATES : sliding::SEARCH_STATES;
 }
 
@@ -436,14 +472,35 @@ void usage(puzzleKind_e kind = PK_ANY) {
     cout << "          a piece may carry the pieces nested inside its outline, such as a\n";
     cout << "          piece in another piece's pocket. Pieces that only touch never move\n";
     cout << "          together.\n";
-    cout << "  --solver TYPE   (default: Sliding Fast Solver)\n";
+    cout << "  --high-memory\n";
+    cout << "          let the search hold up to half of this computer's memory in\n";
+    cout << "          arrangements, instead of stopping at about 2 GB\n";
+    cout << "  --solver TYPE   (default: Sliding Deep Solver)\n";
     cout << "            \"Sliding Fast Solver\"  search up to 250,000 arrangements (also: fast)\n";
     cout << "            \"Sliding Deep Solver\"  search up to 1,000,000 arrangements (also: deep)\n";
+    cout << "            \"Sliding Full Solver\"  no limit: finds the fewest moves or proves there is\n";
+    cout << "                                   no solution; stops when the arrangements held\n";
+    cout << "                                   fill about 2 GB, or half of memory\n";
+    cout << "                                   with --high-memory (also: full)\n";
   } else {
     cout << "  The start and goal stacks come from the file. A move is one disc going\n";
-    cout << "  from the top of one rod to the top of another.\n";
+    cout << "  from the top of one rod to the top of another. With Panex columns a\n";
+    cout << "  disc of size n sits at most n places below the top of its rod.\n";
+    cout << "  --high-memory\n";
+    cout << "          let the search hold up to half of this computer's memory in\n";
+    cout << "          stackings, instead of stopping at about 2 GB\n";
     cout << "  --solver TYPE   (default: Stacking Solver)\n";
     cout << "            \"Stacking Solver\"  fewest rod transfers (also: stacking)\n";
+    cout << "            \"Panex Solver\"     fewest rod transfers for Panex columns, built for\n";
+    cout << "                                large towers: searches from both ends, holds only the\n";
+    cout << "                                newest levels and uses every core (-t n to limit)\n";
+    cout << "                                (also: panex)\n";
+    cout << "  Panex Solver searches are saved when stopped (Ctrl-C), when they run out\n";
+    cout << "  of memory, and every 20 minutes; the same command carries a saved search on.\n";
+    cout << "  --restart       discard a saved search and start over\n";
+    cout << "  --panex-dir DIR keep saved searches in DIR (default: the user's cache folder)\n";
+    cout << "  --panex-disk GB disk saved levels may take (default: half the free space,\n";
+    cout << "                  at most 200); less disk makes tracing the path back slower\n";
   }
 }
 
@@ -455,22 +512,37 @@ static bool pickSolver(puzzleKind_e kind, const char * name) {
     if (n == "fast" || n == "slidingfast" || n == "slidingfastsolver" ||
         n == "slidingfastsolver250kdepth") {
       deepSearch = false;
+      fullSearch = false;
       return true;
     }
     if (n == "deep" || n == "slidingdeep" || n == "slidingdeepsolver" ||
         n == "slidingdeepsolver1mildepth") {
       deepSearch = true;
+      fullSearch = false;
+      return true;
+    }
+    if (n == "full" || n == "slidingfull" || n == "slidingfullsolver" ||
+        n == "slidingfullsolverfulldepth") {
+      deepSearch = false;
+      fullSearch = true;
       return true;
     }
     fprintf(stderr, "burrTxt: unknown solver '%s' for a sliding puzzle\n", name);
-    fprintf(stderr, "         use \"Sliding Fast Solver\" or \"Sliding Deep Solver\" (also: fast, deep)\n");
+    fprintf(stderr, "         use \"Sliding Fast Solver\", \"Sliding Deep Solver\" or \"Sliding Full Solver\"\n");
+    fprintf(stderr, "         (also: fast, deep, full)\n");
     return false;
   }
   if (kind == PK_STACKING) {
-    if (n == "stacking" || n == "stackingsolver")
+    if (n == "stacking" || n == "stackingsolver") {
+      panexSolver = false;
       return true;
+    }
+    if (n == "panex" || n == "panexsolver") {
+      panexSolver = true;
+      return true;
+    }
     fprintf(stderr, "burrTxt: unknown solver '%s' for a stacking puzzle\n", name);
-    fprintf(stderr, "         use \"Stacking Solver\" (also: stacking)\n");
+    fprintf(stderr, "         use \"Stacking Solver\" or \"Panex Solver\" (also: stacking, panex)\n");
     return false;
   }
   if (solverTypeFromName(name, &solverType))
@@ -482,9 +554,16 @@ static bool pickSolver(puzzleKind_e kind, const char * name) {
 }
 
 /* One line per rod transfer of a stacking path: lift, cross and drop are
- * three states, and a rod's x is its index times the board spacing. */
+ * three states, and a disc's x is the x of the rod it is on. */
 static void printStackPlan(const separation_c & path, const problem_c & prob) {
-  const int spacing = stacking::layoutBoard(prob, false).spacing;
+  const std::vector<int> rodX = stacking::layoutBoard(prob, false).rodX;
+  const stacking::rodSet_c & board = prob.getPuzzle().getRodSet(prob.getRodSetId());
+  auto rodAt = [&](int x) {
+    for (unsigned int r = 0; r < rodX.size(); r++)
+      if (rodX[r] == x)
+        return stacking::isPocket(board, r) ? std::string("pocket") : "rod " + std::to_string(r + 1);
+    return std::string("?");
+  };
   std::vector<std::string> names;
   for (unsigned int part = 0; part < prob.getNumberOfParts(); part++)
     for (unsigned int j = 0; j < prob.getPartMaximum(part); j++) {
@@ -501,9 +580,9 @@ static void printStackPlan(const separation_c & path, const problem_c & prob) {
     for (unsigned int i = 0; i < n; i++) {
       if (a->getX(i) == b->getX(i))
         continue;
-      printf("%3u: %s from rod %d to rod %d\n", m + 1,
+      printf("%3u: %s from %s to %s\n", m + 1,
              i < names.size() ? names[i].c_str() : "?",
-             a->getX(i) / spacing + 1, b->getX(i) / spacing + 1);
+             rodAt(a->getX(i)).c_str(), rodAt(b->getX(i)).c_str());
       break;
     }
   }
@@ -521,7 +600,11 @@ int main(int argv, char* args[]) {
   checkRotations = false;
   strictColors = false;
   nestedSlides = false;
+  highMemory = false;
   deepSearch = false;
+  fullSearch = false;
+  panexSolver = false;
+  panexRestart = false;
   const char * solverName = nullptr;
   allProblems = false;
   printDisassemble = false;
@@ -568,6 +651,14 @@ int main(int argv, char* args[]) {
         return 0;
       } else if (strcmp(args[i], "--nested-slides") == 0) {
         nestedSlides = true;
+      } else if (strcmp(args[i], "--restart") == 0) {
+        panexRestart = true;
+      } else if (strcmp(args[i], "--panex-dir") == 0 && i + 1 < argv) {
+        panexDir = args[++i];
+      } else if (strcmp(args[i], "--panex-disk") == 0 && i + 1 < argv) {
+        panexDiskGB = atof(args[++i]);
+      } else if (strcmp(args[i], "--high-memory") == 0) {
+        highMemory = true;
       } else if (strcmp(args[i], "--solver") == 0) {
         if (i + 1 >= argv) {
           usage();
@@ -705,10 +796,17 @@ int main(int argv, char* args[]) {
     fprintf(stderr, "burrTxt: --nested-slides is for sliding puzzles; this is a %s puzzle\n", kindName(kind));
     return 2;
   }
+  if (highMemory && kind == PK_BRICK) {
+    fprintf(stderr, "burrTxt: --high-memory is for sliding and stacking puzzles; this is a %s puzzle\n", kindName(kind));
+    return 2;
+  }
   if ((checkRotations || strictColors) && kind != PK_BRICK) {
     fprintf(stderr, "burrTxt: -R and -C are for brick puzzles; this is a %s puzzle\n", kindName(kind));
     return 2;
   }
+  /* Sliding defaults to the deep search, as in the GUI. */
+  deepSearch = (kind == PK_SLIDING);
+  fullSearch = false;
   if (solverName && !pickSolver(kind, solverName))
     return 2;
 
@@ -796,8 +894,32 @@ int main(int argv, char* args[]) {
         }
         const auto stackStart = std::chrono::steady_clock::now();
         std::unique_ptr<separation_c> path;
-        if (disassemble)
-          path = stacking::findStackPath(*problem);
+        stacking::stackSearch_c search;
+        search.highMemory = highMemory;
+        panex::panexSearch_c panexSearch;
+        panexSearch.highMemory = highMemory;
+        panexSearch.threads = threads;
+        if (disassemble && panexSolver) {
+          std::string why = panex::unsupported(*problem);
+          if (!why.empty()) {
+            fprintf(stderr, "burrTxt: %s\n", why.c_str());
+            return 2;
+          }
+          panexSearch.workDir = panexDir;
+          panexSearch.diskBudget = (unsigned long long)(panexDiskGB * 1e9);
+          panexSearch.stop = &panexStop;
+          if (panexRestart)
+            panex::discardSaved(*problem, panexDir);
+          const std::string saved = panex::savedSearch(*problem, panexDir);
+          if (!saved.empty() && !jsonOutput)
+            cout << "continuing " << saved << endl;
+          panexSearch.resume = true;
+          panexStop.store(false);
+          void (*was)(int) = std::signal(SIGINT, onInterrupt);
+          path = panex::solve(*problem, panexSearch);
+          std::signal(SIGINT, was);
+        } else if (disassemble)
+          path = stacking::findStackPath(*problem, search);
         const double secs = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - stackStart).count();
         const unsigned int moves = path ? stacking::logicalMoves(*path) : 0;
@@ -817,6 +939,39 @@ int main(int argv, char* args[]) {
             cout << " (use -d to search for the moves)";
           if (newline)
             cout << endl;
+          if (disassemble && panexSolver) {
+            cout << "panex search: " << panexSearch.depthReached << " moves deep, "
+                 << panexSearch.found << " stackings, peak "
+                 << panexSearch.peakMemory / 1048576 << " MB in memory";
+            if (panexSearch.diskBytes)
+              cout << ", " << panexSearch.diskBytes / 1048576 << " MB on disk ("
+                   << (panexSearch.levelInterval == 1
+                           ? std::string("every level")
+                           : "every " + std::to_string(panexSearch.levelInterval) + " levels")
+                   << ")";
+            cout << endl;
+            if (!path && panexSearch.saved)
+              cout << (panexSearch.outcome == panex::PANEX_MEMORY
+                           ? "the search outgrew its memory"
+                           : std::string("stopped"))
+                   << "; it is saved: run the same command again to carry on"
+                   << (panexSearch.outcome == panex::PANEX_MEMORY && !highMemory
+                           ? " (with --high-memory)" : "")
+                   << ", or add --restart to start over" << endl;
+            else if (!path)
+              cout << (panexSearch.outcome == panex::PANEX_MEMORY
+                           ? "the search outgrew its memory" +
+                                 std::string(highMemory ? "" : " (try --high-memory)")
+                           : panexSearch.outcome == panex::PANEX_ERROR
+                           ? panexSearch.error
+                           : std::string("every reachable stacking was searched: no solution"))
+                   << endl;
+          } else if (disassemble && !path)
+            cout << (search.outcome == stacking::STACK_MEMORY
+                         ? "the search reached its memory limit, so a solution may be missing" +
+                               std::string(highMemory ? "" : " (try --high-memory)")
+                         : std::string("every reachable stacking was searched: no solution"))
+                 << endl;
         }
         continue;
       }
@@ -916,6 +1071,18 @@ int main(int argv, char* args[]) {
 
         if (newline)
           cout << endl;
+
+        /* Whether "0 solutions" is proven, or the search gave up. */
+        if (disassemble && sliding::isSliding(*problem)) {
+          if (a.slideStartsCut > 0)
+            cout << a.slideStartsCut << " start layout(s) not searched completely: the search"
+                 << " limit was reached, so solutions may be missing"
+                 << (a.slideMemoryCut ? (highMemory ? "" : " (try --high-memory)")
+                                      : (fullSearch ? "" : " (try --solver full)")) << endl;
+          else if (a.Solutions == 0 && a.Assemblies > 0)
+            cout << "every reachable arrangement was searched: no solution"
+                 << (nestedSlides ? "" : " (without --nested-slides)") << endl;
+        }
       }
 
       d.reset();
@@ -950,10 +1117,16 @@ int main(int argv, char* args[]) {
 
         if (problem->getSavedSolution(sol)->getAssembly()) {
 
-          auto da = slide
-              ? sliding::findSlidePath(*problem, *problem->getSavedSolution(sol)->getAssembly(),
-                                       slideStates(), nestedSlides)
-              : d->disassemble(problem->getSavedSolution(sol)->getAssembly());
+          std::unique_ptr<separation_c> da;
+          if (slide) {
+            sliding::slideSearch_c search;
+            search.maxStates = slideStates();
+            search.nested = nestedSlides;
+            search.highMemory = highMemory;
+            da = sliding::findSlidePath(*problem, *problem->getSavedSolution(sol)->getAssembly(), search);
+          } else {
+            da = d->disassemble(problem->getSavedSolution(sol)->getAssembly());
+          }
 
           if (da) {
             if (printSolutions)

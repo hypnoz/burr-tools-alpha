@@ -31,6 +31,7 @@
 #include "voxel.h"
 #include "sliding.h"
 #include "stacking.h"
+#include "panex.h"
 
 #include <chrono>
 #include <memory>
@@ -105,14 +106,14 @@ unsigned long long elapsedMs(std::chrono::steady_clock::time_point t0) {
 } // namespace
 
 void solveThread_c::runStacking(void) {
-  stackingNote.clear();
+  setSolverNote("");
   puzzle.removeAllSolutions();
   puzzle.markSolving();
 
   const bool find = (parameters & PAR_DISASSM) != 0;
   const bool countOnly = (parameters & PAR_JUST_COUNT) != 0;
   if (!find && !countOnly) {
-    stackingNote = "Turn on Find Solutions";
+    setSolverNote("Turn on Find Solutions");
     action.store(ACT_FINISHED, std::memory_order_relaxed);
     puzzle.finishedSolving();
     return;
@@ -120,16 +121,73 @@ void solveThread_c::runStacking(void) {
 
   std::string err = stacking::setupError(puzzle);
   if (!err.empty()) {
-    stackingNote = err;
+    setSolverNote(err);
     action.store(ACT_FINISHED, std::memory_order_relaxed);
     puzzle.finishedSolving();
     return;
   }
 
   action.store(ACT_ASSEMBLING, std::memory_order_relaxed);
-  std::unique_ptr<separation_c> path = stacking::findStackPath(puzzle);
+  /* The Panex Solver, and the Stacking Solver on any puzzle the same search
+   * can hold: that search can pause, resume and autosave. */
+  if ((parameters & PAR_PANEX_SOLVER) || panex::unsupported(puzzle, true).empty()) {
+    panex::panexSearch_c search;
+    search.anyRules = (parameters & PAR_PANEX_SOLVER) == 0;
+    search.highMemory = (parameters & PAR_HIGH_MEMORY) != 0;
+    search.stop = &stopPressed;
+    search.progress = &slideProgress;
+    search.depth = &searchDepth;
+    search.traced = &searchTraced;
+    search.resume = (parameters & PAR_PANEX_RESUME) != 0;
+    search.autosaveMinutes = (parameters & PAR_PANEX_NO_AUTOSAVE) ? 0 : 20;
+    /* Time used counts every run of a saved search, before this one too. */
+    if (search.resume)
+      puzzle.addTime((unsigned long)panex::savedSeconds(puzzle));
+    std::unique_ptr<separation_c> path = panex::solve(puzzle, search);
+    puzzle.addTimeMs(getTimeMs());
+    puzzle.incNumAssemblies();
+    if (path) {
+      puzzle.incNumSolutions();
+      if (!countOnly) {
+        std::unique_ptr<assembly_c> start = stacking::startAssembly(puzzle);
+        puzzle.addSolution(start.release(), path.release(), 0, 0);
+      }
+    } else if (search.outcome == panex::PANEX_STOPPED && search.saved) {
+      setSolverNote("Paused " + std::to_string(search.depthReached) +
+                    " moves deep. The search is saved: press Continue to carry on, even after quitting BurrTools.");
+    } else if (search.outcome == panex::PANEX_STOPPED) {
+      setSolverNote("Stopped before the search was complete.");
+    } else if (search.outcome == panex::PANEX_MEMORY) {
+      setSolverNote("The search outgrew its memory after " + std::to_string(search.found) +
+                    " stackings." +
+                    (search.saved ? std::string(" It is saved:") + (search.highMemory ? "" : " turn on Enable High Memory and") +
+                                        " press Continue to carry on."
+                                  : (search.highMemory ? "" : " Try Enable High Memory.")));
+    } else if (search.outcome == panex::PANEX_ERROR) {
+      setSolverNote(search.error);
+    } else {
+      setSolverNote("Every reachable stacking was searched: this puzzle has no solution.");
+    }
+    action.store(ACT_FINISHED, std::memory_order_relaxed);
+    puzzle.finishedSolving();
+    return;
+  }
+  stacking::stackSearch_c search;
+  search.highMemory = (parameters & PAR_HIGH_MEMORY) != 0;
+  search.stop = &stopPressed;
+  search.progress = &slideProgress;
+  std::unique_ptr<separation_c> path = stacking::findStackPath(puzzle, search);
+  puzzle.addTimeMs(getTimeMs());
   if (!path) {
-    stackingNote = "No path within the state budget";
+    if (search.outcome == stacking::STACK_STOPPED)
+      setSolverNote("Stopped before the search was complete.");
+    else if (search.outcome == stacking::STACK_MEMORY)
+      setSolverNote("The search reached its memory limit of " +
+                    std::to_string(search.memoryStates) +
+                    " stackings. There may be a solution the solver did not find." +
+                    (search.highMemory ? "" : " Try Enable High Memory."));
+    else
+      setSolverNote("Every reachable stacking was searched: this puzzle has no solution.");
     puzzle.incNumAssemblies();
     action.store(ACT_FINISHED, std::memory_order_relaxed);
     puzzle.finishedSolving();
@@ -263,6 +321,26 @@ void solveThread_c::run(void){
       action.store(ACT_ASSEMBLING, std::memory_order_relaxed);
       statsPhase = PHASE_ASSEMBLE;
       phaseOrigin = std::chrono::steady_clock::now();
+      /* What a paused run had not finished with comes first: assemblies it
+       * had counted go straight to be taken apart, the rest as if just found. */
+      for (problem_c::pendingAssembly_c & p : puzzle.takePending()) {
+        if (stopPressed.load(std::memory_order_relaxed) || !p.counted) {
+          if (stopPressed.load(std::memory_order_relaxed))
+            puzzle.addPending(std::move(p.assembly), p.counted, p.assemblyNumber, p.solutionNumber);
+          else
+            assembly(std::move(p.assembly));
+          continue;
+        }
+#ifdef NO_THREADING
+        disasmTask_c task;
+        task.assembly = std::move(p.assembly);
+        task.assemblyNumber = p.assemblyNumber;
+        task.solutionNumber = p.solutionNumber;
+        processDisassembly(task, solutionActionFromParameters(parameters), disassemblers[0].get());
+#else
+        enqueueDisassembly(std::move(p.assembly), p.assemblyNumber, p.solutionNumber);
+#endif
+      }
       if (solverType == SOLVER_BT2) {
         assemblerThreadCount = bt2ChooseAssemblerWorkers(a);
         assemblerThreadCount = bt2Assemble(a, this, assemblerThreadCount);
@@ -279,9 +357,17 @@ void solveThread_c::run(void){
         flushDisassemblyQueue();
         drainMs.store(elapsedMs(phaseOrigin), std::memory_order_relaxed);
         statsPhase = PHASE_NONE;
+      } else {
+        /* An assembly queued just as Pause emptied the queue would otherwise
+         * wait there for workers that are gone: keep it for the next run. */
+        cancelDisassemblyWork();
       }
 
-      puzzle.addTime(time(0)-startTime);
+      puzzle.addTimeMs(getTimeMs());
+
+      if (sliding::isSliding(puzzle) && (parameters & PAR_DISASSM) &&
+          !stopPressed.load(std::memory_order_relaxed))
+        setSolverNote(slidingSummary());
 
       if (stopPressed.load(std::memory_order_relaxed))
         action.store(ACT_PAUSING, std::memory_order_relaxed);
@@ -293,7 +379,7 @@ void solveThread_c::run(void){
 
     } else {
       action.store(ACT_PAUSING, std::memory_order_relaxed);
-      puzzle.addTime(time(0)-startTime);
+      puzzle.addTimeMs(getTimeMs());
     }
 
   }
@@ -305,6 +391,38 @@ void solveThread_c::run(void){
     if (puzzle.getAssembler())
       puzzle.removeAllSolutions();
   }
+}
+
+std::string solveThread_c::slidingSummary(void) const {
+  /* Say plainly whether "no solution" is proven or the search gave up. */
+  if (slideStartsCut > 0) {
+    std::string msg = std::to_string(slideStartsCut) +
+        (slideStartsCut == 1 ? " start layout was" : " start layouts were") +
+        " not searched completely";
+    if (slideMemoryCut)
+      msg += ": the search reached its memory limit of " +
+             std::to_string(slideMemoryStates) + " arrangements";
+    else if (parameters & PAR_DEEP_SEARCH)
+      msg += ": the search reached its limit of 1,000,000 arrangements";
+    else
+      msg += ": the search reached its limit of 250,000 arrangements";
+    msg += ". There may be solutions the solver did not find.";
+    if (slideMemoryCut && !(parameters & PAR_HIGH_MEMORY))
+      msg += " Try Enable High Memory.";
+    if (!slideMemoryCut && !(parameters & PAR_FULL_SEARCH))
+      msg += (parameters & PAR_DEEP_SEARCH)
+          ? " Try the Sliding Full Solver."
+          : " Try the Sliding Deep or Full Solver.";
+    return msg;
+  }
+  if (puzzle.getNumSolutions() == 0 && puzzle.getNumAssemblies() > 0) {
+    std::string msg = "Every reachable arrangement was searched: this puzzle has no solution "
+                      "with the current settings.";
+    if (!(parameters & PAR_NESTED_SLIDES))
+      msg += " If a piece can carry pieces that sit inside it, try Allow Nested Slides.";
+    return msg;
+  }
+  return "";
 }
 
 solveThread_c::solveThread_c(problem_c & puz, int par) :
@@ -397,6 +515,10 @@ void solveThread_c::cancelDisassemblyWork(void) {
   if (!(parameters & PAR_DISASSM))
     return;
 
+  /* Pause calls this from the GUI thread while the solver thread may call it
+   * too as it winds down; only one may join the workers. */
+  std::lock_guard<std::mutex> cancelLock(cancelMutex);
+
   disasmWorkerStop.store(true, std::memory_order_release);
 
   for (unsigned int i = 0; i < disassemblers.size(); i++)
@@ -412,9 +534,13 @@ void solveThread_c::cancelDisassemblyWork(void) {
   disasmWorkers.clear();
 #endif
 
+  /* Queued assemblies are already counted; keep them for the next run. */
   std::lock_guard<std::mutex> lock(disasmQueueMutex);
-  while (!disasmQueue.empty())
+  while (!disasmQueue.empty()) {
+    disasmTask_c & task = disasmQueue.front();
+    puzzle.addPending(std::move(task.assembly), true, task.assemblyNumber, task.solutionNumber);
     disasmQueue.pop();
+  }
   disasmPending.store(0, std::memory_order_relaxed);
 }
 
@@ -442,7 +568,7 @@ void solveThread_c::disasmWorkerRun(disassembler_c * workerDisassm) {
     }
 
     if (disasmWorkerStop.load(std::memory_order_acquire)) {
-      task.assembly.reset();
+      puzzle.addPending(std::move(task.assembly), true, task.assemblyNumber, task.solutionNumber);
       if (disasmPending.fetch_sub(1, std::memory_order_acq_rel) == 1)
         disasmQueueCv.notify_all();
       continue;
@@ -456,11 +582,16 @@ void solveThread_c::disasmWorkerRun(disassembler_c * workerDisassm) {
 }
 
 void solveThread_c::enqueueDisassembly(std::unique_ptr<assembly_c> a) {
+  enqueueDisassembly(std::move(a), puzzle.getNumAssemblies(), puzzle.getNumSolutions());
+}
+
+void solveThread_c::enqueueDisassembly(std::unique_ptr<assembly_c> a, unsigned long assemblyNumber,
+                                       unsigned long solutionNumber) {
 
   disasmTask_c task;
   task.assembly = std::move(a);
-  task.assemblyNumber = puzzle.getNumAssemblies();
-  task.solutionNumber = puzzle.getNumSolutions();
+  task.assemblyNumber = assemblyNumber;
+  task.solutionNumber = solutionNumber;
 
   disasmPending.fetch_add(1, std::memory_order_relaxed);
   {
@@ -545,6 +676,13 @@ void solveThread_c::processDisassembly(disasmTask_c & task, int _solutionAction,
   std::unique_ptr<separation_c> s = workerDisassm->disassemble(a.get());
 
   if (!s) {
+    /* Stopped part way is not the same as cannot come apart: do it again
+     * on the next run. */
+    if (disasmWorkerStop.load(std::memory_order_acquire) ||
+        stopPressed.load(std::memory_order_acquire)) {
+      puzzle.addPending(std::move(a), true, task.assemblyNumber, task.solutionNumber);
+      return;
+    }
     disasmInseparable.fetch_add(1, std::memory_order_relaxed);
     return;
   }
@@ -686,8 +824,12 @@ bool solveThread_c::assembly(std::unique_ptr<assembly_c> a) {
 
   std::lock_guard<std::mutex> lock(assemblyCallbackMutex);
 
-  if (stopPressed.load(std::memory_order_acquire))
+  /* Reported after Pause: the assembler will not report it again, so keep
+   * it for the next run rather than lose it. */
+  if (stopPressed.load(std::memory_order_acquire)) {
+    puzzle.addPending(std::move(a), false);
     return true;
+  }
 
   const int _solutionAction = solutionActionFromParameters(parameters);
 
@@ -695,10 +837,28 @@ bool solveThread_c::assembly(std::unique_ptr<assembly_c> a) {
   if (sliding::isSliding(puzzle)) {
     if (!(parameters & PAR_JUST_COUNT)) {
       if (parameters & PAR_DISASSM) {
-        std::unique_ptr<separation_c> path = sliding::findSlidePath(
-            puzzle, *a,
-            (parameters & PAR_DEEP_SEARCH) ? sliding::DEEP_SEARCH_STATES : sliding::SEARCH_STATES,
-            (parameters & PAR_NESTED_SLIDES) != 0);
+        sliding::slideSearch_c search;
+        search.maxStates = (parameters & PAR_FULL_SEARCH) ? sliding::FULL_SEARCH
+                         : (parameters & PAR_DEEP_SEARCH) ? sliding::DEEP_SEARCH_STATES
+                         : sliding::SEARCH_STATES;
+        search.highMemory = (parameters & PAR_HIGH_MEMORY) != 0;
+        search.nested = (parameters & PAR_NESTED_SLIDES) != 0;
+        search.stop = &stopPressed;
+        search.progress = &slideProgress;
+        std::unique_ptr<separation_c> path = sliding::findSlidePath(puzzle, *a, search);
+        /* Paused in the middle of this start's search: search it again on
+         * the next run instead of counting it as one with no solution. */
+        if (search.outcome == sliding::SLIDE_STOPPED) {
+          puzzle.addPending(std::move(a), false);
+          return true;
+        }
+        if (search.outcome == sliding::SLIDE_LIMIT || search.outcome == sliding::SLIDE_MEMORY) {
+          slideStartsCut++;
+          if (search.outcome == sliding::SLIDE_MEMORY) {
+            slideMemoryCut = true;
+            slideMemoryStates = search.memoryStates;
+          }
+        }
         if (path) {
           /* Several starts can slide to the same finished picture. A search
            * never walks in a circle, but a worse start takes more moves to
@@ -804,6 +964,16 @@ void solveThread_c::stopInternal(void) {
 
 void solveThread_c::stop(void) {
   stopInternal();
+}
+
+void solveThread_c::stopSoft(void) {
+  /* Only the assembler stops: a slide search or a disassembly under way
+   * finishes, the queue drains, and the run pauses where it can be saved. */
+  const unsigned int act = action.load(std::memory_order_relaxed);
+  if (act != ACT_ASSEMBLING && act != ACT_DISASSEMBLING)
+    return;
+  if (puzzle.getAssembler())
+    puzzle.getAssembler()->stop();
 }
 
 bool solveThread_c::start(bool stop_after_prep) {

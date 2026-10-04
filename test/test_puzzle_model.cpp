@@ -1243,3 +1243,49 @@ TEST_CASE("problem: strict colour placement requires an exact colour match",
   REQUIRE_FALSE(pr->placementAllowed(1, 2, true));
   REQUIRE_FALSE(pr->placementAllowed(2, 1, true));
 }
+
+/* Time used is saved with each solved problem and read back when the file is
+ * opened, to the millisecond: a solve under a second keeps its 250 ms
+ * instead of rounding to nothing. Files from older versions, with only the
+ * seconds, still load. */
+TEST_CASE("problem: Time used survives a save and load, to the millisecond", "[model][problem]") {
+  auto p = puzzle_c::load("examples/PelikanBurr.xmpuzzle");
+  REQUIRE(p != nullptr);
+  problem_c * pr = p->getProblem(0);
+  pr->removeAllSolutions();
+  pr->markSolving();
+  pr->addTimeMs(250);
+  pr->finishedSolving();
+  REQUIRE(pr->getUsedMs() == 250);
+
+  std::stringstream saved;
+  {
+    xmlWriter_c xml(saved);
+    p->save(xml);
+  }
+  {
+    std::stringstream in(saved.str());
+    xmlParser_c pars(in);
+    puzzle_c loaded(pars);
+    REQUIRE(loaded.getProblem(0)->usedTimeKnown());
+    CHECK(loaded.getProblem(0)->getUsedMs() == 250);
+    CHECK(loaded.getProblem(0)->getUsedTime() == 0);
+  }
+
+  /* An older file has only the seconds. */
+  std::string old = saved.str();
+  const size_t at = old.find(" timeMs=\"");
+  REQUIRE(at != std::string::npos);
+  old.erase(at, old.find('"', at + 9) + 1 - at);
+  {
+    std::string withSeconds = old;
+    const size_t t = withSeconds.find("time=\"0\"");
+    REQUIRE(t != std::string::npos);
+    withSeconds.replace(t, 8, "time=\"7\"");
+    std::stringstream in(withSeconds);
+    xmlParser_c pars(in);
+    puzzle_c loaded(pars);
+    CHECK(loaded.getProblem(0)->getUsedMs() == 7000);
+    CHECK(loaded.getProblem(0)->getUsedTime() == 7);
+  }
+}

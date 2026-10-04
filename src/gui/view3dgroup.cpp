@@ -73,7 +73,11 @@ LView3dGroup::LView3dGroup(int x, int y, int w, int h) : Fl_Group(0, 0, 50, 50),
 }
 
 void LView3dGroup::goHome(void) {
-  resetZoomToDefault();
+  /* A board of rods is wider than one piece: frame all of it. */
+  if (View3D->showsStackingBoard())
+    setZoom(View3D->fitZoom());
+  else
+    resetZoomToDefault();
   View3D->resetViewRotation();
   redraw();
 }

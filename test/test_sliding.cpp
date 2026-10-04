@@ -14,6 +14,12 @@
 #include "lib/solvethread.h"
 #include "lib/voxel.h"
 
+#include "tools/xml.h"
+
+#include <atomic>
+#include <cstdlib>
+#include <memory>
+#include <sstream>
 #include <string>
 
 using namespace bttest;
@@ -507,4 +513,135 @@ TEST_CASE("sliding: the nested puzzle solves with nested slides", "[sliding][sol
   const state_c * first = path->getState(0);
   CHECK((last->getX(4) - first->getX(4)) == (last->getX(5) - first->getX(5)));
   CHECK((last->getY(4) - first->getY(4)) == (last->getY(5) - first->getY(5)));
+}
+
+/* A 3x2 tray, two layers deep, and a 1x1 piece two layers tall. The bottom
+ * layer is all floor; the top layer has a wall at (1,0), and with `blocked`
+ * also at (1,1). Checking only the bottom layer, the piece would slide
+ * straight from (0,0) to its goal at (2,0). With both layers it must go
+ * round through row 1, or cannot go at all. */
+static std::unique_ptr<puzzle_c> twoLayerTray(bool blocked) {
+  std::string top1 = blocked ? "#_#" : "###";
+  std::string xml =
+      "<?xml version=\"1.0\"?>\n"
+      "<puzzle version=\"2\"><gridType type=\"5\"/>"
+      "<colors><color red=\"40\" green=\"70\" blue=\"100\"/>"
+      "<color red=\"70\" green=\"100\" blue=\"40\"/></colors><shapes>"
+      "<voxel x=\"3\" y=\"2\" z=\"2\" name=\"sg:1:\" goal=\"0,0,2,0,0,0,0,0,2,0,0,0\" type=\"0\">"
+      "#2######2_#" + top1 + "</voxel>"
+      "<voxel x=\"1\" y=\"1\" z=\"2\" name=\"A\" type=\"0\">#2#2</voxel>"
+      "</shapes><problems><problem name=\"START/GOAL 1\" state=\"0\"><shapes>"
+      "<shape id=\"1\" count=\"1\"/></shapes><result id=\"0\"/><bitmap/>"
+      "</problem></problems><comment/></puzzle>";
+  std::stringstream in(xml);
+  xmlParser_c pars(in);
+  return std::make_unique<puzzle_c>(pars);
+}
+
+TEST_CASE("sliding: every layer of a deeper tray blocks a move", "[sliding]") {
+  std::unique_ptr<puzzle_c> open = twoLayerTray(false);
+  problem_c * pr = open->getProblem(0);
+  REQUIRE(pr->resultValid());
+  assembly_c start(open->getGridType());
+  start.addPlacement(0, 0, 0, 0);
+
+  auto path = sliding::findSlidePath(*pr, start);
+  REQUIRE(path != nullptr);
+  REQUIRE(path->getMoves() == 1);
+  CHECK(path->getState(1)->getX(0) == 2);
+  CHECK(path->getState(1)->getY(0) == 0);
+  /* Round the top-layer wall: down, across, up. */
+  std::vector<unsigned int> movers;
+  auto route = sliding::slideRoute(*pr, *path, 0, &movers);
+  CHECK(route.size() == 4);
+
+  std::unique_ptr<puzzle_c> shut = twoLayerTray(true);
+  CHECK(sliding::findSlidePath(*shut->getProblem(0), start) == nullptr);
+}
+
+TEST_CASE("sliding: a search says whether it finished, hit its limit or was stopped", "[sliding]") {
+  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_sliding_nested.xmpuzzle");
+  REQUIRE(puzzle != nullptr);
+  problem_c * pr = puzzle->getProblem(0);
+  sliding::refreshStartLocks(*pr);
+
+  /* The start layout from the file: four blocks along the top, the Cave
+   * and the Smile in its pocket below. Parts are the blocks, Cave, Smile. */
+  assembly_c start(puzzle->getGridType());
+  for (auto p : std::vector<std::pair<int, int>>{{0, 0}, {3, 0}, {6, 0}, {9, 0}, {3, 3}, {3, 4}})
+    start.addPlacement(0, p.first, p.second, 0);
+
+  sliding::slideSearch_c full;
+  full.maxStates = sliding::FULL_SEARCH;
+  std::atomic<unsigned long> progress{0};
+  full.progress = &progress;
+  CHECK(sliding::findSlidePath(*pr, start, full) == nullptr);
+  CHECK(full.outcome == sliding::SLIDE_NO_PATH);
+  CHECK(full.visited > 0);
+  CHECK(progress.load() == full.visited);
+
+  sliding::slideSearch_c small;
+  small.maxStates = 10;
+  CHECK(sliding::findSlidePath(*pr, start, small) == nullptr);
+  CHECK(small.outcome == sliding::SLIDE_LIMIT);
+
+  std::atomic<bool> stop{true};
+  sliding::slideSearch_c stopped;
+  stopped.maxStates = sliding::FULL_SEARCH;
+  stopped.stop = &stop;
+  CHECK(sliding::findSlidePath(*pr, start, stopped) == nullptr);
+  CHECK(stopped.outcome == sliding::SLIDE_STOPPED);
+}
+
+TEST_CASE("sliding: a full search stops at its memory limit", "[sliding]") {
+  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_sliding_nested.xmpuzzle");
+  REQUIRE(puzzle != nullptr);
+  problem_c * pr = puzzle->getProblem(0);
+  sliding::refreshStartLocks(*pr);
+
+  assembly_c start(puzzle->getGridType());
+  for (auto p : std::vector<std::pair<int, int>>{{0, 0}, {3, 0}, {6, 0}, {9, 0}, {3, 3}, {3, 4}})
+    start.addPlacement(0, p.first, p.second, 0);
+
+  sliding::slideSearch_c tight;
+  tight.maxStates = sliding::FULL_SEARCH;
+  tight.maxMemoryStates = 10;
+  CHECK(sliding::findSlidePath(*pr, start, tight) == nullptr);
+  CHECK(tight.outcome == sliding::SLIDE_MEMORY);
+  CHECK(tight.memoryStates == 10);
+
+  /* The memory budget: about 2 GB normally, never less with high memory. */
+  CHECK(sliding::memoryStates(200, false) == 10000000);
+  CHECK(sliding::memoryStates(200, true) >= sliding::memoryStates(200, false));
+
+  sliding::slideSearch_c normal;
+  normal.maxStates = sliding::FULL_SEARCH;
+  CHECK(sliding::findSlidePath(*pr, start, normal) == nullptr);
+  CHECK(normal.outcome == sliding::SLIDE_NO_PATH);
+
+  sliding::slideSearch_c high;
+  high.maxStates = sliding::FULL_SEARCH;
+  high.highMemory = true;
+  CHECK(sliding::findSlidePath(*pr, start, high) == nullptr);
+  CHECK(high.outcome == sliding::SLIDE_NO_PATH);
+  CHECK(high.memoryStates >= normal.memoryStates);
+  /* The position-table search packs more than 10 million into 2 GB. */
+  if (!std::getenv("BURRTOOLS_SLIDE_LEGACY"))
+    CHECK(normal.memoryStates > 10000000);
+}
+
+TEST_CASE("sliding: the solver says when no solution is proven", "[sliding][solver]") {
+  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_sliding_nested.xmpuzzle");
+  REQUIRE(puzzle != nullptr);
+  problem_c * pr = puzzle->getProblem(0);
+  pr->removeAllSolutions();
+
+  solveThread_c solver(*pr, solveThread_c::PAR_DISASSM | solveThread_c::PAR_FULL_SEARCH);
+  REQUIRE(solver.start());
+  solver.waitUntilFinished();
+  REQUIRE(solver.currentAction() == solveThread_c::ACT_FINISHED);
+  CHECK(pr->getNumSolutions() == 0);
+  const std::string note = solver.getSolverNote();
+  CHECK(note.find("Every reachable arrangement was searched") != std::string::npos);
+  CHECK(note.find("Allow Nested Slides") != std::string::npos);
 }

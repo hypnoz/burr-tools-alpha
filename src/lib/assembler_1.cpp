@@ -31,6 +31,7 @@
 
 #include "../tools/xml.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
@@ -2781,7 +2782,11 @@ void assembler_1_c::simdSearch(void) {
   auto solver = createSimdSolver();
   std::atomic<uint64_t> simd_iter{0};
 
+  simdDone = 0;
   solver->solve([this](const std::vector<unsigned int> &solution_nodes) -> bool {
+    /* Already reported before the search was stopped. */
+    if (simdDone++ < simdSkip)
+      return !abbort.load(std::memory_order_relaxed);
     rows = solution_nodes;
     solution();
     return !abbort.load(std::memory_order_relaxed);
@@ -2791,6 +2796,14 @@ void assembler_1_c::simdSearch(void) {
 
   parallelInterrupted = abbort.load(std::memory_order_relaxed);
   simdCompleted = !parallelInterrupted;
+  if (parallelInterrupted) {
+    /* rows held the last solution, not a place in the matrix: back to the
+     * root, and pass over what was reported on the next run. */
+    rows.clear();
+    simdSkip = std::max(simdSkip, simdDone);
+  } else {
+    simdSkip = 0;
+  }
 
   running.store(false, std::memory_order_relaxed);
 }
@@ -2822,7 +2835,12 @@ void assembler_1_c::assemble(assembler_cb * callback) {
     if (next_row_stack.size()) {
       asm_bc = callback;
       unsigned int threads = getEffectiveThreads();
-      if (task_stack.size() == 1 && rows.empty() && next_row_stack.size() == 1 && threads > 1) {
+      const bool atRoot = task_stack.size() == 1 && rows.empty() && next_row_stack.size() == 1;
+      /* A stopped search carries on the way it ran: SIMD passing over what it
+       * reported, parallel with its remaining tasks, whatever the thread count. */
+      if (simdSkip > 0 && canUseSimd()) {
+        simdSearch();
+      } else if (atRoot && (threads > 1 || !parallelTasks.empty())) {
         parallelMultiSearch(threads);
       } else if (canUseSimd()) {
         simdSearch();
@@ -2914,17 +2932,21 @@ assembler_c::errState assembler_1_c::setPosition(const char * string, const char
   parallelTasks.clear();
   taskCompleted.clear();
   emittedSignatures.clear();
+  simdSkip = 0;
 
   unsigned int pos = 0;
 
-  /* leading flag written by save(): an interrupted parallel search recorded
-   * neither how far its workers got nor which assemblies it already reported
+  /* leading flag written by save(): 0 a serial position, 2 a stopped
+   * parallel search with its tasks and the assemblies it reported, 3 a
+   * stopped SIMD search with how many it reported. 1, from older versions,
+   * is a stopped parallel search saved without those, which cannot resume.
    */
+  unsigned int interrupted = 0;
   {
-    unsigned int interrupted = 0;
     pos += getInt(string+pos, &interrupted);
     if (pos >= len) return ERR_CAN_NOT_RESTORE_SYNTAX;
-    if (interrupted) return ERR_CAN_NOT_RESTORE_INTERRUPTED;
+    if (interrupted == 1) return ERR_CAN_NOT_RESTORE_INTERRUPTED;
+    if (interrupted > 3) return ERR_CAN_NOT_RESTORE_SYNTAX;
   }
 
   pos += stringToVector(string+pos, rows);           if (pos >= len) return ERR_CAN_NOT_RESTORE_SYNTAX;
@@ -2934,6 +2956,70 @@ assembler_c::errState assembler_1_c::setPosition(const char * string, const char
   pos += stringToVector(string+pos, hidden_rows);    if (pos >= len) return ERR_CAN_NOT_RESTORE_SYNTAX;
   pos += stringToVector(string+pos, finished_a);     if (pos >= len) return ERR_CAN_NOT_RESTORE_SYNTAX;
   pos += stringToVector(string+pos, finished_b);
+
+  if (interrupted >= 2) {
+    const char * s = string + pos;
+    char * end = nullptr;
+    auto next = [&](unsigned long long & v) {
+      v = std::strtoull(s, &end, 10);
+      if (end == s)
+        return false;
+      s = end;
+      return true;
+    };
+    auto expect = [&](char c) {
+      while (*s == ' ')
+        s++;
+      if (*s != c)
+        return false;
+      s++;
+      return true;
+    };
+    unsigned long long n = 0;
+    if (interrupted == 3) {
+      if (!expect('K') || !next(n))
+        return ERR_CAN_NOT_RESTORE_SYNTAX;
+      simdSkip = n;
+    } else {
+      if (!expect('T') || !next(n))
+        return ERR_CAN_NOT_RESTORE_SYNTAX;
+      parallelTasks.resize((size_t)n);
+      for (SubtreeTask_1 & t : parallelTasks)
+        for (std::vector<unsigned int> * v : {&t.task_stack, &t.next_row_stack, &t.column_stack,
+                                              &t.rows, &t.hidden_rows}) {
+          unsigned long long k = 0;
+          if (!next(k))
+            return ERR_CAN_NOT_RESTORE_SYNTAX;
+          v->resize((size_t)k);
+          for (unsigned int & x : *v) {
+            unsigned long long val = 0;
+            if (!next(val))
+              return ERR_CAN_NOT_RESTORE_SYNTAX;
+            x = (unsigned int)val;
+          }
+        }
+      if (!expect('C'))
+        return ERR_CAN_NOT_RESTORE_SYNTAX;
+      while (*s == ' ')
+        s++;
+      taskCompleted.assign(parallelTasks.size(), 0);
+      for (size_t i = 0; i < parallelTasks.size(); i++, s++) {
+        if (*s != '0' && *s != '1')
+          return ERR_CAN_NOT_RESTORE_SYNTAX;
+        taskCompleted[i] = *s == '1';
+      }
+      unsigned long long m = 0;
+      if (!expect('S') || !next(m))
+        return ERR_CAN_NOT_RESTORE_SYNTAX;
+      for (unsigned long long i = 0; i < m; i++) {
+        unsigned long long sig = 0;
+        if (!next(sig))
+          return ERR_CAN_NOT_RESTORE_SYNTAX;
+        emittedSignatures.insert(sig);
+      }
+    }
+    parallelInterrupted = true;
+  }
 
   // not we need to restore the matrix to the right state
 
@@ -2946,6 +3032,9 @@ assembler_c::errState assembler_1_c::setPosition(const char * string, const char
 
     switch (task_stack[i]) {
 
+      case 0:
+        /* the step not started yet, as at the root: nothing to replay */
+        break;
       case 1:
         cover_column_only(column_stack[column_stack_pos++]);
         break;
@@ -2996,10 +3085,10 @@ void assembler_1_c::save(xmlWriter_c & xml) const
 
   std::ostream & str = xml.addContent();
 
-  /* leading flag: 1 marks a parallel search that was interrupted and whose
-   * position can therefore not be resumed (see parallelInterrupted)
-   */
-  str << (parallelInterrupted ? 1 : 0) << " ";
+  /* leading flag, see setPosition: 2 a stopped parallel search, saved with
+   * its tasks and the assemblies it reported, 3 a stopped SIMD search */
+  const unsigned int flag = !parallelInterrupted ? 0 : parallelTasks.empty() ? 3 : 2;
+  str << flag << " ";
 
   vectorToStream(rows, str);
   vectorToStream(task_stack, str);
@@ -3008,6 +3097,26 @@ void assembler_1_c::save(xmlWriter_c & xml) const
   vectorToStream(hidden_rows, str);
   vectorToStream(finished_a, str);
   vectorToStream(finished_b, str);
+
+  if (flag == 3) {
+    str << " K " << std::max(simdSkip, simdDone);
+  } else if (flag == 2) {
+    str << " T " << parallelTasks.size();
+    for (const SubtreeTask_1 & t : parallelTasks) {
+      str << " ";
+      vectorToStream(t.task_stack, str);
+      vectorToStream(t.next_row_stack, str);
+      vectorToStream(t.column_stack, str);
+      vectorToStream(t.rows, str);
+      vectorToStream(t.hidden_rows, str);
+    }
+    str << " C ";
+    for (uint8_t c : taskCompleted)
+      str << (c ? '1' : '0');
+    str << " S " << emittedSignatures.size();
+    for (uint64_t sig : emittedSignatures)
+      str << " " << sig;
+  }
 
   xml.endTag("assembler");
 }

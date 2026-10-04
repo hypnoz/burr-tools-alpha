@@ -10,14 +10,20 @@
 #include "gridtype.h"
 #include "problem.h"
 #include "puzzle.h"
+#include "sysmemory.h"
 #include "voxel.h"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <queue>
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
+#include <unordered_map>
 #include <utility>
 
 namespace sliding {
@@ -35,6 +41,13 @@ bool isFloor(const voxel_c & tray, int x, int y) {
   if (x < 0 || y < 0 || (unsigned)x >= tray.getX() || (unsigned)y >= tray.getY())
     return false;
   return tray.getState(x, y, 0) != voxel_c::VX_EMPTY;
+}
+
+bool isFloor(const voxel_c & tray, int x, int y, int z) {
+  if (x < 0 || y < 0 || z < 0 || (unsigned)x >= tray.getX() || (unsigned)y >= tray.getY() ||
+      (unsigned)z >= tray.getZ())
+    return false;
+  return tray.getState(x, y, z) != voxel_c::VX_EMPTY;
 }
 
 void fillTray(voxel_c * v) {
@@ -158,6 +171,9 @@ bool findColorAnchor(const voxel_c & tray, const voxel_c & piece,
 struct Place {
   int x, y;
   unsigned char trans;
+  /* Pieces slide in x and y only. z is the layer their hotspot sits on,
+   * fixed from the start, so a tray more than one layer deep works too. */
+  int z = 0;
 };
 
 struct SlideState {
@@ -173,13 +189,17 @@ std::string stateKey(const SlideState & s) {
   return os.str();
 }
 
-bool goalsSatisfied(const problem_c & prob,
-                    const std::vector<const voxel_c *> & pieces,
-                    const SlideState & s) {
-  const voxel_c * tray = prob.resultValid() ? getResultShape(prob) : nullptr;
-  const bool startGoal = tray && isStartGoalShape(tray);
+/* Whether each piece sits where the goal wants it. Every piece is judged on
+ * its own, so a position search can work the answer out once per position. */
+class goalCheck_c {
+public:
+  goalCheck_c(const problem_c & prob, const std::vector<const voxel_c *> & pieces)
+      : pieces(pieces) {
+    tray = prob.resultValid() ? getResultShape(prob) : nullptr;
+    startGoal = tray && isStartGoalShape(tray);
+    goal = (!startGoal && prob.goalValid()) ? prob.getGoalShape() : nullptr;
 
-  if (startGoal) {
+    /* Map each placement index back to its part so we can look up colours. */
     std::vector<unsigned int> partOf(pieces.size());
     {
       unsigned int pc = 0;
@@ -188,191 +208,190 @@ bool goalsSatisfied(const problem_c & prob,
           partOf[pc++] = part;
     }
 
-    /* Empty cells are walls. A piece may slide across a variable cell, and
-     * the finished position must leave every variable cell empty. Only
-     * normal cells are legal places to stop, including a goal stamp. */
-    for (unsigned int i = 0; i < pieces.size(); i++) {
-      const voxel_c * p = pieces[i];
-      if (!p)
-        return false;
-      int hx = (int)p->getHx();
-      int hy = (int)p->getHy();
-      for (unsigned int y = 0; y < p->getY(); y++)
-        for (unsigned int x = 0; x < p->getX(); x++) {
-          if (p->getState(x, y, 0) == voxel_c::VX_EMPTY)
-            continue;
-          int tx = s.places[i].x + (int)x - hx;
-          int ty = s.places[i].y + (int)y - hy;
-          if (!isFloor(*tray, tx, ty))
-            return false;
-          if (tray->getState(tx, ty, 0) == voxel_c::VX_VARIABLE)
-            return false;
-        }
-    }
-
+    color.assign(pieces.size(), 0);
     for (unsigned int i = 0; i < pieces.size(); i++) {
       unsigned int shapeId = prob.getShapeIdOfPart(partOf[i]);
-      unsigned int col = shapeId + 1;
-      bool has = false;
-      for (unsigned int gi = 0; gi < tray->getXYZ(); gi++)
-        if (tray->getGoalPiece(gi) == col) {
-          has = true;
-          break;
-        }
-      if (!has)
-        continue;
-
-      const voxel_c * p = pieces[i];
-      int hx = (int)p->getHx();
-      int hy = (int)p->getHy();
-      for (unsigned int y = 0; y < p->getY(); y++)
-        for (unsigned int x = 0; x < p->getX(); x++) {
-          if (p->getState(x, y, 0) == voxel_c::VX_EMPTY)
-            continue;
-          int tx = s.places[i].x + (int)x - hx;
-          int ty = s.places[i].y + (int)y - hy;
-          if (!isFloor(*tray, tx, ty) || tray->getGoalPiece(tx, ty, 0) != col)
-            return false;
-        }
-    }
-    return true;
-  }
-
-  if (!prob.goalValid())
-    return true;
-  const voxel_c * goal = prob.getGoalShape();
-
-  /* Map each placement index back to its part so we can look up colours. */
-  std::vector<unsigned int> partOf(pieces.size());
-  {
-    unsigned int pc = 0;
-    for (unsigned int part = 0; part < prob.getNumberOfParts(); part++)
-      for (unsigned int j = 0; j < prob.getPartMaximum(part); j++)
-        partOf[pc++] = part;
-  }
-
-  for (unsigned int i = 0; i < pieces.size(); i++) {
-    unsigned int shapeId = prob.getShapeIdOfPart(partOf[i]);
-    unsigned int col = pieceColor(prob, shapeId);
-    if (col == 0)
-      col = partOf[i] + 1;
-
-    bool has = false;
-    for (unsigned int gi = 0; gi < goal->getXYZ(); gi++)
-      if (goal->getColor(gi) == col) {
-        has = true;
-        break;
+      if (startGoal) {
+        unsigned int col = shapeId + 1;
+        for (unsigned int gi = 0; gi < tray->getXYZ(); gi++)
+          if (tray->getGoalPiece(gi) == col) {
+            color[i] = col;
+            break;
+          }
+      } else if (goal) {
+        unsigned int col = pieceColor(prob, shapeId);
+        if (col == 0)
+          col = partOf[i] + 1;
+        for (unsigned int gi = 0; gi < goal->getXYZ(); gi++)
+          if (goal->getColor(gi) == col) {
+            color[i] = col;
+            break;
+          }
       }
-    if (!has)
-      continue;
+    }
+  }
 
+  /** Piece i, placed at place, is where the goal wants it. */
+  bool piece(unsigned int i, const Place & place) const {
     const voxel_c * p = pieces[i];
+    if (startGoal) {
+      if (!p)
+        return false;
+      /* Empty cells are walls. A piece may slide across a variable cell, and
+       * the finished position must leave every variable cell empty. Only
+       * normal cells are legal places to stop, including a goal stamp. */
+      bool ok = true;
+      forCells(p, place, [&](int tx, int ty, int tz) {
+        if (!isFloor(*tray, tx, ty, tz) || tray->getState(tx, ty, tz) == voxel_c::VX_VARIABLE ||
+            (color[i] && tray->getGoalPiece(tx, ty, tz) != color[i]))
+          ok = false;
+      });
+      return ok;
+    }
+    if (!goal || !color[i])
+      return true;
     if (!p)
       return false;
+    bool ok = true;
+    forCells(p, place, [&](int tx, int ty, int tz) {
+      if (!isFloor(*goal, tx, ty, tz) || goal->getColor(tx, ty, tz) != color[i])
+        ok = false;
+    });
+    return ok;
+  }
+
+  bool all(const SlideState & s) const {
+    for (unsigned int i = 0; i < pieces.size(); i++)
+      if (!piece(i, s.places[i]))
+        return false;
+    return true;
+  }
+
+private:
+  template <class F>
+  static void forCells(const voxel_c * p, const Place & place, F f) {
     int hx = (int)p->getHx();
     int hy = (int)p->getHy();
-    for (unsigned int y = 0; y < p->getY(); y++)
-      for (unsigned int x = 0; x < p->getX(); x++) {
-        if (p->getState(x, y, 0) == voxel_c::VX_EMPTY)
-          continue;
-        int tx = s.places[i].x + (int)x - hx;
-        int ty = s.places[i].y + (int)y - hy;
-        if (!isFloor(*goal, tx, ty) || goal->getColor(tx, ty, 0) != col)
-          return false;
-      }
+    int hz = (int)p->getHz();
+    for (unsigned int z = 0; z < p->getZ(); z++)
+      for (unsigned int y = 0; y < p->getY(); y++)
+        for (unsigned int x = 0; x < p->getX(); x++)
+          if (p->getState(x, y, z) != voxel_c::VX_EMPTY)
+            f(place.x + (int)x - hx, place.y + (int)y - hy, place.z + (int)z - hz);
   }
-  return true;
-}
 
-/* Filled cells of a piece, relative to its hotspot. Pieces only ever
- * translate in a sliding search, so these are worked out once. */
-std::vector<std::pair<int, int>> cellsOf(const voxel_c & p) {
-  std::vector<std::pair<int, int>> out;
-  int hx = (int)p.getHx();
-  int hy = (int)p.getHy();
-  for (unsigned int y = 0; y < p.getY(); y++)
-    for (unsigned int x = 0; x < p.getX(); x++)
-      if (p.getState(x, y, 0) != voxel_c::VX_EMPTY)
-        out.push_back({(int)x - hx, (int)y - hy});
-  return out;
-}
+  const std::vector<const voxel_c *> & pieces;
+  const voxel_c * tray = nullptr;
+  const voxel_c * goal = nullptr;
+  bool startGoal = false;
+  /** The goal colour of each piece; 0 when the goal does not place it. */
+  std::vector<unsigned int> color;
+};
 
-/* A piece's outline: its own cells plus every empty cell that has cells of
- * the piece on both sides of it in the same row or in the same column, such
- * as the inside of a pocket. Relative to the hotspot. */
-std::vector<std::pair<int, int>> outlineOf(const voxel_c & p) {
-  std::vector<std::pair<int, int>> out;
-  int hx = (int)p.getHx();
-  int hy = (int)p.getHy();
-  auto filled = [&p](int x, int y) {
-    return p.getState((unsigned int)x, (unsigned int)y, 0) != voxel_c::VX_EMPTY;
-  };
-  const int sx = (int)p.getX();
-  const int sy = (int)p.getY();
-  for (int y = 0; y < sy; y++)
-    for (int x = 0; x < sx; x++) {
-      bool in = filled(x, y);
-      if (!in) {
-        bool left = false, right = false, up = false, down = false;
-        for (int k = 0; k < x; k++) left = left || filled(k, y);
-        for (int k = x + 1; k < sx; k++) right = right || filled(k, y);
-        for (int k = 0; k < y; k++) up = up || filled(x, k);
-        for (int k = y + 1; k < sy; k++) down = down || filled(x, k);
-        in = (left && right) || (up && down);
-      }
-      if (in)
-        out.push_back({x - hx, y - hy});
-    }
-  return out;
-}
-
+/* One voxel of a piece, relative to its hotspot. */
+struct cell3_c {
+  int x, y, z;
+};
+using cell3List_t = std::vector<cell3_c>;
 using cellList_t = std::vector<std::pair<int, int>>;
 
-/* Floor cells not covered by any piece outside `movers`. */
+/* Filled voxels of a piece, every layer, relative to its hotspot. Pieces
+ * only ever translate in a sliding search, so these are worked out once. */
+cell3List_t cellsOf(const voxel_c & p) {
+  cell3List_t out;
+  int hx = (int)p.getHx();
+  int hy = (int)p.getHy();
+  int hz = (int)p.getHz();
+  for (unsigned int z = 0; z < p.getZ(); z++)
+    for (unsigned int y = 0; y < p.getY(); y++)
+      for (unsigned int x = 0; x < p.getX(); x++)
+        if (p.getState(x, y, z) != voxel_c::VX_EMPTY)
+          out.push_back({(int)x - hx, (int)y - hy, (int)z - hz});
+  return out;
+}
+
+/* A piece's outline: its own voxels plus every empty voxel that has voxels
+ * of the piece on both sides of it in the same row or the same column of
+ * its layer, such as the inside of a pocket. Relative to the hotspot. */
+cell3List_t outlineOf(const voxel_c & p) {
+  cell3List_t out;
+  int hx = (int)p.getHx();
+  int hy = (int)p.getHy();
+  int hz = (int)p.getHz();
+  const int sx = (int)p.getX();
+  const int sy = (int)p.getY();
+  for (int z = 0; z < (int)p.getZ(); z++) {
+    auto filled = [&p, z](int x, int y) {
+      return p.getState((unsigned int)x, (unsigned int)y, (unsigned int)z) != voxel_c::VX_EMPTY;
+    };
+    for (int y = 0; y < sy; y++)
+      for (int x = 0; x < sx; x++) {
+        bool in = filled(x, y);
+        if (!in) {
+          bool left = false, right = false, up = false, down = false;
+          for (int k = 0; k < x; k++) left = left || filled(k, y);
+          for (int k = x + 1; k < sx; k++) right = right || filled(k, y);
+          for (int k = 0; k < y; k++) up = up || filled(x, k);
+          for (int k = y + 1; k < sy; k++) down = down || filled(x, k);
+          in = (left && right) || (up && down);
+        }
+        if (in)
+          out.push_back({x - hx, y - hy, z - hz});
+      }
+  }
+  return out;
+}
+
+/* Floor voxels, every layer, not covered by any piece outside `movers`. */
 struct freeGrid_c {
   int w = 0;
   int h = 0;
+  int d = 0;
   std::vector<char> open;
-  bool at(int x, int y) const {
-    return x >= 0 && y >= 0 && x < w && y < h && open[(size_t)(y * w + x)];
+  bool at(int x, int y, int z) const {
+    return x >= 0 && y >= 0 && z >= 0 && x < w && y < h && z < d &&
+           open[(size_t)((z * h + y) * w + x)];
   }
 };
 
-freeGrid_c freeCells(const voxel_c & tray, const std::vector<cellList_t> & cells,
+freeGrid_c freeCells(const voxel_c & tray, const std::vector<cell3List_t> & cells,
                      const SlideState & s, const std::vector<unsigned int> & movers) {
   freeGrid_c g;
   g.w = (int)tray.getX();
   g.h = (int)tray.getY();
-  g.open.assign((size_t)(g.w * g.h), 0);
-  for (int y = 0; y < g.h; y++)
-    for (int x = 0; x < g.w; x++)
-      g.open[(size_t)(y * g.w + x)] = isFloor(tray, x, y) ? 1 : 0;
+  g.d = (int)tray.getZ();
+  g.open.assign((size_t)(g.w * g.h * g.d), 0);
+  for (int z = 0; z < g.d; z++)
+    for (int y = 0; y < g.h; y++)
+      for (int x = 0; x < g.w; x++)
+        g.open[(size_t)((z * g.h + y) * g.w + x)] = isFloor(tray, x, y, z) ? 1 : 0;
   for (unsigned int i = 0; i < s.places.size(); i++) {
     if (std::find(movers.begin(), movers.end(), i) != movers.end())
       continue;
     for (const auto & c : cells[i]) {
-      int x = s.places[i].x + c.first;
-      int y = s.places[i].y + c.second;
-      if (x >= 0 && y >= 0 && x < g.w && y < g.h)
-        g.open[(size_t)(y * g.w + x)] = 0;
+      int x = s.places[i].x + c.x;
+      int y = s.places[i].y + c.y;
+      int z = s.places[i].z + c.z;
+      if (x >= 0 && y >= 0 && z >= 0 && x < g.w && y < g.h && z < g.d)
+        g.open[(size_t)((z * g.h + y) * g.w + x)] = 0;
     }
   }
   return g;
 }
 
 /* The movers fit when shifted by (dx, dy) as one rigid group. */
-bool groupFits(const freeGrid_c & g, const std::vector<cellList_t> & cells,
+bool groupFits(const freeGrid_c & g, const std::vector<cell3List_t> & cells,
                const SlideState & s, const std::vector<unsigned int> & movers, int dx, int dy) {
   for (unsigned int m : movers)
     for (const auto & c : cells[m])
-      if (!g.at(s.places[m].x + c.first + dx, s.places[m].y + c.second + dy))
+      if (!g.at(s.places[m].x + c.x + dx, s.places[m].y + c.y + dy, s.places[m].z + c.z))
         return false;
   return true;
 }
 
 /* Every shift the movers can reach as one group while the others stay put.
  * One move of the solver is a jump to any of them, whatever the route. */
-cellList_t reachableShifts(const voxel_c & tray, const std::vector<cellList_t> & cells,
+cellList_t reachableShifts(const voxel_c & tray, const std::vector<cell3List_t> & cells,
                            const SlideState & s, const std::vector<unsigned int> & movers) {
   freeGrid_c g = freeCells(tray, cells, s, movers);
   std::set<std::pair<int, int>> seen{{0, 0}};
@@ -397,7 +416,7 @@ cellList_t reachableShifts(const voxel_c & tray, const std::vector<cellList_t> &
 /* Corner points, as shifts from the start, of a route with the fewest
  * straight runs that takes the movers to shift (tx, ty), start and end
  * included. Empty when unreachable. */
-cellList_t fewestTurns(const voxel_c & tray, const std::vector<cellList_t> & cells,
+cellList_t fewestTurns(const voxel_c & tray, const std::vector<cell3List_t> & cells,
                        const SlideState & s, const std::vector<unsigned int> & movers,
                        int tx, int ty) {
   freeGrid_c g = freeCells(tray, cells, s, movers);
@@ -438,21 +457,21 @@ cellList_t fewestTurns(const voxel_c & tray, const std::vector<cellList_t> & cel
 /* `outer` and everything nested inside it: pieces whose cells all lie in
  * the outline of a piece already in the group, repeated until no more join.
  * Pieces that merely touch are not nested. */
-std::vector<unsigned int> nestedGroup(const std::vector<cellList_t> & cells,
-                                      const std::vector<cellList_t> & outlines,
+std::vector<unsigned int> nestedGroup(const std::vector<cell3List_t> & cells,
+                                      const std::vector<cell3List_t> & outlines,
                                       const SlideState & s, unsigned int outer) {
   std::vector<unsigned int> group{outer};
   for (size_t k = 0; k < group.size(); k++) {
     unsigned int a = group[k];
-    std::set<std::pair<int, int>> inside;
+    std::set<std::tuple<int, int, int>> inside;
     for (const auto & c : outlines[a])
-      inside.insert({s.places[a].x + c.first, s.places[a].y + c.second});
+      inside.insert({s.places[a].x + c.x, s.places[a].y + c.y, s.places[a].z + c.z});
     for (unsigned int b = 0; b < s.places.size(); b++) {
       if (std::find(group.begin(), group.end(), b) != group.end() || cells[b].empty())
         continue;
       bool all = true;
       for (const auto & c : cells[b])
-        if (!inside.count({s.places[b].x + c.first, s.places[b].y + c.second})) {
+        if (!inside.count({s.places[b].x + c.x, s.places[b].y + c.y, s.places[b].z + c.z})) {
           all = false;
           break;
         }
@@ -464,6 +483,17 @@ std::vector<unsigned int> nestedGroup(const std::vector<cellList_t> & cells,
 }
 
 } // namespace
+
+unsigned long memoryStates(unsigned long stateBytes, bool high) {
+  if (stateBytes == 0)
+    stateBytes = 1;
+  unsigned long long states = SEARCH_MEMORY_BYTES / stateBytes;
+  if (high)
+    states = std::max(states, physicalMemoryBytes() / 2 / stateBytes);
+  /* unsigned long is 32 bits on Windows. */
+  const unsigned long most = static_cast<unsigned long>(-1);
+  return states < most ? static_cast<unsigned long>(states) : most;
+}
 
 bool isSliding(const puzzle_c & puz) {
   return puz.getGridType()->getType() == gridType_c::GT_SLIDING;
@@ -937,10 +967,457 @@ void syncMaxHoles(problem_c & prob) {
     prob.setMaxHoles(floor - volume);
 }
 
+namespace {
+
+/* The original slide search: an arrangement is a text key, and each move
+ * works out the free cells afresh. Kept for trays the position tables
+ * cannot pack into 64 bits, and for A/B runs (BURRTOOLS_SLIDE_LEGACY=1). */
+void legacySearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
+                  const std::vector<cell3List_t> & outlines, bool nested,
+                  const SlideState & initial, const goalCheck_c & goals,
+                  slideSearch_c & search, std::vector<SlideState> & path) {
+  const unsigned int n = (unsigned int)initial.places.size();
+  const unsigned long maxStates = search.maxStates;
+
+  std::queue<SlideState> q;
+  std::map<std::string, std::pair<std::string, unsigned int>> parent;
+  /* parent[key] = {prevKey, movedPiece}; movedPiece==n means root. */
+
+  std::string startKey = stateKey(initial);
+
+  /* Each arrangement held costs a map node with two copies of its key, plus
+   * its share of the queue; measured at about 115 + 2 bytes per key
+   * character, so this leaves some room. */
+  const unsigned long memoryLimit = search.maxMemoryStates
+      ? search.maxMemoryStates
+      : memoryStates(128 + 3 * (unsigned long)startKey.size(), search.highMemory);
+  search.memoryStates = memoryLimit;
+  q.push(initial);
+  parent[startKey] = {"", n};
+
+  unsigned long visited = 0;
+  std::string goalKey;
+  bool found = false;
+
+  while (!q.empty()) {
+    if (maxStates != FULL_SEARCH && visited >= maxStates) {
+      search.outcome = SLIDE_LIMIT;
+      break;
+    }
+    if (parent.size() >= memoryLimit) {
+      search.outcome = SLIDE_MEMORY;
+      break;
+    }
+    if ((visited & 1023) == 0) {
+      if (search.progress)
+        search.progress->store(visited, std::memory_order_relaxed);
+      if (search.stop && search.stop->load(std::memory_order_relaxed)) {
+        search.outcome = SLIDE_STOPPED;
+        break;
+      }
+    }
+    SlideState cur = q.front();
+    q.pop();
+    visited++;
+
+    /* One move is one piece going anywhere it can reach while the others
+     * stay put, round corners included, so the search finds the fewest
+     * moves. Counting single-cell steps or straight runs instead leaves
+     * equally short paths that alternate pieces, or stop a piece at a
+     * corner and come back to it after another piece has moved.
+     * With nested slides a piece may also carry what is nested inside it. */
+    const std::string curKey = stateKey(cur);
+    for (unsigned int pi = 0; pi < n && !found; pi++) {
+      std::vector<std::vector<unsigned int>> moverSets{{pi}};
+      if (nested) {
+        std::vector<unsigned int> group = nestedGroup(cells, outlines, cur, pi);
+        if (group.size() > 1)
+          moverSets.push_back(group);
+      }
+      for (const std::vector<unsigned int> & movers : moverSets) {
+        for (const std::pair<int, int> & shift : reachableShifts(tray, cells, cur, movers)) {
+          SlideState next = cur;
+          for (unsigned int m : movers) {
+            next.places[m].x += shift.first;
+            next.places[m].y += shift.second;
+          }
+          std::string key = stateKey(next);
+          if (parent.count(key))
+            continue;
+          parent[key] = {curKey, pi};
+          if (goals.all(next)) {
+            goalKey = key;
+            found = true;
+            q = {};
+            break;
+          }
+          q.push(next);
+        }
+        if (found)
+          break;
+      }
+    }
+  }
+
+  search.visited = visited;
+  if (!found)
+    return;
+
+  /* Reconstruct the path. States keep the assembly placement of each piece
+   * so the move slider can drop them straight onto the board. */
+  {
+    std::string k = goalKey;
+    while (true) {
+      /* Rebuild state from key. */
+      SlideState st;
+      st.places.resize(n);
+      std::istringstream is(k);
+      for (unsigned int i = 0; i < n; i++) {
+        char colon, comma, bar;
+        int t, x, y;
+        if (i)
+          is >> bar;
+        is >> t >> colon >> x >> comma >> y;
+        st.places[i].trans = (unsigned char)t;
+        st.places[i].x = x;
+        st.places[i].y = y;
+        st.places[i].z = initial.places[i].z;
+      }
+      path.push_back(st);
+      auto it = parent.find(k);
+      if (it == parent.end() || it->second.second == n)
+        break;
+      k = it->second.first;
+    }
+  }
+  std::reverse(path.begin(), path.end());
+}
+
+/* Every position one piece can take in the empty tray. Pieces only ever
+ * translate, so this is worked out once per search: a piece keyed to a
+ * narrow slot, like the stepped back layer of a Panex tray, gets a short
+ * list. */
+struct posTable_c {
+  /* Anchor box holding every position; index maps an anchor to its position. */
+  int x0 = 0;
+  int y0 = 0;
+  int w = 0;
+  int h = 0;
+  std::vector<int> index;
+  std::vector<int> px;
+  std::vector<int> py;
+  /* The neighbouring position one step along DX/DY, or -1. */
+  std::vector<std::array<int, 4>> next;
+  /* Tray cells each position covers, `words` 64-bit words per position. */
+  std::vector<uint64_t> mask;
+  std::vector<char> atGoal;
+  /* Where this piece's position number sits in a packed arrangement. */
+  unsigned int shift = 0;
+  uint64_t bits = 0;
+
+  int at(int x, int y) const {
+    x -= x0;
+    y -= y0;
+    if (x < 0 || y < 0 || x >= w || y >= h)
+      return -1;
+    return index[(size_t)(y * w + x)];
+  }
+};
+
+/* Build the position tables. False when they cannot hold this search: a
+ * piece with no cells or nowhere to go, a start off the floor, or more
+ * positions than 64 bits can number. */
+bool buildTables(const voxel_c & tray, const std::vector<cell3List_t> & cells,
+                 const SlideState & initial, const goalCheck_c & goals,
+                 size_t & words, std::vector<posTable_c> & tables) {
+  const int W = (int)tray.getX();
+  const int H = (int)tray.getY();
+  const int D = (int)tray.getZ();
+  words = ((size_t)W * H * D + 63) / 64;
+  const unsigned int n = (unsigned int)cells.size();
+  tables.assign(n, posTable_c());
+  unsigned int used = 0;
+
+  for (unsigned int i = 0; i < n; i++) {
+    if (cells[i].empty())
+      return false;
+    int minX = cells[i][0].x, maxX = minX, minY = cells[i][0].y, maxY = minY;
+    for (const auto & c : cells[i]) {
+      minX = std::min(minX, c.x);
+      maxX = std::max(maxX, c.x);
+      minY = std::min(minY, c.y);
+      maxY = std::max(maxY, c.y);
+    }
+    posTable_c & t = tables[i];
+    t.x0 = -minX;
+    t.y0 = -minY;
+    t.w = W - maxX - t.x0;
+    t.h = H - maxY - t.y0;
+    if (t.w <= 0 || t.h <= 0)
+      return false;
+    t.index.assign((size_t)(t.w * t.h), -1);
+
+    const Place & home = initial.places[i];
+    for (int y = t.y0; y < t.y0 + t.h; y++)
+      for (int x = t.x0; x < t.x0 + t.w; x++) {
+        bool fits = true;
+        for (const auto & c : cells[i])
+          if (!isFloor(tray, x + c.x, y + c.y, home.z + c.z)) {
+            fits = false;
+            break;
+          }
+        if (!fits)
+          continue;
+        t.index[(size_t)((y - t.y0) * t.w + (x - t.x0))] = (int)t.px.size();
+        t.px.push_back(x);
+        t.py.push_back(y);
+        t.mask.resize(t.mask.size() + words, 0);
+        uint64_t * m = &t.mask[t.mask.size() - words];
+        for (const auto & c : cells[i]) {
+          size_t bit = ((size_t)(home.z + c.z) * H + (size_t)(y + c.y)) * W + (size_t)(x + c.x);
+          m[bit / 64] |= uint64_t(1) << (bit % 64);
+        }
+        t.atGoal.push_back(goals.piece(i, Place{x, y, home.trans, home.z}) ? 1 : 0);
+      }
+
+    const size_t count = t.px.size();
+    if (count == 0 || t.at(home.x, home.y) < 0)
+      return false;
+    t.next.resize(count);
+    for (size_t k = 0; k < count; k++)
+      for (int d = 0; d < 4; d++)
+        t.next[k][d] = t.at(t.px[k] + DX[d], t.py[k] + DY[d]);
+
+    unsigned int width = 1;
+    while (width < 64 && (uint64_t(1) << width) < count)
+      width++;
+    if (used + width > 64)
+      return false;
+    t.shift = used;
+    t.bits = width == 64 ? ~uint64_t(0) : (uint64_t(1) << width) - 1;
+    used += width;
+  }
+  return true;
+}
+
+/* Memory one arrangement takes in tableSearch: a hash node with its key and
+ * its parent's, its bucket, and its share of the queue. Measured at about
+ * 55 bytes at peak on Panex Jr; this leaves some room. */
+const unsigned long TABLE_STATE_BYTES = 64;
+
+/* The slide search over position tables. An arrangement is one position
+ * number per piece packed into 64 bits, and a move is a flood fill over the
+ * piece's own positions against a bitmask of the cells the others cover.
+ * It visits arrangements in the same order as legacySearch, so both find
+ * the same path. False, having searched nothing, when the tables cannot
+ * hold this search. */
+bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
+                 const std::vector<cell3List_t> & outlines, bool nested,
+                 const SlideState & initial, const goalCheck_c & goals,
+                 slideSearch_c & search, std::vector<SlideState> & path) {
+  size_t words = 0;
+  std::vector<posTable_c> t;
+  if (!buildTables(tray, cells, initial, goals, words, t))
+    return false;
+
+  const unsigned int n = (unsigned int)initial.places.size();
+  const unsigned long maxStates = search.maxStates;
+  auto posOf = [&t](uint64_t key, unsigned int i) {
+    return (int)((key >> t[i].shift) & t[i].bits);
+  };
+  auto decode = [&](uint64_t key) {
+    SlideState st = initial;
+    for (unsigned int i = 0; i < n; i++) {
+      int p = posOf(key, i);
+      st.places[i].x = t[i].px[(size_t)p];
+      st.places[i].y = t[i].py[(size_t)p];
+    }
+    return st;
+  };
+  auto overlaps = [words](const uint64_t * a, const std::vector<uint64_t> & b) {
+    for (size_t w = 0; w < words; w++)
+      if (a[w] & b[w])
+        return true;
+    return false;
+  };
+
+  uint64_t startKey = 0;
+  for (unsigned int i = 0; i < n; i++)
+    startKey |= (uint64_t)t[i].at(initial.places[i].x, initial.places[i].y) << t[i].shift;
+
+  const unsigned long memoryLimit = search.maxMemoryStates
+      ? search.maxMemoryStates
+      : memoryStates(TABLE_STATE_BYTES, search.highMemory);
+  search.memoryStates = memoryLimit;
+
+  /* parent[key] is the arrangement it was reached from; the start is its own. */
+  std::unordered_map<uint64_t, uint64_t> parent;
+  parent.emplace(startKey, startKey);
+  std::queue<uint64_t> q;
+  q.push(startKey);
+
+  unsigned long visited = 0;
+  uint64_t goalKey = 0;
+  bool found = false;
+
+  /* A new arrangement: remember it and queue it. True when it is the goal. */
+  auto reach = [&](uint64_t key, uint64_t from) {
+    if (!parent.emplace(key, from).second)
+      return false;
+    bool goal = true;
+    for (unsigned int i = 0; i < n && goal; i++)
+      goal = t[i].atGoal[(size_t)posOf(key, i)] != 0;
+    if (goal) {
+      goalKey = key;
+      return true;
+    }
+    q.push(key);
+    return false;
+  };
+
+  std::vector<uint64_t> occupied(words);
+  std::vector<uint64_t> others(words);
+  std::vector<int> pos(n);
+  /* Positions this flood fill has reached: seen[i][p] == epoch. */
+  std::vector<std::vector<unsigned int>> seen(n);
+  for (unsigned int i = 0; i < n; i++)
+    seen[i].assign(t[i].px.size(), 0);
+  unsigned int epoch = 0;
+  std::vector<int> fill;
+
+  while (!q.empty()) {
+    if (maxStates != FULL_SEARCH && visited >= maxStates) {
+      search.outcome = SLIDE_LIMIT;
+      break;
+    }
+    if (parent.size() >= memoryLimit) {
+      search.outcome = SLIDE_MEMORY;
+      break;
+    }
+    if ((visited & 1023) == 0) {
+      if (search.progress)
+        search.progress->store(visited, std::memory_order_relaxed);
+      if (search.stop && search.stop->load(std::memory_order_relaxed)) {
+        search.outcome = SLIDE_STOPPED;
+        break;
+      }
+    }
+    const uint64_t cur = q.front();
+    q.pop();
+    visited++;
+
+    std::fill(occupied.begin(), occupied.end(), 0);
+    for (unsigned int i = 0; i < n; i++) {
+      pos[i] = posOf(cur, i);
+      const uint64_t * m = &t[i].mask[(size_t)pos[i] * words];
+      for (size_t w = 0; w < words; w++)
+        occupied[w] |= m[w];
+    }
+
+    /* Same order as legacySearch: each piece alone, then with what is
+     * nested in it; positions in the order a breadth-first fill finds them. */
+    for (unsigned int pi = 0; pi < n && !found; pi++) {
+      const posTable_c & tp = t[pi];
+      const uint64_t * mine = &tp.mask[(size_t)pos[pi] * words];
+      for (size_t w = 0; w < words; w++)
+        others[w] = occupied[w] & ~mine[w];
+
+      if (++epoch == 0) {
+        for (auto & v : seen)
+          std::fill(v.begin(), v.end(), 0);
+        epoch = 1;
+      }
+      seen[pi][(size_t)pos[pi]] = epoch;
+      fill.assign(1, pos[pi]);
+      const uint64_t clear = cur & ~(tp.bits << tp.shift);
+      for (size_t head = 0; head < fill.size() && !found; head++)
+        for (int d = 0; d < 4; d++) {
+          int nb = tp.next[(size_t)fill[head]][d];
+          if (nb < 0 || seen[pi][(size_t)nb] == epoch ||
+              overlaps(&tp.mask[(size_t)nb * words], others))
+            continue;
+          seen[pi][(size_t)nb] = epoch;
+          fill.push_back(nb);
+          if (reach(clear | ((uint64_t)nb << tp.shift), cur)) {
+            found = true;
+            break;
+          }
+        }
+
+      if (!nested || found)
+        continue;
+      std::vector<unsigned int> group = nestedGroup(cells, outlines, decode(cur), pi);
+      if (group.size() < 2)
+        continue;
+      others = occupied;
+      for (unsigned int m : group) {
+        const uint64_t * gm = &t[m].mask[(size_t)pos[m] * words];
+        for (size_t w = 0; w < words; w++)
+          others[w] &= ~gm[w];
+      }
+      /* The group's key at shift (dx, dy), or false when it does not fit. */
+      auto shifted = [&](int dx, int dy, uint64_t & key) {
+        key = cur;
+        for (unsigned int m : group) {
+          int p = t[m].at(t[m].px[(size_t)pos[m]] + dx, t[m].py[(size_t)pos[m]] + dy);
+          if (p < 0 || overlaps(&t[m].mask[(size_t)p * words], others))
+            return false;
+          key = (key & ~(t[m].bits << t[m].shift)) | ((uint64_t)p << t[m].shift);
+        }
+        return true;
+      };
+      std::set<std::pair<int, int>> shifts{{0, 0}};
+      std::queue<std::pair<int, int>> sq;
+      sq.push({0, 0});
+      while (!sq.empty() && !found) {
+        std::pair<int, int> c = sq.front();
+        sq.pop();
+        for (int d = 0; d < 4; d++) {
+          std::pair<int, int> nb{c.first + DX[d], c.second + DY[d]};
+          uint64_t key;
+          if (shifts.count(nb) || !shifted(nb.first, nb.second, key))
+            continue;
+          shifts.insert(nb);
+          sq.push(nb);
+          if (reach(key, cur)) {
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  search.visited = visited;
+  if (!found)
+    return true;
+  for (uint64_t k = goalKey; ; k = parent[k]) {
+    path.push_back(decode(k));
+    if (k == startKey)
+      break;
+  }
+  std::reverse(path.begin(), path.end());
+  return true;
+}
+
+} // namespace
+
 std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
                                             const assembly_c & start,
                                             unsigned int maxStates,
                                             bool nested) {
+  slideSearch_c search;
+  search.maxStates = maxStates;
+  search.nested = nested;
+  return findSlidePath(prob, start, search);
+}
+
+std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
+                                            const assembly_c & start,
+                                            slideSearch_c & search) {
+  const bool nested = search.nested;
+  search.outcome = SLIDE_NO_PATH;
+  search.visited = 0;
   if (!prob.resultValid())
     return nullptr;
 
@@ -973,11 +1450,14 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
       initial.places[pc].x = start.getX(pc);
       initial.places[pc].y = start.getY(pc);
       initial.places[pc].trans = start.getTransformation(pc);
+      initial.places[pc].z = start.getZ(pc);
       pc++;
     }
   }
 
-  if (goalsSatisfied(prob, pieces, initial)) {
+  goalCheck_c goals(prob, pieces);
+  if (goals.all(initial)) {
+    search.outcome = SLIDE_FOUND;
     std::vector<unsigned int> pcs(n);
     for (unsigned int i = 0; i < n; i++)
       pcs[i] = i;
@@ -992,104 +1472,28 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
     return sep;
   }
 
-  std::vector<cellList_t> cells(n);
-  std::vector<cellList_t> outlines(n);
+  std::vector<cell3List_t> cells(n);
+  std::vector<cell3List_t> outlines(n);
   for (unsigned int i = 0; i < n; i++) {
     cells[i] = cellsOf(*pieces[i]);
     if (nested)
       outlines[i] = outlineOf(*pieces[i]);
   }
 
-  std::queue<SlideState> q;
-  std::map<std::string, std::pair<std::string, unsigned int>> parent;
-  /* parent[key] = {prevKey, movedPiece}; movedPiece==n means root. */
-
-  std::string startKey = stateKey(initial);
-  q.push(initial);
-  parent[startKey] = {"", n};
-
-  unsigned int visited = 0;
-  std::string goalKey;
-  bool found = false;
-
-  while (!q.empty() && visited < maxStates) {
-    SlideState cur = q.front();
-    q.pop();
-    visited++;
-
-    /* One move is one piece going anywhere it can reach while the others
-     * stay put, round corners included, so the search finds the fewest
-     * moves. Counting single-cell steps or straight runs instead leaves
-     * equally short paths that alternate pieces, or stop a piece at a
-     * corner and come back to it after another piece has moved.
-     * With nested slides a piece may also carry what is nested inside it. */
-    const std::string curKey = stateKey(cur);
-    for (unsigned int pi = 0; pi < n && !found; pi++) {
-      std::vector<std::vector<unsigned int>> moverSets{{pi}};
-      if (nested) {
-        std::vector<unsigned int> group = nestedGroup(cells, outlines, cur, pi);
-        if (group.size() > 1)
-          moverSets.push_back(group);
-      }
-      for (const std::vector<unsigned int> & movers : moverSets) {
-        for (const std::pair<int, int> & shift : reachableShifts(*tray, cells, cur, movers)) {
-          SlideState next = cur;
-          for (unsigned int m : movers) {
-            next.places[m].x += shift.first;
-            next.places[m].y += shift.second;
-          }
-          std::string key = stateKey(next);
-          if (parent.count(key))
-            continue;
-          parent[key] = {curKey, pi};
-          if (goalsSatisfied(prob, pieces, next)) {
-            goalKey = key;
-            found = true;
-            q = {};
-            break;
-          }
-          q.push(next);
-        }
-        if (found)
-          break;
-      }
-    }
-  }
+  /* Start to goal, in order. Empty when no path was found. */
+  std::vector<SlideState> path;
+  if (std::getenv("BURRTOOLS_SLIDE_LEGACY") ||
+      !tableSearch(*tray, cells, outlines, nested, initial, goals, search, path))
+    legacySearch(*tray, cells, outlines, nested, initial, goals, search, path);
 
   for (auto * p : pieces)
     delete p;
 
-  if (!found)
+  if (search.progress)
+    search.progress->store(search.visited, std::memory_order_relaxed);
+  if (path.empty())
     return nullptr;
-
-  /* Reconstruct the path. States keep the assembly placement of each piece
-   * so the move slider can drop them straight onto the board. */
-  std::vector<SlideState> path;
-  {
-    std::string k = goalKey;
-    while (true) {
-      /* Rebuild state from key. */
-      SlideState st;
-      st.places.resize(n);
-      std::istringstream is(k);
-      for (unsigned int i = 0; i < n; i++) {
-        char colon, comma, bar;
-        int t, x, y;
-        if (i)
-          is >> bar;
-        is >> t >> colon >> x >> comma >> y;
-        st.places[i].trans = (unsigned char)t;
-        st.places[i].x = x;
-        st.places[i].y = y;
-      }
-      path.push_back(st);
-      auto it = parent.find(k);
-      if (it == parent.end() || it->second.second == n)
-        break;
-      k = it->second.first;
-    }
-  }
-  std::reverse(path.begin(), path.end());
+  search.outcome = SLIDE_FOUND;
 
   std::vector<unsigned int> pcs(n);
   for (unsigned int i = 0; i < n; i++)
@@ -1145,7 +1549,7 @@ std::vector<std::pair<int, int>> slideRoute(const problem_c & prob, const separa
     return none;
 
   /* Pieces in path order are the problem's parts, copy by copy. */
-  std::vector<cellList_t> cells;
+  std::vector<cell3List_t> cells;
   SlideState st;
   unsigned int pc = 0;
   for (unsigned int part = 0; part < prob.getNumberOfParts() && pc < n; part++)
@@ -1154,7 +1558,8 @@ std::vector<std::pair<int, int>> slideRoute(const problem_c & prob, const separa
       v->transform(a->getOrient(pc));
       cells.push_back(cellsOf(*v));
       delete v;
-      st.places.push_back(Place{a->getX(pc), a->getY(pc), (unsigned char)a->getOrient(pc)});
+      st.places.push_back(Place{a->getX(pc), a->getY(pc), (unsigned char)a->getOrient(pc),
+                                a->getZ(pc)});
     }
   if (pc != n)
     return none;

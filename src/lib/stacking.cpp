@@ -6,14 +6,19 @@
 #include "gridtype.h"
 #include "problem.h"
 #include "puzzle.h"
+#include "sliding.h"
 #include "voxel.h"
 
 #include "../tools/xml.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
 #include <map>
 #include <queue>
 #include <sstream>
+#include <string>
+#include <unordered_map>
 
 namespace stacking {
 
@@ -74,6 +79,55 @@ unsigned int capacityOf(const rodSet_c & board, unsigned int pieceCount) {
   return board.definedHeight;
 }
 
+/* How deep a disc may go in a Panex column: its size, but no deeper than
+ * the column. */
+unsigned int depthOf(const rodSet_c & board, const piece_c & p, unsigned int pieceCount) {
+  return std::min(p.size, capacityOf(board, pieceCount));
+}
+
+/* A Panex column, bottom to top, as depths. The k-th disc from the top sits
+ * at least k - 1 places down (k - 1 == 0 is the raised place in the
+ * bridge), so it needs a depth of k - 1 or more. The index of the first
+ * disc that cannot go that deep, or -1. */
+int panexTooDeep(const std::vector<unsigned int> & depth) {
+  const size_t n = depth.size();
+  for (size_t i = 0; i < n; i++)
+    if (depth[i] + 1 < n - i)
+      return (int)i;
+  return -1;
+}
+
+/* The column cannot keep every disc below the bridge: its top disc is
+ * raised into it, and blocks moves that pass over the column. */
+bool panexRaised(const std::vector<unsigned int> & depth) {
+  const size_t n = depth.size();
+  for (size_t i = 0; i < n; i++)
+    if (depth[i] < n - i)
+      return true;
+  return false;
+}
+
+/* Height above the base of each disc on one rod, bottom to top. Discs
+ * stack from the base, except in a Panex column, where they hang from the
+ * bridge as high as they go: the top one in the bridge when it is raised. */
+std::vector<int> discHeights(const rodSet_c & board, const std::vector<piece_c> & pieces,
+                             const std::vector<unsigned int> & column, unsigned int rod) {
+  std::vector<int> z(column.size());
+  const unsigned int n = (unsigned int)pieces.size();
+  if (!board.panexColumns || isPocket(board, rod)) {
+    for (size_t h = 0; h < column.size(); h++)
+      z[h] = (int)h;
+    return z;
+  }
+  std::vector<unsigned int> depth;
+  for (unsigned int d : column)
+    depth.push_back(depthOf(board, pieces[d], n));
+  const int top = (int)capacityOf(board, n) - (panexRaised(depth) ? 0 : 1);
+  for (size_t h = 0; h < column.size(); h++)
+    z[h] = top - (int)(column.size() - 1 - h);
+  return z;
+}
+
 int spacingOf(const std::vector<piece_c> & pieces) {
   unsigned int maxR = 1;
   for (const piece_c & p : pieces)
@@ -98,11 +152,32 @@ std::string checkStack(const problem_c & prob, const rodSet_c & board,
                        const std::vector<piece_c> & pieces,
                        const std::vector<diskRef_c> & rod, unsigned int rodNo,
                        const char * which) {
-  unsigned int cap = capacityOf(board, (unsigned int)pieces.size());
-  if (rod.size() > cap)
-    return "Rod " + std::to_string(rodNo + 1) + " of " + which + " holds " +
-           std::to_string(rod.size()) + " discs, but the rod height only allows " +
-           std::to_string(cap) + ".";
+  const unsigned int n = (unsigned int)pieces.size();
+  unsigned int cap = rodCapacity(board, rodNo, n);
+  if (rod.size() > cap) {
+    std::string name = rodName(board, rodNo);
+    name[0] = (char)std::toupper((unsigned char)name[0]);
+    return name + " of " + which + " holds " + std::to_string(rod.size()) +
+           " discs, but its height only allows " + std::to_string(cap) + ".";
+  }
+  if (isPocket(board, rodNo))
+    return "";
+
+  if (board.panexColumns) {
+    std::vector<unsigned int> depth;
+    for (const diskRef_c & d : rod) {
+      int idx = findPiece(pieces, d);
+      depth.push_back(idx < 0 ? capacityOf(board, n) : depthOf(board, pieces[(size_t)idx], n));
+    }
+    int bad = panexTooDeep(depth);
+    if (bad < 0)
+      return "";
+    const unsigned int fromTop = (unsigned int)(rod.size() - (size_t)bad);
+    const unsigned int size = depth[(size_t)bad];
+    return "On " + rodName(board, rodNo) + " of " + which + ", " + diskLabel(prob, rod[(size_t)bad]) +
+           " is disc " + std::to_string(fromTop) + " from the top, but in a Panex column a size " +
+           std::to_string(size) + " disc can only be among the top " + std::to_string(size + 1) + ".";
+  }
 
   if (!board.sizeMatters)
     return "";
@@ -123,20 +198,6 @@ std::string checkStack(const problem_c & prob, const rodSet_c & board,
 
 using Config = std::vector<std::vector<unsigned int>>;
 
-std::string configKey(const Config & cfg) {
-  std::string key;
-  for (unsigned int r = 0; r < cfg.size(); r++) {
-    if (r)
-      key += '|';
-    for (unsigned int i = 0; i < cfg[r].size(); i++) {
-      if (i)
-        key += ',';
-      key += std::to_string(cfg[r][i]);
-    }
-  }
-  return key;
-}
-
 bool configsEqual(const Config & a, const Config & b) {
   return a == b;
 }
@@ -145,17 +206,43 @@ bool moveAllowed(const rodSet_c & board, const std::vector<piece_c> & pieces,
                  const Config & cfg, unsigned int from, unsigned int to) {
   if (from == to || cfg[from].empty())
     return false;
-  if (cfg[to].size() >= capacityOf(board, (unsigned int)pieces.size()))
+  const unsigned int n = (unsigned int)pieces.size();
+  if (cfg[to].size() >= rodCapacity(board, to, n))
     return false;
 
   unsigned int mover = cfg[from].back();
-  if (board.sizeMatters && !cfg[to].empty()) {
+  const int a = rodPosition(board, from);
+  const int b = rodPosition(board, to);
+  if (board.panexColumns) {
+    /* A disc raised into the bridge blocks every move that passes over it. */
+    const int lo = std::min(a, b);
+    const int hi = std::max(a, b);
+    std::vector<unsigned int> depth;
+    for (unsigned int r = 0; r < cfg.size(); r++) {
+      const int p = rodPosition(board, r);
+      if (r == from || r == to || p <= lo || p >= hi || isPocket(board, r))
+        continue;
+      depth.clear();
+      for (unsigned int d : cfg[r])
+        depth.push_back(depthOf(board, pieces[d], n));
+      if (panexRaised(depth))
+        return false;
+    }
+    if (!isPocket(board, to)) {
+      depth.clear();
+      for (unsigned int d : cfg[to])
+        depth.push_back(depthOf(board, pieces[d], n));
+      depth.push_back(depthOf(board, pieces[mover], n));
+      if (panexTooDeep(depth) >= 0)
+        return false;
+    }
+  } else if (board.sizeMatters && !cfg[to].empty()) {
     unsigned int top = cfg[to].back();
     if (pieces[mover].size > pieces[top].size)
       return false;
   }
 
-  int gap = (int)from - (int)to;
+  int gap = a - b;
   if (gap < 0)
     gap = -gap;
   if (board.distanceMatters && !board.canMoveOver && gap != 1)
@@ -166,14 +253,14 @@ bool moveAllowed(const rodSet_c & board, const std::vector<piece_c> & pieces,
 Config configFromMap(const problem_c & prob, bool goal, const std::vector<piece_c> & pieces,
                      bool * ok) {
   const rodSet_c & board = prob.getPuzzle().getRodSet(prob.getRodSetId());
-  Config cfg(board.rodCount);
+  Config cfg(totalRods(board));
   const stackMap_c & map = mapOf(prob, goal);
   *ok = true;
-  if (map.rods.size() != board.rodCount) {
+  if (map.rods.size() != totalRods(board)) {
     *ok = false;
     return cfg;
   }
-  for (unsigned int r = 0; r < board.rodCount; r++) {
+  for (unsigned int r = 0; r < totalRods(board); r++) {
     for (const diskRef_c & ref : map.rods[r]) {
       int idx = findPiece(pieces, ref);
       if (idx < 0) {
@@ -186,20 +273,31 @@ Config configFromMap(const problem_c & prob, bool goal, const std::vector<piece_
   return cfg;
 }
 
-void writeState(state_c * st, const Config & cfg, int spacing) {
+/* What the animation needs to place a disc: the board, its discs and where each rod stands. */
+struct drawBoard_c {
+  drawBoard_c(const rodSet_c & b, const std::vector<piece_c> & p, const std::vector<int> & x)
+      : board(b), pieces(p), rodX(x) {}
+  const rodSet_c & board;
+  const std::vector<piece_c> & pieces;
+  const std::vector<int> & rodX;
+};
+
+void writeState(state_c * st, const Config & cfg, const drawBoard_c & draw) {
   for (unsigned int r = 0; r < cfg.size(); r++) {
+    std::vector<int> z = discHeights(draw.board, draw.pieces, cfg[r], r);
     for (unsigned int h = 0; h < cfg[r].size(); h++) {
       unsigned int piece = cfg[r][h];
-      st->set(piece, (int)r * spacing, 0, (int)h, 0);
+      st->set(piece, draw.rodX[r], 0, z[h], 0);
     }
   }
 }
 
 std::unique_ptr<state_c> stateFor(const Config & before, const Config * after,
-                                  int frame, int spacing, unsigned int n, int liftZ) {
+                                  int frame, const drawBoard_c & draw, unsigned int n,
+                                  int liftZ) {
   auto st = std::make_unique<state_c>(n);
   if (!after || frame == 0) {
-    writeState(st.get(), before, spacing);
+    writeState(st.get(), before, draw);
     return st;
   }
 
@@ -228,18 +326,18 @@ std::unique_ptr<state_c> stateFor(const Config & before, const Config * after,
 
   Config shown = before;
   shown[src].pop_back();
-  writeState(st.get(), shown, spacing);
+  writeState(st.get(), shown, draw);
 
   /* Cruise in the first cell above the drawn peg so the disc clears every rod. */
   int z = liftZ;
   if (z < 1)
     z = 1;
   if (frame == 1)
-    st->set(mover, (int)src * spacing, 0, z, 0);
+    st->set(mover, draw.rodX[src], 0, z, 0);
   else if (frame == 2)
-    st->set(mover, (int)dst * spacing, 0, z, 0);
+    st->set(mover, draw.rodX[dst], 0, z, 0);
   else
-    writeState(st.get(), *after, spacing);
+    writeState(st.get(), *after, draw);
   return st;
 }
 
@@ -281,6 +379,33 @@ bool isStacking(const puzzle_c & puz) {
 
 bool isStacking(const problem_c & prob) {
   return isStacking(prob.getPuzzle());
+}
+
+unsigned int totalRods(const rodSet_c & board) {
+  return board.rodCount + ((board.panexColumns && board.pocketColumn) ? 1 : 0);
+}
+
+bool isPocket(const rodSet_c & board, unsigned int rod) {
+  return board.panexColumns && board.pocketColumn && rod == board.rodCount;
+}
+
+int rodPosition(const rodSet_c & board, unsigned int rod) {
+  return isPocket(board, rod) ? -1 : (int)rod;
+}
+
+std::string rodName(const rodSet_c & board, unsigned int rod) {
+  return isPocket(board, rod) ? "the pocket column" : "rod " + std::to_string(rod + 1);
+}
+
+unsigned int rodHeight(const rodSet_c & board, unsigned int discCount) {
+  return capacityOf(board, discCount);
+}
+
+unsigned int rodCapacity(const rodSet_c & board, unsigned int rod, unsigned int discCount) {
+  if (isPocket(board, rod))
+    return board.pocketHeight;
+  unsigned int cap = capacityOf(board, discCount);
+  return board.panexColumns ? cap + 1 : cap;
 }
 
 void generateDisk(voxel_c * v, unsigned int size) {
@@ -345,6 +470,10 @@ void saveRodSets(const puzzle_c & puz, xmlWriter_c & xml) {
     xml.newAttrib("sizeMatters", r.sizeMatters ? 1u : 0u);
     xml.newAttrib("distanceMatters", r.distanceMatters ? 1u : 0u);
     xml.newAttrib("moveOver", r.canMoveOver ? 1u : 0u);
+    if (r.panexColumns)
+      xml.newAttrib("panex", 1u);
+    if (r.pocketColumn)
+      xml.newAttrib("pocket", r.pocketHeight);
     xml.endTag("rodSet");
   }
   xml.endTag("rodSets");
@@ -380,6 +509,14 @@ void loadRodSets(puzzle_c & puz, xmlParser_c & pars) {
       s = pars.getAttributeValue("moveOver");
       if (!s.empty())
         r.canMoveOver = atoi(s.c_str()) != 0;
+      s = pars.getAttributeValue("panex");
+      if (!s.empty())
+        r.panexColumns = atoi(s.c_str()) != 0;
+      s = pars.getAttributeValue("pocket");
+      if (!s.empty() && atoi(s.c_str()) > 0) {
+        r.pocketColumn = true;
+        r.pocketHeight = (unsigned int)atoi(s.c_str());
+      }
       puz.addRodSet(r);
       pars.skipSubTree();
     } else {
@@ -499,7 +636,7 @@ void trimStacks(problem_c & prob) {
 void syncMaps(problem_c & prob) {
   if (!prob.rodSetValid())
     return;
-  unsigned int n = prob.getPuzzle().getRodSet(prob.getRodSetId()).rodCount;
+  unsigned int n = totalRods(prob.getPuzzle().getRodSet(prob.getRodSetId()));
   /* Rods past the count keep their discs, so lowering the rod count and
    * raising it again gives them back. setupError reports them meanwhile. */
   auto fit = [n](stackMap_c & map) {
@@ -528,12 +665,12 @@ std::string setupError(const problem_c & prob) {
   /* Rule breaks come first: they are what an Entities tab edit causes. */
   auto checkRules = [&](bool goal, const char * which) -> std::string {
     const stackMap_c & map = mapOf(prob, goal);
-    for (unsigned int r = board.rodCount; r < map.rods.size(); r++)
+    for (unsigned int r = totalRods(board); r < map.rods.size(); r++)
       if (!map.rods[r].empty())
         return std::string("The ") + which + " has discs on rod " + std::to_string(r + 1) +
                ", but the rod set only has " + std::to_string(board.rodCount) +
                (board.rodCount == 1 ? " rod." : " rods.");
-    for (unsigned int r = 0; r < map.rods.size() && r < board.rodCount; r++) {
+    for (unsigned int r = 0; r < map.rods.size() && r < totalRods(board); r++) {
       std::string bad = checkStack(prob, board, pieces, map.rods[r], r,
                                    goal ? "the goal" : "the start");
       if (!bad.empty())
@@ -573,7 +710,7 @@ std::string setupError(const problem_c & prob) {
     return seen;
   };
   for (bool goal : {false, true})
-    if (mapOf(prob, goal).rods.size() < board.rodCount)
+    if (mapOf(prob, goal).rods.size() < totalRods(board))
       return std::string("The ") + (goal ? "goal" : "start") +
              " does not match the number of rods.";
   std::vector<int> onStart = countsOf(false, &err);
@@ -674,10 +811,25 @@ std::string placeDisk(problem_c & prob, bool goal, unsigned int shapeId, unsigne
   }
 
   std::vector<piece_c> pieces = piecesOf(prob);
-  if (map.rods[rod].size() >= capacityOf(board, (unsigned int)pieces.size()))
+  const unsigned int n = (unsigned int)pieces.size();
+  if (map.rods[rod].size() >= rodCapacity(board, rod, n))
     return "That rod is full";
 
-  if (board.sizeMatters && !map.rods[rod].empty()) {
+  if (board.panexColumns) {
+    if (isPocket(board, rod)) {
+      map.rods[rod].push_back(diskRef_c{shapeId, (unsigned int)instance});
+      return "";
+    }
+    std::vector<unsigned int> depth;
+    for (const diskRef_c & d : map.rods[rod]) {
+      int idx = findPiece(pieces, d);
+      depth.push_back(idx < 0 ? capacityOf(board, n) : depthOf(board, pieces[(size_t)idx], n));
+    }
+    int mover = findPiece(pieces, diskRef_c{shapeId, (unsigned int)instance});
+    depth.push_back(mover < 0 ? capacityOf(board, n) : depthOf(board, pieces[(size_t)mover], n));
+    if (panexTooDeep(depth) >= 0)
+      return "A disc on that rod would be pushed deeper than its size allows";
+  } else if (board.sizeMatters && !map.rods[rod].empty()) {
     int top = findPiece(pieces, map.rods[rod].back());
     int mover = findPiece(pieces, diskRef_c{shapeId, (unsigned int)instance});
     if (top >= 0 && mover >= 0 && pieces[mover].size > pieces[top].size)
@@ -751,11 +903,20 @@ boardLayout_c layoutBoard(const problem_c & prob, bool goal) {
   const rodSet_c & board = prob.getPuzzle().getRodSet(prob.getRodSetId());
   std::vector<piece_c> pieces = piecesOf(prob);
   lay.spacing = spacingOf(pieces);
-  lay.rodCount = board.rodCount;
+  lay.rodCount = totalRods(board);
   lay.rodHeight = drawnPegHeight(board, (unsigned int)pieces.size());
-  lay.rodX.resize(board.rodCount);
-  for (unsigned int r = 0; r < board.rodCount; r++)
-    lay.rodX[r] = (int)r * lay.spacing;
+  lay.panex = board.panexColumns;
+  lay.pocket = board.panexColumns && board.pocketColumn;
+  for (const piece_c & p : pieces)
+    lay.maxSize = std::max(lay.maxSize, p.size);
+  /* The pocket stands left of rod 1, so every x stays at 0 or more. */
+  const int shift = (board.panexColumns && board.pocketColumn) ? 1 : 0;
+  lay.rodX.resize(lay.rodCount);
+  lay.rodHeights.resize(lay.rodCount);
+  for (unsigned int r = 0; r < lay.rodCount; r++) {
+    lay.rodX[r] = (rodPosition(board, r) + shift) * lay.spacing;
+    lay.rodHeights[r] = isPocket(board, r) ? std::max(1u, board.pocketHeight) : lay.rodHeight;
+  }
 
   lay.disks.assign(pieces.size(), hotspot_c{});
   const stackMap_c & map = mapOf(prob, goal);
@@ -764,17 +925,19 @@ boardLayout_c layoutBoard(const problem_c & prob, bool goal) {
     unsigned int rod = 0;
     if (refOnMap(map, diskRef_c{pieces[i].shapeId, pieces[i].instance}, &rod) &&
         rod < lay.rodX.size()) {
+      std::vector<unsigned int> column;
       unsigned int h = 0;
-      if (rod < map.rods.size()) {
-        for (const diskRef_c & d : map.rods[rod]) {
-          if (d.shapeId == pieces[i].shapeId && d.instance == pieces[i].instance)
-            break;
-          h++;
-        }
+      for (const diskRef_c & d : map.rods[rod]) {
+        int idx = findPiece(pieces, d);
+        if (idx < 0)
+          continue;
+        if ((unsigned int)idx == i)
+          h = (unsigned int)column.size();
+        column.push_back((unsigned int)idx);
       }
       lay.disks[i].x = lay.rodX[rod];
       lay.disks[i].y = 0;
-      lay.disks[i].z = (int)h;
+      lay.disks[i].z = discHeights(board, pieces, column, rod)[h];
       lay.disks[i].placed = true;
     } else {
       lay.disks[i].x = (int)unplaced * lay.spacing;
@@ -787,14 +950,102 @@ boardLayout_c layoutBoard(const problem_c & prob, bool goal) {
   return lay;
 }
 
+namespace {
+
+/* Memory one stacking takes in the search: a hash node holding its key and
+ * its parent's, its bucket and its share of the queue. A packed key is the
+ * same 8 bytes as a slide search's; a text key needs room for two strings. */
+const unsigned long PACKED_STATE_BYTES = 64;
+const unsigned long TEXT_STATE_BYTES = 160;
+
+/* Breadth-first search over stackings, each held as a Key that enc and dec
+ * turn to and from a Config. Fills path from start to goal when it finds
+ * one. Moves are tried rod by rod, so the path is the first shortest one. */
+template <class Key, class Encode, class Decode>
+void stackBfs(const rodSet_c & board, const std::vector<piece_c> & pieces,
+              const Config & start, const Config & goal, Encode enc, Decode dec,
+              unsigned long stateBytes, stackSearch_c & search, std::vector<Config> & path) {
+  const unsigned long limit = search.maxStates
+      ? search.maxStates
+      : sliding::memoryStates(stateBytes, search.highMemory);
+  search.memoryStates = limit;
+  const unsigned int rods = (unsigned int)start.size();
+
+  const Key startKey = enc(start);
+  const Key goalKey = enc(goal);
+  std::unordered_map<Key, Key> parent;
+  parent.emplace(startKey, startKey);
+  std::queue<Key> q;
+  q.push(startKey);
+
+  unsigned long visited = 0;
+  bool found = false;
+  while (!q.empty() && !found) {
+    if (parent.size() >= limit) {
+      search.outcome = STACK_MEMORY;
+      break;
+    }
+    if ((visited & 1023) == 0) {
+      if (search.progress)
+        search.progress->store(visited, std::memory_order_relaxed);
+      if (search.stop && search.stop->load(std::memory_order_relaxed)) {
+        search.outcome = STACK_STOPPED;
+        break;
+      }
+    }
+    const Key cur = q.front();
+    q.pop();
+    visited++;
+    Config cfg = dec(cur);
+    for (unsigned int from = 0; from < rods && !found; from++)
+      for (unsigned int to = 0; to < rods; to++) {
+        if (!moveAllowed(board, pieces, cfg, from, to))
+          continue;
+        cfg[to].push_back(cfg[from].back());
+        cfg[from].pop_back();
+        const Key next = enc(cfg);
+        cfg[from].push_back(cfg[to].back());
+        cfg[to].pop_back();
+        if (!parent.emplace(next, cur).second)
+          continue;
+        if (next == goalKey) {
+          found = true;
+          break;
+        }
+        q.push(next);
+      }
+  }
+
+  search.visited = visited;
+  if (search.progress)
+    search.progress->store(visited, std::memory_order_relaxed);
+  if (!found)
+    return;
+  for (Key k = goalKey; ; k = parent[k]) {
+    path.push_back(dec(k));
+    if (k == startKey)
+      break;
+  }
+  std::reverse(path.begin(), path.end());
+}
+
+} // namespace
+
 std::unique_ptr<separation_c> findStackPath(const problem_c & prob, unsigned int maxStates) {
+  stackSearch_c search;
+  search.maxStates = maxStates;
+  return findStackPath(prob, search);
+}
+
+std::unique_ptr<separation_c> findStackPath(const problem_c & prob, stackSearch_c & search) {
+  search.outcome = STACK_NO_PATH;
+  search.visited = 0;
   if (!setupError(prob).empty())
     return nullptr;
 
   const rodSet_c & board = prob.getPuzzle().getRodSet(prob.getRodSetId());
   std::vector<piece_c> pieces = piecesOf(prob);
   unsigned int n = (unsigned int)pieces.size();
-  int spacing = spacingOf(pieces);
 
   bool ok = false;
   Config start = configFromMap(prob, false, pieces, &ok);
@@ -803,69 +1054,114 @@ std::unique_ptr<separation_c> findStackPath(const problem_c & prob, unsigned int
   Config goal = configFromMap(prob, true, pieces, &ok);
   if (!ok)
     return nullptr;
+  const unsigned int rods = (unsigned int)start.size();
 
   std::vector<Config> path;
   if (configsEqual(start, goal)) {
     path.push_back(start);
   } else {
-    std::map<std::string, unsigned int> seen;
-    std::vector<Config> nodes;
-    std::vector<int> parent;
-    std::queue<unsigned int> q;
-
-    nodes.push_back(start);
-    parent.push_back(-1);
-    seen[configKey(start)] = 0;
-    q.push(0);
-
-    int found = -1;
-    while (!q.empty() && nodes.size() < maxStates && found < 0) {
-      unsigned int cur = q.front();
-      q.pop();
-      for (unsigned int from = 0; from < board.rodCount; from++) {
-        for (unsigned int to = 0; to < board.rodCount; to++) {
-          if (!moveAllowed(board, pieces, nodes[cur], from, to))
-            continue;
-          Config next = nodes[cur];
-          unsigned int mover = next[from].back();
-          next[from].pop_back();
-          next[to].push_back(mover);
-          std::string key = configKey(next);
-          if (seen.count(key))
-            continue;
-          seen[key] = (unsigned int)nodes.size();
-          parent.push_back((int)cur);
-          nodes.push_back(next);
-          if (configsEqual(next, goal)) {
-            found = (int)nodes.size() - 1;
-            break;
-          }
-          q.push((unsigned int)nodes.size() - 1);
+    /* A stacking written out rod by rod: each rod's discs bottom to top,
+     * then a separator, n. Packed into 64 bits when the symbols fit. */
+    unsigned int bits = 1;
+    while ((1u << bits) <= n)
+      bits++;
+    const unsigned int symbols = n + rods - 1;
+    if ((unsigned long)bits * symbols <= 64) {
+      auto enc = [bits, n](const Config & cfg) {
+        uint64_t key = 0;
+        for (unsigned int r = 0; r < cfg.size(); r++) {
+          if (r)
+            key = (key << bits) | n;
+          for (unsigned int d : cfg[r])
+            key = (key << bits) | d;
         }
-        if (found >= 0)
-          break;
-      }
+        return key;
+      };
+      auto dec = [bits, n, rods, symbols](uint64_t key) {
+        Config cfg(rods);
+        unsigned int r = rods - 1;
+        const uint64_t mask = (uint64_t(1) << bits) - 1;
+        for (unsigned int i = 0; i < symbols; i++, key >>= bits) {
+          unsigned int v = (unsigned int)(key & mask);
+          if (v == n)
+            r--;
+          else
+            cfg[r].insert(cfg[r].begin(), v);
+        }
+        return cfg;
+      };
+      stackBfs<uint64_t>(board, pieces, start, goal, enc, dec, PACKED_STATE_BYTES, search, path);
+    } else {
+      auto enc = [n](const Config & cfg) {
+        std::string key;
+        for (unsigned int r = 0; r < cfg.size(); r++) {
+          if (r)
+            key += (char)n;
+          for (unsigned int d : cfg[r])
+            key += (char)d;
+        }
+        return key;
+      };
+      auto dec = [n, rods](const std::string & key) {
+        Config cfg(rods);
+        unsigned int r = 0;
+        for (char c : key) {
+          if ((unsigned char)c == n)
+            r++;
+          else
+            cfg[r].push_back((unsigned char)c);
+        }
+        return cfg;
+      };
+      stackBfs<std::string>(board, pieces, start, goal, enc, dec, TEXT_STATE_BYTES, search, path);
     }
-    if (found < 0)
+    if (path.empty())
       return nullptr;
-
-    for (int i = found; i >= 0; i = parent[i])
-      path.push_back(nodes[i]);
-    std::reverse(path.begin(), path.end());
   }
+  search.outcome = STACK_FOUND;
+  return pathSeparation(prob, path);
+}
 
+bool searchInput(const problem_c & prob, stacking_t & start, stacking_t & goal,
+                 std::vector<unsigned int> & sizes) {
+  if (!setupError(prob).empty())
+    return false;
+  std::vector<piece_c> pieces = piecesOf(prob);
+  bool ok = false;
+  start = configFromMap(prob, false, pieces, &ok);
+  if (!ok)
+    return false;
+  goal = configFromMap(prob, true, pieces, &ok);
+  if (!ok)
+    return false;
+  sizes.clear();
+  for (const piece_c & p : pieces)
+    sizes.push_back(p.size);
+  return true;
+}
+
+std::unique_ptr<separation_c> pathSeparation(const problem_c & prob,
+                                             const std::vector<stacking_t> & path) {
+  const rodSet_c & board = prob.getPuzzle().getRodSet(prob.getRodSetId());
+  std::vector<piece_c> pieces = piecesOf(prob);
+  const unsigned int n = (unsigned int)pieces.size();
   std::vector<unsigned int> names(n);
   for (unsigned int i = 0; i < n; i++)
     names[i] = i;
   auto sep = std::make_unique<separation_c>(nullptr, nullptr, names);
+  if (path.empty())
+    return sep;
 
-  int liftZ = (int)drawnPegHeight(board, n);
+  boardLayout_c lay = layoutBoard(prob, false);
+  /* Cruise above the drawn pegs, and above a disc raised into the bridge. */
+  int liftZ = (int)lay.rodHeight + (board.panexColumns ? 1 : 0);
+  const drawBoard_c draw(board, pieces, lay.rodX);
   std::vector<std::unique_ptr<state_c>> frames;
-  frames.push_back(stateFor(path[0], nullptr, 0, spacing, n, liftZ));
+  frames.push_back(stateFor(path[0], nullptr, 0, draw, n, liftZ));
   for (unsigned int step = 0; step + 1 < path.size(); step++) {
-    frames.push_back(stateFor(path[step], &path[step + 1], 1, spacing, n, liftZ));
-    frames.push_back(stateFor(path[step], &path[step + 1], 2, spacing, n, liftZ));
-    frames.push_back(stateFor(path[step], &path[step + 1], 3, spacing, n, liftZ));
+    frames.push_back(stateFor(path[step], &path[step + 1], 1, draw, n, liftZ));
+    frames.push_back(stateFor(path[step], &path[step + 1], 2, draw, n, liftZ));
+    frames.push_back(stateFor(path[step], &path[step + 1], 3, draw, n, liftZ));
   }
   for (int i = (int)frames.size() - 1; i >= 0; i--)
     sep->addstate(std::move(frames[i]));

@@ -5,6 +5,7 @@
 #ifndef __SLIDING_H__
 #define __SLIDING_H__
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <utility>
@@ -104,6 +105,55 @@ void syncMaxHoles(problem_c & prob);
 /** Arrangements the slide search may visit, normally and with a deeper search. */
 const unsigned int SEARCH_STATES = 250000;
 const unsigned int DEEP_SEARCH_STATES = 1000000;
+/** maxStates for a full search: no limit on arrangements visited. */
+const unsigned int FULL_SEARCH = 0;
+/**
+ * Memory any search may fill with arrangements, about 2 GB. A full search
+ * that reaches it stops instead of exhausting the machine's memory.
+ */
+const unsigned long long SEARCH_MEMORY_BYTES = 2000000000ULL;
+
+/**
+ * Arrangements a search may hold when each takes stateBytes: as many as fit
+ * in SEARCH_MEMORY_BYTES, or with high set, in half the machine's physical
+ * memory. High never allows fewer than normal, and is the same as normal
+ * when the memory size cannot be read.
+ */
+unsigned long memoryStates(unsigned long stateBytes, bool high);
+
+/** How a slide search ended. */
+enum slideOutcome_e {
+  SLIDE_FOUND,     ///< a path to the goal
+  SLIDE_NO_PATH,   ///< every reachable arrangement was searched: there is no path
+  SLIDE_LIMIT,     ///< stopped at maxStates; a path may still exist
+  SLIDE_MEMORY,    ///< stopped at its memory limit; a path may still exist
+  SLIDE_STOPPED    ///< *stop was set
+};
+
+/** Settings for one slide search, and how it went. */
+struct slideSearch_c {
+  /** Arrangements to visit before giving up; FULL_SEARCH for no limit. */
+  unsigned long maxStates = SEARCH_STATES;
+  /**
+   * Arrangements to hold in memory before giving up, whatever maxStates
+   * says; 0 for as many as fit the memory budget (memoryStates).
+   */
+  unsigned long maxMemoryStates = 0;
+  /** With maxMemoryStates 0, budget half the physical memory, not 2 GB. */
+  bool highMemory = false;
+  /** Let a piece carry what is nested in its outline. */
+  bool nested = false;
+  /** Checked as the search runs; when it reads true the search stops. */
+  const std::atomic<bool> * stop = nullptr;
+  /** When set, kept up to date with the arrangements visited so far. */
+  std::atomic<unsigned long> * progress = nullptr;
+
+  /** Out: how the search ended, and how many arrangements it visited. */
+  slideOutcome_e outcome = SLIDE_NO_PATH;
+  unsigned long visited = 0;
+  /** Out: the memory limit the search used, in arrangements. */
+  unsigned long memoryStates = 0;
+};
 
 /**
  * Find a path with the fewest moves from the given start assembly to the
@@ -118,6 +168,11 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
                                             const assembly_c & start,
                                             unsigned int maxStates = SEARCH_STATES,
                                             bool nested = false);
+
+/** findSlidePath with a stop flag and progress, reporting how it ended in search. */
+std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
+                                            const assembly_c & start,
+                                            slideSearch_c & search);
 
 /**
  * Identity of the finished picture: each piece's placement in the last

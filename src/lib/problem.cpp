@@ -74,7 +74,7 @@ problem_c::problem_c(puzzle_c & puz) :
   rodSetId(0xFFFFFFFF),
   solutionsWithRotations(false),
   solveState(SS_UNSOLVED), numAssemblies(0),
-  numSolutions(0), usedTime(0), maxHoles(0xFFFFFFFF)
+  numSolutions(0), usedMs(0), maxHoles(0xFFFFFFFF)
 {
 }
 
@@ -85,7 +85,7 @@ problem_c::problem_c(const problem_c * orig, puzzle_c & puz) :
   rodSetId(orig->rodSetId),
   startMap(orig->startMap), goalMap(orig->goalMap),
   solutionsWithRotations(false),
-  solveState(SS_UNSOLVED), numAssemblies(0), numSolutions(0), usedTime(0)
+  solveState(SS_UNSOLVED), numAssemblies(0), numSolutions(0), usedMs(0)
 {
   for (std::set<uint32_t>::iterator i = orig->colorConstraints.begin(); i != orig->colorConstraints.end(); ++i)
     colorConstraints.insert(*i);
@@ -115,7 +115,9 @@ void problem_c::save(xmlWriter_c & xml) const
   {
     xml.newAttrib("assemblies", numAssemblies.load(std::memory_order_relaxed));
     xml.newAttrib("solutions", numSolutions.load(std::memory_order_relaxed));
-    xml.newAttrib("time", usedTime);
+    xml.newAttrib("time", (unsigned long)(usedMs / 1000));
+    /* The same to the millisecond; older versions read only "time". */
+    xml.newAttrib("timeMs", std::to_string(usedMs));
   }
 
   if (maxHoles != 0xFFFFFFFF)
@@ -204,6 +206,20 @@ void problem_c::save(xmlWriter_c & xml) const
     }
   }
 
+  /* Unfinished work of a paused solve; older versions skip the tag. */
+  if (solveState == SS_SOLVING && !pending.empty()) {
+    xml.newTag("pending");
+    for (const pendingAssembly_c & p : pending) {
+      xml.newTag("item");
+      xml.newAttrib("counted", p.counted ? 1u : 0u);
+      xml.newAttrib("assembly", p.assemblyNumber);
+      xml.newAttrib("solution", p.solutionNumber);
+      p.assembly->save(xml);
+      xml.endTag("item");
+    }
+    xml.endTag("pending");
+  }
+
   if (solutions.size()) {
     /* Rotation-aware solutions go in a sibling tag that older BurrTools skip
      * via skipSubTree on unknown problem children. Classic <solutions> stays
@@ -229,7 +245,7 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
   solveState = SS_UNSOLVED;
   numAssemblies.store(0, std::memory_order_relaxed);
   numSolutions.store(0, std::memory_order_relaxed);
-  usedTime = 0;
+  usedMs = 0;
   maxHoles = 0xFFFFFFFF;
 
   std::string str = pars.getAttributeValue("maxHoles");
@@ -252,7 +268,10 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
 
     str = pars.getAttributeValue("time");
     if (str.length())
-      usedTime = atoi(str.c_str());
+      usedMs = 1000ull * strtoul(str.c_str(), nullptr, 10);
+    str = pars.getAttributeValue("timeMs");
+    if (str.length())
+      usedMs = strtoull(str.c_str(), nullptr, 10);
   }
 
   unsigned int pieces = 0;
@@ -439,6 +458,39 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
     else if (pars.getName() == "stacking")
     {
       stacking::loadProblem(*this, pars);
+    }
+    else if (pars.getName() == "pending")
+    {
+      do {
+        int state = pars.nextTag();
+        if (state == xmlParser_c::END_TAG)
+          break;
+        pars.require(xmlParser_c::START_TAG, "");
+        if (pars.getName() != "item") {
+          pars.skipSubTree();
+          continue;
+        }
+        pendingAssembly_c p;
+        p.counted = atoi(pars.getAttributeValue("counted").c_str()) != 0;
+        p.assemblyNumber = strtoul(pars.getAttributeValue("assembly").c_str(), nullptr, 10);
+        p.solutionNumber = strtoul(pars.getAttributeValue("solution").c_str(), nullptr, 10);
+        do {
+          int st = pars.nextTag();
+          if (st == xmlParser_c::END_TAG)
+            break;
+          pars.require(xmlParser_c::START_TAG, "");
+          if (pars.getName() == "assembly") {
+            p.assembly = std::make_unique<assembly_c>(pars, pieces, puzzle.getGridType());
+            pars.require(xmlParser_c::END_TAG, "assembly");
+          } else {
+            pars.skipSubTree();
+          }
+        } while (true);
+        pars.require(xmlParser_c::END_TAG, "item");
+        if (p.assembly)
+          pending.push_back(std::move(p));
+      } while (true);
+      pars.require(xmlParser_c::END_TAG, "pending");
     }
     else if (pars.getName() == "assembler")
     {
@@ -973,12 +1025,38 @@ void problem_c::removeAllSolutions(void) {
   std::lock_guard<std::recursive_mutex> guard(solutionMutex);
   solutions.clear();
   solutionsWithRotations = false;
+  pending.clear();
   assm.reset();
   assemblerState = "";
   solveState = SS_UNSOLVED;
   numAssemblies.store(0, std::memory_order_relaxed);
   numSolutions.store(0, std::memory_order_relaxed);
-  usedTime = 0;
+  usedMs = 0;
+}
+
+void problem_c::addPending(std::unique_ptr<assembly_c> a, bool counted, unsigned long assemblyNumber,
+                           unsigned long solutionNumber) {
+  if (!a)
+    return;
+  std::lock_guard<std::recursive_mutex> guard(solutionMutex);
+  pendingAssembly_c p;
+  p.assembly = std::move(a);
+  p.counted = counted;
+  p.assemblyNumber = assemblyNumber;
+  p.solutionNumber = solutionNumber;
+  pending.push_back(std::move(p));
+}
+
+std::vector<problem_c::pendingAssembly_c> problem_c::takePending(void) {
+  std::lock_guard<std::recursive_mutex> guard(solutionMutex);
+  std::vector<pendingAssembly_c> out;
+  out.swap(pending);
+  return out;
+}
+
+size_t problem_c::pendingCount(void) const {
+  std::lock_guard<std::recursive_mutex> guard(solutionMutex);
+  return pending.size();
 }
 
 void problem_c::removeSolution(unsigned int sol) {
@@ -1205,5 +1283,5 @@ void problem_c::makeUnknown(void)
 
   numAssemblies.store(0, std::memory_order_relaxed);
   numSolutions.store(0, std::memory_order_relaxed);
-  usedTime = 0;
+  usedMs = 0;
 }

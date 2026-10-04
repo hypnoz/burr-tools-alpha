@@ -38,6 +38,8 @@
 
 #include "../lib/sliding.h"
 #include "../lib/stacking.h"
+#include "../lib/panex.h"
+#include "../lib/sysmemory.h"
 
 #include "assertwindow.h"
 #include "togglebutton.h"
@@ -111,6 +113,14 @@
 
 #include <fstream>
 #include <algorithm>
+#include <filesystem>
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
+#include <sstream>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -550,6 +560,10 @@ void mainWindow_c::loadRodFields(void) {
     rodSizeMatters->value(r.sizeMatters ? 1 : 0);
     /* Older files used "can move over" to cancel a distance limit. */
     rodDistance->value((r.distanceMatters && !r.canMoveOver) ? 1 : 0);
+    rodPanex->value(r.panexColumns ? 1 : 0);
+    rodPocket->value(r.pocketColumn ? 1 : 0);
+    rodPocketHeight->value(r.pocketHeight);
+    syncPanexFields();
     if (r.growHeight) rodGrow->setonly();
     else rodFixed->setonly();
   }
@@ -560,10 +574,15 @@ static void easeRodZoom(LView3dGroup * view) {
   if (!view)
     return;
   /* The piece editor's default zoom frames one disc. A board of rods
-   * needs to sit further back so all of the pegs are in view. Leave a
-   * zoom the user has already moved. */
-  if (std::fabs(view->getZoom() - LView3dGroup::defaultZoom) < 0.15)
-    view->setZoom(2.7);
+   * needs to sit further back so all of it is in view, however large the
+   * discs. Refit while the zoom is the default or our last fit, and leave
+   * a zoom the user has moved. */
+  static double lastFit = -1;
+  const double zoom = view->getZoom();
+  if (std::fabs(zoom - LView3dGroup::defaultZoom) < 0.15 || std::fabs(zoom - lastFit) < 0.005) {
+    lastFit = view->getView()->fitZoom();
+    view->setZoom(lastFit);
+  }
 }
 
 void mainWindow_c::showSelectedRods(void) {
@@ -674,6 +693,25 @@ void mainWindow_c::cb_RodSel(void) {
   updateInterface();
 }
 
+/* Panex columns replace the size rule, and the pocket needs them. */
+void mainWindow_c::syncPanexFields(void) {
+  if (!rodPanex)
+    return;
+  const bool panex = rodPanex->value() != 0;
+  if (panex) {
+    rodSizeMatters->deactivate();
+    rodPocket->activate();
+  } else {
+    rodSizeMatters->activate();
+    rodPocket->value(0);
+    rodPocket->deactivate();
+  }
+  if (panex && rodPocket->value() != 0)
+    rodPocketHeight->activate();
+  else
+    rodPocketHeight->deactivate();
+}
+
 void mainWindow_c::cb_RodField(void) {
   if (rodFieldGuard || !puzzle || !rodSel || !rodCountInput)
     return;
@@ -693,8 +731,15 @@ void mainWindow_c::cb_RodField(void) {
   r.sizeMatters = rodSizeMatters->value() != 0;
   r.distanceMatters = rodDistance->value() != 0;
   r.canMoveOver = false;
+  r.panexColumns = rodPanex->value() != 0;
+  r.pocketColumn = r.panexColumns && rodPocket->value() != 0;
+  unsigned int ph = (unsigned int)rodPocketHeight->value();
+  if (ph < 1) ph = 1;
+  if (ph > 64) ph = 64;
+  r.pocketHeight = ph;
   if (r.growHeight) rodHeightInput->deactivate();
   else rodHeightInput->activate();
+  syncPanexFields();
   /* Stacks saved against the old rules can be illegal after these edits.
    * They are kept: the Puzzle tab's validity bar reports what is wrong. */
   for (unsigned int p = 0; p < puzzle->getNumberOfProblems(); p++) {
@@ -842,9 +887,17 @@ class RodIndexBar_c : public Fl_Group, public layoutable_c {
   Fl_Box * caption;
   int rods;
   int labelW;
+public:
+  /* With a pocket column the first place on the slider is the pocket,
+   * which stands left of rod 1 on the board. */
+  bool pocketFirst = false;
+private:
   void syncCaption(void) {
     char buf[16];
-    snprintf(buf, sizeof(buf), "Rod: %d", value() + 1);
+    if (pocketFirst && value() == 0)
+      snprintf(buf, sizeof(buf), "Rod: P");
+    else
+      snprintf(buf, sizeof(buf), "Rod: %d", value() + (pocketFirst ? 0 : 1));
     caption->copy_label(buf);
   }
   static void cb_slider(Fl_Widget *, void * v) {
@@ -948,7 +1001,13 @@ unsigned int mainWindow_c::selectedStackRod(void) const {
   int v = stackRodBar->value();
   if (v < 0)
     v = 0;
-  return (unsigned int)v;
+  if (!stackRodBar->pocketFirst)
+    return (unsigned int)v;
+  /* Slider place 0 is the pocket, the last rod in a stack map. */
+  unsigned int id = rodAssignSel ? rodAssignSel->getSelection() : 0;
+  if (!puzzle || id >= puzzle->rodSetCount())
+    return 0;
+  return v == 0 ? puzzle->getRodSet(id).rodCount : (unsigned int)(v - 1);
 }
 
 bool mainWindow_c::stackingBoard(problem_c * pr) {
@@ -990,9 +1049,13 @@ void mainWindow_c::refreshStackSlider(void) {
   if (!stackRodBar || !puzzle)
     return;
   unsigned int n = 1;
+  bool pocket = false;
   unsigned int id = rodAssignSel ? rodAssignSel->getSelection() : 0;
-  if (id < puzzle->rodSetCount())
-    n = puzzle->getRodSet(id).rodCount;
+  if (id < puzzle->rodSetCount()) {
+    n = stacking::totalRods(puzzle->getRodSet(id));
+    pocket = n > puzzle->getRodSet(id).rodCount;
+  }
+  stackRodBar->pocketFirst = pocket;
   if (n < 1)
     n = 1;
   int keep = stackRodBar->value();
@@ -1109,7 +1172,15 @@ void mainWindow_c::cb_StackMode(Fl_Widget * o) {
 void mainWindow_c::syncSolverTypeMenu(void) {
   if (!solverTypeChoice || !puzzle)
     return;
-  const int mode = stacking::isStacking(*puzzle) ? 1 : sliding::isSliding(*puzzle) ? 2 : 0;
+  int mode = stacking::isStacking(*puzzle) ? 1 : sliding::isSliding(*puzzle) ? 2 : 0;
+  /* Stacking offers one solver, chosen by the selected problem's rod set:
+   * the Panex Solver for Panex columns (mode 3), else the Stacking Solver. */
+  if (mode == 1 && solutionProblem && solutionProblem->getSelection() < puzzle->getNumberOfProblems()) {
+    const problem_c * pr = puzzle->getProblem(solutionProblem->getSelection());
+    if (pr->rodSetValid() && pr->getRodSetId() < puzzle->rodSetCount() &&
+        puzzle->getRodSet(pr->getRodSetId()).panexColumns)
+      mode = 3;
+  }
   if (mode == solverMenuMode && solverTypeChoice->size() > 0)
     return;
   const int was = solverMenuMode;
@@ -1119,14 +1190,24 @@ void mainWindow_c::syncSolverTypeMenu(void) {
   if (mode == 1) {
     solverTypeChoice->add("Stacking Solver");
     solverTypeChoice->value(0);
+    solverTypeChoice->tooltip(" Finds the fewest rod transfers. Rod sets with Panex Style Columns use the Panex Solver instead. Click ? for more. ");
+  } else if (mode == 3) {
+    solverTypeChoice->add("Panex Solver");
+    solverTypeChoice->value(0);
+    solverTypeChoice->tooltip(" Finds the fewest rod transfers for Panex Style Columns, built for large towers: it searches from both ends and uses every core. Click ? for more. ");
   } else if (mode == 2) {
     /* The grid solvers only differ in how they take pieces apart, which a
      * sliding puzzle never does. What matters here is how far to search.
-     * Entry 1 is the deep search; cb_BtnStart reads the index. */
+     * Entry 1 is the deep search, 2 the full one; cb_BtnStart reads the index. */
     solverTypeChoice->add("Sliding Fast Solver (250k depth)");
     solverTypeChoice->add("Sliding Deep Solver (1mil depth)");
-    solverTypeChoice->value(0);
+    solverTypeChoice->add("Sliding Full Solver (full depth)");
+    /* Deep by default: larger puzzles such as Panex Jr need it, and a
+     * puzzle the fast search can solve takes no longer on the deep one. */
+    solverTypeChoice->value(1);
+    solverTypeChoice->tooltip(" How far the slide search may go before it gives up. Click ? for more. ");
   } else {
+    solverTypeChoice->tooltip(solverTypeTooltip());
     for (unsigned int i = 0; i < solverTypeCount(); i++)
       solverTypeChoice->add(solverTypeLabel((solverType_e)i));
     if (was != 0 || keep < 0 || (unsigned int)keep >= solverTypeCount())
@@ -1316,10 +1397,12 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
     if (puzzle->getNumberOfProblems() && (solutionProblem->getSelection() >= puzzle->getNumberOfProblems()))
       solutionProblem->setSelection(puzzle->getNumberOfProblems()-1);
 
-    if ((solutionProblem->getSelection() < puzzle->getNumberOfProblems()) &&
-        (SolutionSel->value()-1 < puzzle->getProblem(solutionProblem->getSelection())->getNumberOfSavedSolutions())) {
+    /* Show the selected problem's solution, or nothing when it has none
+     * yet: never whatever another tab or problem left in the view. */
+    if (solutionProblem->getSelection() < puzzle->getNumberOfProblems())
       activateSolution(solutionProblem->getSelection(), int(SolutionSel->value()-1));
-    }
+    else
+      View3D->getView()->showNothing();
     Big3DView();
     hideDebugRightPane();
     StatusLine->setText("");
@@ -2276,7 +2359,31 @@ void mainWindow_c::cb_BtnPrepare(void) {
 }
 
 static void cb_BtnStart_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_BtnStart(false); }
+/* The Solver tab will run the Panex Solver on a stacking puzzle. */
+bool mainWindow_c::panexSelected(void) const {
+  return puzzle && stacking::isStacking(*puzzle) && solverMenuMode == 3;
+}
+
 void mainWindow_c::cb_BtnStart(bool prep_only) {
+
+  /* Solve starts afresh; a saved stacking search would be lost, so ask. */
+  if (stacking::isStacking(*puzzle) && !prep_only &&
+      solutionProblem->getSelection() < puzzle->getNumberOfProblems()) {
+    const problem_c * pr = puzzle->getProblem(solutionProblem->getSelection());
+    const std::string saved = panex::savedSearch(*pr);
+    if (!saved.empty()) {
+      int choice = fl_choice("This problem has %s.\n\nContinue it, or start over and discard it?",
+                             "Cancel", "Continue", "Start Over", saved.c_str());
+      if (choice == 0)
+        return;
+      if (choice == 1) {
+        cb_BtnCont(false);
+        updateInterface();
+        return;
+      }
+      panex::discardSaved(*pr);
+    }
+  }
 
   puzzle->getProblem(solutionProblem->getSelection())->removeAllSolutions();
   SolutionEmpty = true;
@@ -2291,9 +2398,9 @@ void mainWindow_c::cb_BtnStart(bool prep_only) {
 }
 
 static void cb_BtnCont_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_BtnCont(false); }
-void mainWindow_c::cb_BtnCont(bool prep_only) {
+void mainWindow_c::cb_BtnCont(bool prep_only, int forProblem) {
 
-  unsigned int prob = solutionProblem->getSelection();
+  unsigned int prob = forProblem >= 0 ? (unsigned int)forProblem : solutionProblem->getSelection();
   const bool stackingPuzzle = puzzle && stacking::isStacking(*puzzle);
 
   if (!stackingPuzzle &&
@@ -2361,6 +2468,26 @@ void mainWindow_c::cb_BtnCont(bool prep_only) {
   if (slidingSolve) {
     if (NestedSlides->value() != 0) par |= solveThread_c::PAR_NESTED_SLIDES;
     if (solverTypeChoice && solverTypeChoice->value() == 1) par |= solveThread_c::PAR_DEEP_SEARCH;
+    if (solverTypeChoice && solverTypeChoice->value() == 2) par |= solveThread_c::PAR_FULL_SEARCH;
+  }
+
+  if ((slidingSolve || stacking::isStacking(*puzzle)) && HighMemory->value() != 0)
+    par |= solveThread_c::PAR_HIGH_MEMORY;
+  if (panexSelected()) {
+    std::string why = panex::unsupported(*puzzle->getProblem(prob));
+    if (!why.empty()) {
+      fl_message("%s", why.c_str());
+      return;
+    }
+    par |= solveThread_c::PAR_PANEX_SOLVER;
+  }
+  if (stacking::isStacking(*puzzle)) {
+    /* Both stacking solvers save their search: Solve has already discarded
+     * a saved search it should not carry on. */
+    par |= solveThread_c::PAR_PANEX_RESUME;
+    if (Autosave && Autosave->value() == 0)
+      par |= solveThread_c::PAR_PANEX_NO_AUTOSAVE;
+    puzzle->getProblem(prob)->removeAllSolutions();
   }
 
   assmThread = new solveThread_c(*puzzle->getProblem(prob), par);
@@ -2372,6 +2499,9 @@ void mainWindow_c::cb_BtnCont(bool prep_only) {
   assmThread->setSolverType(st);
   assmThread->setSortMethod(sortMethod->value());
   assmThread->setSolutionLimits((int)solLimit->value(), (int)solDrop->value());
+
+  autosaveFrom = std::chrono::steady_clock::now();
+  autosaveProblem = prob;
 
   if (!assmThread->start(prep_only)) {
     fl_message("Could not start the solving process, the thread creation failed, sorry.");
@@ -2518,7 +2648,9 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
   }
 
   /* Just Levels and Strict Colors do nothing for sliding. Nested slides
-   * takes Just Levels' place; search depth is the Solver Type choice.
+   * takes Just Levels' place and High Memory (sliding and stacking) takes
+   * Deep Symmetry Check's;
+   * search depth is the Solver Type choice.
    * The symmetry options go for sliding and stacking alike. */
   {
     bool moved = false;
@@ -2536,6 +2668,7 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
     setVis(DropDisassemblies, !slidingPuzzle);
     setVis(StrictColors, !slidingPuzzle);
     setVis(NestedSlides, slidingPuzzle);
+    setVis(HighMemory, slidingPuzzle || stackingPuzzle);
     /* The symmetry filter drops starts that are rotations or mirrors of
      * another. Stacking never assembles, and sliding must keep every start,
      * so these three have no use there. */
@@ -3088,6 +3221,55 @@ void mainWindow_c::cb_Load_Scad(void) {
 }
 
 void cb_Save_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_Save(); }
+/* The recovery copy of this puzzle's autosaved solve: one per puzzle file,
+ * in the user's cache folder. Empty for a puzzle with no file. */
+std::string mainWindow_c::autosavePath(void) const {
+  if (!fname || !fname[0])
+    return "";
+  const std::string cache = userCacheDirectory();
+  if (cache.empty())
+    return "";
+  std::error_code ec;
+  const std::filesystem::path file = std::filesystem::absolute(fname, ec);
+  uint64_t h = 1469598103934665603ull;
+  for (unsigned char c : file.string()) {
+    h ^= c;
+    h *= 1099511628211ull;
+  }
+  char tag[17];
+  snprintf(tag, sizeof(tag), "%016llx", (unsigned long long)h);
+  return (std::filesystem::path(cache) / "autosave" /
+          (file.stem().string() + "-" + tag + ".xmpuzzle")).string();
+}
+
+bool mainWindow_c::writeAutosave(void) {
+  const std::string path = autosavePath();
+  if (path.empty())
+    return false;
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+  const std::string tmp = path + ".tmp";
+  {
+    ogzstream ostr(tmp.c_str());
+    if (!ostr)
+      return false;
+    xmlWriter_c xml(ostr);
+    puzzle->save(xml);
+    if (!ostr)
+      return false;
+  }
+  /* Replace the old copy only once the new one is whole. */
+  std::filesystem::rename(tmp, path, ec);
+  return !ec;
+}
+
+void mainWindow_c::removeAutosave(void) {
+  const std::string path = autosavePath();
+  std::error_code ec;
+  if (!path.empty())
+    std::filesystem::remove(path, ec);
+}
+
 void mainWindow_c::cb_Save(void) {
 
   if (threadStopped()) {
@@ -3109,6 +3291,8 @@ void mainWindow_c::cb_Save(void) {
         changed = false;
         if (shapeHistory)
           shapeHistory->markSaved();
+        /* The file now holds the solve: the recovery copy is not needed. */
+        removeAutosave();
       }
     }
   }
@@ -3307,6 +3491,8 @@ void mainWindow_c::cb_SaveAs(void) {
         strcpy(fname, f2.c_str());
 
         copy_label(platform::windowTitle(fname).c_str());
+        if (ostr)
+          removeAutosave();
 
       } else {
 
@@ -3454,6 +3640,259 @@ void mainWindow_c::cb_STLExport(void) {
 }
 
 void cb_Export_Scad_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_Export_Scad(); }
+void cb_ExportPaused_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_ExportPaused(); }
+void cb_ImportPaused_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_ImportPaused(); }
+
+/* A paused solve as one file, *.btsolve, to carry on later or elsewhere:
+ *   "BTSOLVE1", then sections, each a 32-bit name length, the name, a
+ *   64-bit size and the bytes:
+ *   "puzzle"         the puzzle, gzip-compressed as BurrTools saves it. A
+ *                    brick or sliding problem keeps its paused solve in it.
+ *   "problem"        the paused problem's number, as text
+ *   "search/<name>"  a stacking solve's saved search, file by file; the
+ *                    saved levels may be left out
+ */
+namespace {
+
+const char SOLVE_MAGIC[8] = {'B', 'T', 'S', 'O', 'L', 'V', 'E', '1'};
+
+bool writeSection(std::ofstream & out, const std::string & name, std::istream & data, uint64_t size) {
+  const uint32_t len = (uint32_t)name.size();
+  out.write(reinterpret_cast<const char *>(&len), sizeof(len));
+  out.write(name.data(), len);
+  out.write(reinterpret_cast<const char *>(&size), sizeof(size));
+  std::vector<char> buf(1 << 20);
+  uint64_t left = size;
+  while (left && out) {
+    const std::streamsize n = (std::streamsize)std::min<uint64_t>(left, buf.size());
+    data.read(buf.data(), n);
+    if (data.gcount() != n)
+      return false;
+    out.write(buf.data(), n);
+    left -= (uint64_t)n;
+  }
+  return (bool)out;
+}
+
+bool writeFileSection(std::ofstream & out, const std::string & name, const std::filesystem::path & file) {
+  std::error_code ec;
+  const uint64_t size = std::filesystem::file_size(file, ec);
+  std::ifstream in(file, std::ios::binary);
+  return !ec && in && writeSection(out, name, in, size);
+}
+
+bool writeTextSection(std::ofstream & out, const std::string & name, const std::string & text) {
+  std::istringstream in(text);
+  return writeSection(out, name, in, text.size());
+}
+
+/* The next section's name and size; false at the end or on a bad file. */
+bool readSectionHeader(std::ifstream & in, std::string & name, uint64_t & size) {
+  uint32_t len = 0;
+  if (!in.read(reinterpret_cast<char *>(&len), sizeof(len)) || len > 4096)
+    return false;
+  name.assign(len, '\0');
+  if (!in.read(&name[0], len) || !in.read(reinterpret_cast<char *>(&size), sizeof(size)))
+    return false;
+  return true;
+}
+
+bool copySection(std::ifstream & in, uint64_t size, std::ostream & out) {
+  std::vector<char> buf(1 << 20);
+  while (size) {
+    const std::streamsize n = (std::streamsize)std::min<uint64_t>(size, buf.size());
+    if (!in.read(buf.data(), n))
+      return false;
+    out.write(buf.data(), n);
+    size -= (uint64_t)n;
+  }
+  return (bool)out;
+}
+
+std::string sizeText(uint64_t bytes) {
+  char buf[32];
+  if (bytes >= 1000000000ull)
+    snprintf(buf, sizeof(buf), "%.1f GB", bytes / 1e9);
+  else
+    snprintf(buf, sizeof(buf), "%.0f MB", bytes / 1e6);
+  return buf;
+}
+
+} // namespace
+
+bool mainWindow_c::problemPaused(unsigned int prob) const {
+  if (assmThread || !puzzle || prob >= puzzle->getNumberOfProblems())
+    return false;
+  const problem_c * pr = puzzle->getProblem(prob);
+  if (stacking::isStacking(*puzzle))
+    return !panex::savedSearch(*pr).empty();
+  return pr->getSolveState() == SS_SOLVING;
+}
+
+void mainWindow_c::cb_ExportPaused(void) {
+  const unsigned int prob = solutionProblem->getSelection();
+  if (!problemPaused(prob)) {
+    fl_message("Pause a solve first: the problem selected on the Solver tab has no paused solve.");
+    return;
+  }
+  const problem_c * pr = puzzle->getProblem(prob);
+
+  /* A stacking solve's saved search: its state, and the levels if wanted. */
+  std::vector<std::filesystem::path> files;
+  if (stacking::isStacking(*puzzle)) {
+    const std::filesystem::path dir = panex::searchFolder(*pr);
+    std::error_code ec;
+    uint64_t levelBytes = 0;
+    std::vector<std::filesystem::path> levels;
+    for (const auto & e : std::filesystem::directory_iterator(dir, ec)) {
+      if (e.path().filename() == "state.bin")
+        files.push_back(e.path());
+      else if (e.path().extension() == ".lvl") {
+        levels.push_back(e.path());
+        levelBytes += e.file_size(ec);
+      }
+    }
+    bool withLevels = true;
+    if (levelBytes > 1000000000ull) {
+      const int choice = fl_choice(
+          "The saved search keeps %s of levels for finding the path once the search is done.\n\n"
+          "Include them? Left out, the file is much smaller, but finding the path at the end "
+          "takes longer.",
+          "Cancel", "Include", "Leave Out", sizeText(levelBytes).c_str());
+      if (choice == 0)
+        return;
+      withLevels = choice == 1;
+    }
+    if (withLevels)
+      files.insert(files.end(), levels.begin(), levels.end());
+  }
+
+  std::string preset = "puzzle";
+  if (fname && fname[0])
+    preset = std::filesystem::path(fname).stem().string();
+  preset += "-P" + std::to_string(prob + 1) + ".btsolve";
+  const char * f = bt_file_chooser_save("Export Paused Solver State", "Paused Solver State\t*.btsolve",
+                                        preset.c_str());
+  if (!f)
+    return;
+  std::string target = f;
+  if (!hasFileExtension(target.c_str(), ".btsolve"))
+    target += ".btsolve";
+
+  /* The puzzle as BurrTools saves it, then read back as bytes. */
+  std::error_code ec;
+  const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec) /
+                                    ("burrtools-export-" + std::to_string(getpid()) + ".xmpuzzle");
+  {
+    ogzstream ostr(tmp.string().c_str());
+    xmlWriter_c xml(ostr);
+    puzzle->save(xml);
+  }
+  bool ok = false;
+  {
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    out.write(SOLVE_MAGIC, sizeof(SOLVE_MAGIC));
+    ok = (bool)out && writeFileSection(out, "puzzle", tmp) &&
+         writeTextSection(out, "problem", std::to_string(prob));
+    for (const auto & file : files)
+      ok = ok && writeFileSection(out, "search/" + file.filename().string(), file);
+  }
+  std::filesystem::remove(tmp, ec);
+  if (!ok) {
+    std::filesystem::remove(target, ec);
+    fl_alert("Could not export the paused solve to %s.", target.c_str());
+    return;
+  }
+  fl_message("Exported the paused solve of problem %u to %s.", prob + 1, target.c_str());
+}
+
+void mainWindow_c::cb_ImportPaused(void) {
+  if (!threadStopped())
+    return;
+  if (!confirmDiscard("import a paused solve"))
+    return;
+  const char * f = bt_file_chooser_open("Import Paused Solver State", "Paused Solver State\t*.btsolve", "");
+  if (!f)
+    return;
+
+  std::ifstream in(f, std::ios::binary);
+  char magic[sizeof(SOLVE_MAGIC)];
+  if (!in.read(magic, sizeof(magic)) || !std::equal(magic, magic + sizeof(magic), SOLVE_MAGIC)) {
+    fl_alert("%s is not a paused solver state exported by BurrTools.", f);
+    return;
+  }
+
+  std::error_code ec;
+  const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec) /
+                                    ("burrtools-import-" + std::to_string(getpid()) + ".xmpuzzle");
+  std::unique_ptr<puzzle_c> loaded;
+  unsigned int prob = 0;
+  std::filesystem::path searchDir;
+  bool ok = true;
+  std::string name;
+  uint64_t size = 0;
+  while (ok && readSectionHeader(in, name, size)) {
+    if (name == "puzzle") {
+      {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        ok = copySection(in, size, out);
+      }
+      auto str = ok ? openGzFile(tmp.string().c_str()) : nullptr;
+      if (!str) {
+        ok = false;
+        break;
+      }
+      try {
+        xmlParser_c pars(*str);
+        loaded = std::make_unique<puzzle_c>(pars);
+      } catch (xmlParserException_c & e) {
+        fl_alert("The puzzle in %s could not be read: %s", f, e.what());
+        std::filesystem::remove(tmp, ec);
+        return;
+      }
+    } else if (name == "problem") {
+      std::ostringstream text;
+      ok = copySection(in, size, text);
+      prob = (unsigned int)strtoul(text.str().c_str(), nullptr, 10);
+      if (loaded && stacking::isStacking(*loaded) && prob < loaded->getNumberOfProblems()) {
+        /* Where Continue looks for this problem's saved search. */
+        searchDir = panex::searchFolder(*loaded->getProblem(prob));
+        if (searchDir.empty()) {
+          ok = false;
+          break;
+        }
+        std::filesystem::remove_all(searchDir, ec);
+        std::filesystem::create_directories(searchDir, ec);
+      }
+    } else if (name.rfind("search/", 0) == 0 && !searchDir.empty() &&
+               name.find("..") == std::string::npos) {
+      std::ofstream out(searchDir / name.substr(7), std::ios::binary | std::ios::trunc);
+      ok = copySection(in, size, out);
+    } else {
+      in.seekg((std::streamoff)size, std::ios::cur);
+    }
+  }
+  std::filesystem::remove(tmp, ec);
+  if (!ok || !loaded || prob >= loaded->getNumberOfProblems()) {
+    fl_alert("%s could not be read completely.", f);
+    return;
+  }
+
+  /* A new, untitled puzzle: the user saves it where they like. */
+  if (fname) delete [] fname;
+  fname = 0;
+  copy_label(platform::windowTitle(0).c_str());
+  ReplacePuzzle(loaded.release());
+  changed = true;
+  View3D->getView()->showColors(puzzle, StatusLine->getColorMode());
+
+  TaskSelectionTab->value(TabSolve);
+  solutionProblem->setSelection(prob);
+  cb_TaskSelectionTab(TaskSelectionTab);
+  updateInterface();
+  fl_message("Imported the paused solve of problem %u. Press Continue on the Solver tab to carry it on, "
+             "and save the puzzle to keep it.", prob + 1);
+}
 void mainWindow_c::cb_Export_Scad(void) {
 
   if (puzzle->getGridType()->getType() != gridType_c::GT_BRICKS) {
@@ -3692,6 +4131,7 @@ The documentation was written for an older version of BurrTools, but the concept
 static void cb_TutorialClose_stub(Fl_Widget* /*o*/, void* v) { ((Fl_Double_Window*)v)->hide(); }
 void cb_Tutorial_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_Tutorial(); }
 static void cb_SolverTypeHelp_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_SolverTypeHelp(); }
+static void cb_SolverType_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_SolverType(); }
 static void cb_SortByHelp_stub(Fl_Widget* /*o*/, void* v) { ((mainWindow_c*)v)->cb_SortByHelp(); }
 static void cb_SolverTypeHelpClose_stub(Fl_Widget* /*o*/, void* v) { ((Fl_Double_Window*)v)->hide(); }
 
@@ -3861,14 +4301,38 @@ void mainWindow_c::cb_SolverTypeHelp(void) {
     addSolverHelpBody(row++,
         "•  Searches for the fewest moves from the start to the goal. One move is one piece going anywhere it can reach while the others stay put, corners included.\n"
         "•  Looks at up to 250,000 arrangements of the pieces for each start.\n"
-        "•  Quick, and enough for most puzzles.");
+        "•  Gives up sooner on a puzzle with no solution, or on one with many starts to try.");
     (new LFl_Box(0, row++))->setMinimumSize(0, 16);
 
     addSolverHelpHeading(row++, "Sliding Deep Solver (1mil depth)");
     addSolverHelpBody(row++,
-        "•  The same search, allowed up to 1,000,000 arrangements for each start.\n"
-        "•  Slower and uses more memory. Try it when the fast solver finds nothing on a large puzzle.\n"
+        "•  The default. The same search, allowed up to 1,000,000 arrangements for each start.\n"
+        "•  Solves larger puzzles, such as Panex Jr, that the fast solver runs out on. A puzzle the fast solver can solve takes no longer here.\n"
         "•  A search that runs out of arrangements cannot tell you the puzzle is impossible; this one runs out later.");
+    (new LFl_Box(0, row++))->setMinimumSize(0, 16);
+
+    addSolverHelpHeading(row++, "Sliding Full Solver (full depth)");
+    addSolverHelpBody(row++,
+        "•  The same search with no limit on arrangements. It either finds the fewest moves or proves there is no solution.\n"
+        "•  Can take a long time and a lot of memory. It stops when the arrangements it holds fill about 2 GB, roughly 30 million of them, rather than run the computer out of memory.\n"
+        "•  Enable High Memory raises that limit to half of this computer's memory, so the search can go much further before it stops.\n"
+        "•  The Solver tab shows how many arrangements it has searched, and Stop ends the search at any time.\n"
+        "•  Best for puzzles with one start layout. Each start that can reach the goal is searched in full.");
+  } else if (puzzle && stacking::isStacking(*puzzle)) {
+    addSolverHelpHeading(row++, "Stacking Solver");
+    addSolverHelpBody(row++,
+        "•  Finds the fewest rod transfers from the start stacking to the goal. One move is one disc going from the top of one rod to the top of another.\n"
+        "•  Follows the rod set's rules: size, distance and Panex columns.\n"
+        "•  Stops when the stackings it holds fill about 2 GB, or half of this computer's memory with Enable High Memory.");
+    (new LFl_Box(0, row++))->setMinimumSize(0, 16);
+
+    addSolverHelpHeading(row++, "Panex Solver");
+    addSolverHelpBody(row++,
+        "•  The same fewest transfers, built for large Panex towers. Needs Panex Style Columns.\n"
+        "•  Searches from the start and the goal at once until they meet. For a tower swap, where the goal is the start's mirror image, one search does for both, and each mirror-image twin is stored once.\n"
+        "•  Holds only the newest levels of the search in memory and uses every core. When it cannot keep every level, it finds the halfway point first and then solves each half.\n"
+        "•  Solves an 8-piece tower swap (5,359 moves) in minutes. Larger towers can take many hours: the Solver tab shows how deep the search is.\n"
+        "•  Pause saves the search, and Continue carries it on, even after quitting BurrTools. With Autosave every 20 min checked, it also saves 20 minutes into the run and every 20 minutes after, so a crash loses little.");
   } else {
   addSolverHelpHeading(row++, "BurrTools Classic");
   addSolverHelpBody(row++,
@@ -4173,7 +4637,32 @@ bool mainWindow_c::tryToLoad(const char * f, bool * reportedError) {
   if (!f) return false;
   if (!fileExists(f)) return false;
 
-  auto str = openGzFile(f);
+  /* A recovery copy newer than the file: a solve was autosaved after the
+   * file was last saved, and BurrTools closed or crashed before saving it. */
+  std::string from = f;
+  bool restored = false;
+  {
+    char * keep = fname;
+    fname = const_cast<char *>(f);
+    const std::string recovery = autosavePath();
+    fname = keep;
+    std::error_code ec;
+    if (!recovery.empty() && std::filesystem::exists(recovery, ec) &&
+        std::filesystem::last_write_time(recovery, ec) > std::filesystem::last_write_time(f, ec)) {
+      int choice = fl_choice("BurrTools autosaved a solve of this puzzle after the file was last "
+                             "saved, so it has progress the file does not.\n\n"
+                             "Restore the autosaved solve?",
+                             "Discard It", "Restore", nullptr);
+      if (choice == 1) {
+        from = recovery;
+        restored = true;
+      } else {
+        std::filesystem::remove(recovery, ec);
+      }
+    }
+  }
+
+  auto str = openGzFile(from.c_str());
   // openGzFile() can still return nullptr here even though fileExists()
   // just passed: TOCTOU (the file was removed/renamed between the two
   // calls) or a gzopen() allocation failure. Match the fileExists() early
@@ -4207,7 +4696,8 @@ bool mainWindow_c::tryToLoad(const char * f, bool * reportedError) {
   StatPieceInfo(PcSel->getSelection());
   View3D->getView()->showColors(puzzle, StatusLine->getColorMode());
 
-  changed = false;
+  /* A restored solve is not in the file yet. */
+  changed = restored;
 
   // check for a started assemblies, and warn user about it
   bool containsStarted = false;
@@ -4345,12 +4835,14 @@ Fl_Menu_Item mainWindow_c::menu_MainMenu[] = {
     {"Import",         0, 0,                   0, FL_SUBMENU, 0, 0, 16, 56},
       {"PuzzleSolver3D",       0, cb_Load_Ps3d_stub,   0, 0, 0, 0, 16, 56},
       {"Puzzlecad (OpenSCAD)", 0, cb_Load_Scad_stub,   0, 0, 0, 0, 16, 56},
+      {"Paused solver state",  0, cb_ImportPaused_stub, 0, 0, 0, 0, 16, 56},
       { },
     {"Export",         0, 0,                   0, FL_SUBMENU, 0, 0, 16, 56},
       {"Puzzlecad (OpenSCAD)", 0, cb_Export_Scad_stub, 0, 0, 0, 0, 16, 56},
       {"Images",             0, cb_ImageExport_stub, 0, 0, 0, 0, 16, 56},
       {"Vector Image",       0, cb_ImageExportVector_stub, 0, 0, 0, 0, 16, 56},
       {"STL",             0, cb_STLExport_stub, 0, 0, 0, 0, 16, 56},
+      {"Paused solver state", 0, cb_ExportPaused_stub, 0, FL_MENU_INACTIVE, 0, 0, 16, 56},
       { },
     {"Quit",           0, cb_Quit_stub,        0, 0, 3, 0, 16, 56},
     { },
@@ -4489,12 +4981,9 @@ void mainWindow_c::activateSolution(unsigned int prob, unsigned int num) {
         MovesInfo->value(levelText);
         MovesMetric->value(levelText);
       } else {
-        char levelText[50];
-        int len = snprintf(levelText, 50, "%i (", sep->sumSteps());
-        snprintf(levelText + len, 50-len, "%s", sep->movesText().c_str());
-        levelText[strlen(levelText)+1] = 0;
-        levelText[strlen(levelText)] = ')';
-        MovesInfo->value(levelText);
+        /* "steps (moves per stage)": as long as the moves text needs. */
+        const std::string levelText = std::to_string(sep->sumSteps()) + " (" + sep->movesText() + ")";
+        MovesInfo->value(levelText.c_str());
       }
 
       unsigned int animSize = stackingSol
@@ -4506,7 +4995,7 @@ void mainWindow_c::activateSolution(unsigned int prob, unsigned int num) {
         sliding::applySlideRoutes(*pr, *sep, *disassemble);
       disassemble->setStep(animStep(), config.useBlendedRemoving(), true);
 
-      if (prob < puzzle->getNumberOfProblems()) View3D->getView()->showAssembly(puzzle->getProblem(prob), num);
+      if (prob < puzzle->getNumberOfProblems()) { View3D->getView()->showAssembly(puzzle->getProblem(prob), num); if (stacking::isStacking(*puzzle)) easeRodZoom(View3D); }
       View3D->getView()->updatePositions(disassemble);
       View3D->getView()->updateVisibility(PcVis);
 
@@ -4519,15 +5008,11 @@ void mainWindow_c::activateSolution(unsigned int prob, unsigned int num) {
 
       SolutionsInfo->value(pr->getNumberOfSavedSolutions());
 
-      char levelText[50];
-      int len = snprintf(levelText, 50, "%i (", pr->getSavedSolution(num)->getDisassemblyInfo()->sumSteps());
-      snprintf(levelText + len, 50-len, "%s", pr->getSavedSolution(num)->getDisassemblyInfo()->movesText().c_str());
-      levelText[strlen(levelText)+1] = 0;
-      levelText[strlen(levelText)] = ')';
+      const disassembly_c * info = pr->getSavedSolution(num)->getDisassemblyInfo();
+      const std::string levelText = std::to_string(info->sumSteps()) + " (" + info->movesText() + ")";
+      MovesInfo->value(levelText.c_str());
 
-      MovesInfo->value(levelText);
-
-      if (prob < puzzle->getNumberOfProblems()) View3D->getView()->showAssembly(puzzle->getProblem(prob), num);
+      if (prob < puzzle->getNumberOfProblems()) { View3D->getView()->showAssembly(puzzle->getProblem(prob), num); if (stacking::isStacking(*puzzle)) easeRodZoom(View3D); }
       View3D->getView()->updateVisibility(PcVis);
 
       SolutionNumber->value(pr->getSavedSolution(num)->getSolutionNumber()+1);
@@ -4538,7 +5023,7 @@ void mainWindow_c::activateSolution(unsigned int prob, unsigned int num) {
       SolutionAnim->deactivate();
       MovesInfo->value("");
 
-      if (prob < puzzle->getNumberOfProblems()) View3D->getView()->showAssembly(puzzle->getProblem(prob), num);
+      if (prob < puzzle->getNumberOfProblems()) { View3D->getView()->showAssembly(puzzle->getProblem(prob), num); if (stacking::isStacking(*puzzle)) easeRodZoom(View3D); }
       View3D->getView()->updateVisibility(PcVis);
 
       SolutionNumber->value(0);
@@ -4593,6 +5078,16 @@ const char * timeToString(float time) {
   else                                         snprintf(tmp, 50, "ages");
 
   return tmp;
+}
+
+/* Time used: milliseconds under a second, as timeToString beyond. */
+static const char * usedTimeToString(unsigned long long ms) {
+  static char tmp[50];
+  if (ms < 1000) {
+    snprintf(tmp, sizeof(tmp), "%llu milliseconds", ms);
+    return tmp;
+  }
+  return timeToString(ms / 1000.0f);
 }
 
 static bool computeTimeLeftEstimate(float finished, unsigned long ut, const solveThread_c * thread,
@@ -4723,6 +5218,9 @@ void mainWindow_c::selectEntitiesTab(bool resetZoom) {
 }
 
 void mainWindow_c::updateInterface(void) {
+
+  /* The selected problem may want another solver: stacking rod sets decide. */
+  syncSolverTypeMenu();
 
   // update the menu items activate state
 
@@ -5367,13 +5865,12 @@ void mainWindow_c::updateInterface(void) {
 
       // a thread is currently running
 
-      unsigned int ut;
+      unsigned long long usedMs = assmThread->getTimeMs();
       if (pr->usedTimeKnown())
-        ut = pr->getUsedTime() + assmThread->getTime();
-      else
-        ut = assmThread->getTime();
+        usedMs += pr->getUsedMs();
+      const unsigned int ut = (unsigned int)(usedMs / 1000);
 
-      TimeUsed->value(timeToString(ut));
+      TimeUsed->value(usedTimeToString(usedMs));
       {
         float remaining;
         unsigned long nAsm = 0;
@@ -5389,7 +5886,7 @@ void mainWindow_c::updateInterface(void) {
 
       if ((prob < puzzle->getNumberOfProblems()) && puzzle->getProblem(prob)->usedTimeKnown()) {
         problem_c * pr = puzzle->getProblem(prob);
-        TimeUsed->value(timeToString(pr->getUsedTime()));
+        TimeUsed->value(usedTimeToString(pr->getUsedMs()));
       } else {
         TimeUsed->value("");
       }
@@ -5421,7 +5918,34 @@ void mainWindow_c::updateInterface(void) {
         }
         break;
       case solveThread_c::ACT_ASSEMBLING:
-        if (assmThread->disassemblyEnabled()) {
+        if (sliding::isSliding(*puzzle) && assmThread->disassemblyEnabled()) {
+          /* A long sliding search should not look frozen. */
+          char tmp[64];
+          snprintf(tmp, 64, "slide search: %lu arrangements", assmThread->getSlideProgress());
+          OutputActivity->value(tmp);
+        } else if (stacking::isStacking(*puzzle) && assmThread->panexSearch()) {
+          /* Short enough for the Activity line: 3.7M, 12.4B. */
+          const double n = (double)assmThread->getSlideProgress();
+          char count[32];
+          if (n >= 1e9)
+            snprintf(count, sizeof(count), "%.1fB", n / 1e9);
+          else if (n >= 1e6)
+            snprintf(count, sizeof(count), "%.1fM", n / 1e6);
+          else
+            snprintf(count, sizeof(count), "%.0f", n);
+          char tmp[96];
+          if (assmThread->getSearchTraced() > 0)
+            snprintf(tmp, 96, "panex: tracing the path, %lu of %lu moves",
+                     assmThread->getSearchTraced(), assmThread->getSearchDepth());
+          else
+            snprintf(tmp, 96, "panex: %lu moves deep, %s found",
+                     assmThread->getSearchDepth(), count);
+          OutputActivity->value(tmp);
+        } else if (stacking::isStacking(*puzzle)) {
+          char tmp[64];
+          snprintf(tmp, 64, "stack search: %lu stackings", assmThread->getSlideProgress());
+          OutputActivity->value(tmp);
+        } else if (assmThread->disassemblyEnabled()) {
           char tmp[64];
           snprintf(tmp, 64, "assemble (%u×disasm, %u pending)",
                    assmThread->getDisassemblyWorkerCount(),
@@ -5534,6 +6058,16 @@ void mainWindow_c::updateInterface(void) {
           stackOk = why.empty();
           if (stackOk) {
             BtnStart->copy_tooltip(" Start new solving process, removing old result ");
+            /* A saved Panex search can be carried on, whatever the problem's state. */
+            BtnCont->copy_tooltip(" Continue started process ");
+            if (stacking::isStacking(*puzzle)) {
+              const std::string saved = panex::savedSearch(*pr);
+              if (!saved.empty()) {
+                BtnCont->activate();
+                BtnCont->copy_tooltip((" Carry on " + saved + " ").c_str());
+                OutputActivity->value("paused (saved)");
+              }
+            }
           } else {
             BtnStart->copy_tooltip((" Fix the puzzle on the Puzzle tab first: " + why + " ").c_str());
             BtnCont->deactivate();
@@ -5565,6 +6099,27 @@ void mainWindow_c::updateInterface(void) {
   TaskSelectionTab->redraw();
   TaskSelectionTab->resize(TaskSelectionTab->x(), TaskSelectionTab->y(),
                            TaskSelectionTab->w(), TaskSelectionTab->h());
+
+  /* File > Export > Paused solver state: only for a paused solve. */
+  {
+    const bool paused = solutionProblem && problemPaused(solutionProblem->getSelection());
+    static int shown = -1;
+    if ((int)paused != shown) {
+      shown = paused;
+      for (unsigned int i = 0; i < sizeof(menu_MainMenu) / sizeof(menu_MainMenu[0]); i++)
+        if (menu_MainMenu[i].callback() == cb_ExportPaused_stub) {
+          if (paused) menu_MainMenu[i].activate();
+          else menu_MainMenu[i].deactivate();
+        }
+      if (MainMenu) {
+        const int idx = liveMenuIndex(MainMenu, cb_ExportPaused_stub);
+        if (idx >= 0) {
+          setLiveMenuActive(MainMenu, idx, paused);
+          MainMenu->update();
+        }
+      }
+    }
+  }
 }
 
 void mainWindow_c::update(void) {
@@ -5595,15 +6150,45 @@ void mainWindow_c::update(void) {
       return;
     }
 
+    /* Autosave a brick or sliding solve: pause it where it can be saved,
+     * save, carry on. Stacking solves save their own search. Only a puzzle
+     * with a file has a place for the recovery copy. */
+    if (!autosaving && Autosave && Autosave->value() && fname && !stacking::isStacking(*puzzle)) {
+      long interval = 20 * 60;
+      if (const char * e = getenv("BURRTOOLS_AUTOSAVE_SECONDS"))
+        interval = std::max(1L, atol(e));
+      if (std::chrono::steady_clock::now() - autosaveFrom >= std::chrono::seconds(interval)) {
+        const unsigned int act = assmThread->currentAction();
+        if (act == solveThread_c::ACT_ASSEMBLING || act == solveThread_c::ACT_DISASSEMBLING) {
+          autosaving = true;
+          assmThread->stopSoft();
+        }
+      }
+    }
+
     // check, if the thread has stopped, if so then delete the object
     if ((assmThread->currentAction() == solveThread_c::ACT_PAUSING) ||
         (assmThread->currentAction() == solveThread_c::ACT_FINISHED)) {
 
-      std::string stackingNote = assmThread->getStackingNote();
+      const bool finished = assmThread->currentAction() == solveThread_c::ACT_FINISHED;
+      std::string solverNote = assmThread->getSolverNote();
       delete assmThread;
       assmThread = 0;
-      if (!stackingNote.empty())
-        fl_message("%s", stackingNote.c_str());
+      if (autosaving) {
+        autosaving = false;
+        if (!finished) {
+          /* Paused only to save: save, and carry straight on. */
+          if (!writeAutosave())
+            fl_message("Could not autosave the solve to %s.", autosavePath().c_str());
+          cb_BtnCont(false, (int)autosaveProblem);
+          updateInterface();
+          return;
+        }
+      }
+      if (finished)
+        removeAutosave();
+      if (!solverNote.empty())
+        fl_message("%s", solverNote.c_str());
 
     } else if (assmThread->currentAction() == solveThread_c::ACT_ERROR) {
 
@@ -5941,12 +6526,18 @@ void mainWindow_c::CreateShapeTab(void) {
     diskList->callback(cb_DiskList_stub, this);
     diskList->tooltip(" Select a disc and set its size ");
     diskList->weight(1, 1);
+    /* The disc list scrolls, so on a short window it gives up height
+     * first, down to two rows, and the rod controls below stay in view. */
+    diskList->setShrinkMinSize(220, 56);
+    diskList->shrinkPrio(128, 10);
     diskList->hide();
 
     (new LFl_Box(0, 8))->setMinimumSize(0, SZ_GAP);
 
     rodsPanel = new layouter_c(0, 9);
     rodsPanel->weight(1, 0);
+    /* Shrinks before the disc list, through its rod-set list (below). */
+    rodsPanel->shrinkPrio(128, 5);
     rodsPanel->hide();
     {
       new LSeparator_c(0, 0, 1, 1, "Rods", false);
@@ -5989,6 +6580,10 @@ void mainWindow_c::CreateShapeTab(void) {
       rodGroup->tooltip(" Select the rod set to edit ");
       rodGroup->weight(1, 0);
       rodGroup->setMinimumSize(220, 168);
+      /* A puzzle seldom has more than a couple of rod sets: on a short
+       * window this list gives up its empty space before the disc list. */
+      rodGroup->setShrinkMinSize(220, 56);
+      rodGroup->shrinkPrio(128, 5);
 
       layouter_c * rules = new layouter_c(0, 6);
       rules->weight(0, 0);
@@ -6031,6 +6626,24 @@ void mainWindow_c::CreateShapeTab(void) {
       rodDistance = new LFl_Check_Button("Disc can only move over 1 rod", 0, y, 2, 1);
       rodDistance->tooltip(" When checked, a disc may move only to a neighboring rod. When unchecked, a disc may move to any rod. ");
       rodDistance->callback(cb_RodField_stub, this);
+
+      y++;
+      rodPanex = new LFl_Check_Button("Panex Style Columns", 0, y, 2, 1);
+      rodPanex->tooltip(" Rods are Panex columns: a disc of size n can sit at most n places below the top, and discs stack in any order. One more disc may wait at the top, raised into the bridge between the columns, where it blocks every move that passes over it. ");
+      rodPanex->callback(cb_RodField_stub, this);
+
+      y++;
+      rodPocket = new LFl_Check_Button("Add pocket column", 0, y, 1, 1);
+      rodPocket->tooltip(" An extra column beside rod 1 that holds any disc, in any order, up to the height given here. Needs Panex Style Columns. ");
+      rodPocket->callback(cb_RodField_stub, this);
+      rodPocketHeight = new LFl_Value_Input(1, y, 1, 1);
+      rodPocketHeight->tooltip(" How many discs the pocket column holds ");
+      rodPocketHeight->bounds(1, 64);
+      rodPocketHeight->step(1);
+      rodPocketHeight->value(1);
+      rodPocketHeight->when(FL_WHEN_RELEASE | FL_WHEN_ENTER_KEY);
+      rodPocketHeight->stretchVCenter();
+      rodPocketHeight->callback(cb_RodField_stub, this);
       rules->end();
     }
     rodsPanel->end();
@@ -6562,11 +7175,22 @@ void mainWindow_c::CreateSolveTab(void) {
     StrictColors->tooltip(" A voxel with a colour fits only a result voxel of that same colour, not a neutral one. A voxel with no colour fits only a result voxel that also has no colour. ");
     StrictColors->clear_visible_focus();
 
-    NestedSlides = new LFl_Check_Button("Allow nested slides", 0, 3, 1, 1);
+    NestedSlides = new LFl_Check_Button("Allow Nested Slides", 0, 3, 1, 1);
     NestedSlides->tooltip(" A piece may slide together with the pieces nested inside its outline, such as a piece in another piece's pocket. Pieces that only touch never slide together. ");
     NestedSlides->clear_visible_focus();
     NestedSlides->callback(cb_SolverOptions_stub, this);
     NestedSlides->hide();
+
+    HighMemory = new LFl_Check_Button("Enable High Memory", 1, 0, 1, 1);
+    HighMemory->tooltip(" Let a sliding or stacking search hold up to half of this computer's memory in arrangements, instead of stopping at about 2 GB. Matters mostly for the Sliding Full Solver and for large stacking puzzles. ");
+    HighMemory->clear_visible_focus();
+    HighMemory->callback(cb_SolverOptions_stub, this);
+    HighMemory->hide();
+
+    Autosave = new LFl_Check_Button("Autosave every 20 min", 0, 4, 1, 1);
+    Autosave->tooltip(" Save the solve 20 minutes into the run and every 20 minutes after, so a crash loses little. Brick and sliding solves pause briefly and save a recovery copy of the puzzle, which BurrTools offers when you open the puzzle again; stacking solves save their search, which Continue carries on. Unchecked, a solve is kept only when you press Pause (and, for brick and sliding, save the puzzle). ");
+    Autosave->clear_visible_focus();
+    Autosave->value(1);
 
 
     updateSolverOptionCheckboxes();
@@ -6586,6 +7210,8 @@ void mainWindow_c::CreateSolveTab(void) {
     for (unsigned int i = 0; i < solverTypeCount(); i++)
       solverTypeChoice->add(solverTypeLabel((solverType_e)i));
     solverTypeChoice->value((int)SOLVER_CLASSIC);
+    /* Continue depends on the solver: the Panex Solver can carry on a saved search. */
+    solverTypeChoice->callback(cb_SolverType_stub, this);
 
     LFl_Button * solverTypeHelp = new LFl_Button("?", 2, 0, 1, 1);
     solverTypeHelp->tooltip(" Explanation of solver types ");
@@ -7141,6 +7767,9 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   rodHeightInput = 0;
   rodSizeMatters = 0;
   rodDistance = 0;
+  rodPanex = 0;
+  rodPocket = 0;
+  rodPocketHeight = 0;
   rodFieldGuard = false;
   BtnNewRod = BtnDelRod = BtnCpyRod = BtnRenRod = 0;
   BtnRodLeft = BtnRodRight = BtnRodUndo = BtnRodRedo = 0;
@@ -7159,6 +7788,8 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   stackValidRow = 0;
   stackValidBar = 0;
   NestedSlides = 0;
+  HighMemory = 0;
+  Autosave = 0;
   probArrowGapL[0] = probArrowGapL[1] = 0;
   probArrowGapR[0] = probArrowGapR[1] = 0;
   probArrowRightX = 0;

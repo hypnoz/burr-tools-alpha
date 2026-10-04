@@ -35,7 +35,12 @@
 #include "../lib/solution.h"
 #include "../lib/rotationrules.h"
 #include "../lib/sliding.h"
+#include "slidingcolors.h"
 #include "../lib/stacking.h"
+
+#include <algorithm>
+#include <map>
+#include <cmath>
 
 #include "../halfedge/polyhedron.h"
 
@@ -1093,7 +1098,8 @@ void voxelFrame_c::drawVoxelSpace() {
           if (_useLightning) glDisable(GL_LIGHTING);
           glDisable(GL_DEPTH_TEST);
           gl_font(FL_HELVETICA_BOLD, 14);
-          glColor3f(230.0f / 255.0f, 110.0f / 255.0f, 0);
+          glColor3f(slidingColors::LABEL_R / 255.0f, slidingColors::LABEL_G / 255.0f,
+                    slidingColors::LABEL_B / 255.0f);
 
           glMatrixMode(GL_PROJECTION);
           glPushMatrix();
@@ -1185,9 +1191,15 @@ void voxelFrame_c::buildSlidingWalls(const voxel_c & tray) {
   const int sy = (int)tray.getY();
   wallTop = (float)tray.getZ();
 
+  /* Open where any layer has floor. A deeper tray can shape its lower
+   * layers (Panex-style keys), but the walls are where nothing can go. */
   auto floorAt = [&](int x, int y) {
-    return x >= 0 && y >= 0 && x < sx && y < sy &&
-           tray.getState(x, y, 0) != voxel_c::VX_EMPTY;
+    if (x < 0 || y < 0 || x >= sx || y >= sy)
+      return false;
+    for (unsigned int z = 0; z < tray.getZ(); z++)
+      if (tray.getState(x, y, z) != voxel_c::VX_EMPTY)
+        return true;
+    return false;
   };
 
   /* Each wall sits a little outside the floor, so it does not fight with
@@ -1414,6 +1426,12 @@ void voxelFrame_c::hideMarker(void) {
 void voxelFrame_c::showNothing(void) {
   stackingPlate = false;
   clearSpaces();
+  hideMarker();
+  wallLines.clear();
+  /* An empty view: no axes either, and drawn now, not whenever the next
+   * redraw happens to come. */
+  _showCoordinateSystem = false;
+  redraw();
 }
 
 void voxelFrame_c::setInsideVisible(bool on)
@@ -1436,26 +1454,46 @@ void voxelFrame_c::showSingleShape(const puzzle_c * puz, unsigned int shapeNum) 
   const voxel_c * src = puz->getShape(shapeNum);
 
   if (sliding::isStartGoalShape(src)) {
-    unsigned int a = addSpace(puz->getGridType()->getVoxel(src));
-    unsigned int b = addSpace(puz->getGridType()->getVoxel(src));
-    setSpaceColor(a, 1, 1, 1, 1);
-    setSpaceColor(b, 1, 1, 1, 1);
-    setSpacePosition(b, (float)src->getX() + 1.5f, 0, 0, 1);
-
-    std::vector<std::string> startL(src->getXYZ());
-    std::vector<std::string> goalL(src->getXYZ());
-    for (unsigned int i = 0; i < src->getXYZ(); i++) {
-      if (src->getState(i) == voxel_c::VX_EMPTY)
-        continue;
-      if (src->getColor(i))
-        startL[i] = std::string("S") + std::to_string(src->getColor(i));
-      if (src->getGoalPiece(i))
-        goalL[i] = std::string("S") + std::to_string(src->getGoalPiece(i));
+    /* Two trays, START and GOAL. Each piece placed on a tray stands one
+     * layer above it in the piece's own colour, like the piece lying on the
+     * tray. Every space has the tray's size plus that layer, so all of them
+     * line up. */
+    const gridType_c * gt = puz->getGridType();
+    const unsigned int X = src->getX();
+    const unsigned int Y = src->getY();
+    const unsigned int Z = src->getZ();
+    const float grey = slidingColors::VIEW_GREY;
+    for (int side = 0; side < 2; side++) {
+      const bool goal = side == 1;
+      const float offset = goal ? (float)X + 1.5f : 0.0f;
+      voxel_c * tray = gt->getVoxel(X, Y, Z + 1, voxel_c::VX_EMPTY);
+      std::map<unsigned int, voxel_c *> stamps;
+      for (unsigned int z = 0; z < Z; z++)
+        for (unsigned int y = 0; y < Y; y++)
+          for (unsigned int x = 0; x < X; x++) {
+            if (src->getState(x, y, z) == voxel_c::VX_EMPTY)
+              continue;
+            tray->set(x, y, z, src->getState(x, y, z));
+            /* The tray's colour on a cell is the shape number plus one. */
+            const unsigned int c = goal ? src->getGoalPiece(x, y, z) : src->getColor(x, y, z);
+            if (c == 0 || c > puz->getNumberOfShapes())
+              continue;
+            voxel_c *& stamp = stamps[c];
+            if (!stamp)
+              stamp = gt->getVoxel(X, Y, Z + 1, voxel_c::VX_EMPTY);
+            stamp->set(x, y, Z, voxel_c::VX_FILLED);
+          }
+      unsigned int t = addSpace(tray);
+      setSpaceColor(t, grey, grey, grey, 1);
+      setSpacePosition(t, offset, 0, 0, 1);
+      setSpaceTitle(t, goal ? "GOAL" : "START");
+      for (const auto & st : stamps) {
+        unsigned int n = addSpace(st.second);
+        setSpaceColor(n, pieceColorR(st.first - 1), pieceColorG(st.first - 1),
+                      pieceColorB(st.first - 1), 1);
+        setSpacePosition(n, offset, 0, 0, 1);
+      }
     }
-    setSpaceCellLabels(a, std::move(startL));
-    setSpaceCellLabels(b, std::move(goalL));
-    setSpaceTitle(a, "START");
-    setSpaceTitle(b, "GOAL");
   } else {
     unsigned int num = addSpace(puz->getGridType()->getVoxel(src));
     setSpaceColor(num, pieceColorR(shapeNum), pieceColorG(shapeNum), pieceColorB(shapeNum), 1);
@@ -1747,6 +1785,49 @@ void voxelFrame_c::addRodBase(const gridType_c * gt, int x0, int x1) {
   setSpaceColor(n, 0.55f, 0.55f, 0.58f, 1);
 }
 
+void voxelFrame_c::addPanexV(const gridType_c * gt, int x, unsigned int height,
+                             unsigned int maxSize) {
+  if (height < 1)
+    height = 1;
+  if (maxSize < 1)
+    maxSize = 1;
+  const unsigned int w = 2 * maxSize + 1;
+  voxel_c * v = gt->getVoxel(w, 1, height, voxel_c::VX_EMPTY);
+  for (unsigned int z = 0; z < height; z++) {
+    /* A disc of size s may sit s places below the top, so at depth d the
+     * plate is about d wide: narrow at the top, widest at the bottom, and
+     * never wider than the discs that may sit beside it. */
+    const unsigned int depth = height - z;
+    unsigned int half = (depth * maxSize + height / 2) / height;
+    if (half > maxSize)
+      half = maxSize;
+    for (unsigned int dx = maxSize - half; dx <= maxSize + half; dx++)
+      v->set(dx, 0, z, voxel_c::VX_FILLED);
+  }
+  v->setHotspot((int)maxSize, 0, 0);
+  unsigned int n = addSpace(v);
+  /* Just behind the largest disc, so it never hides one. */
+  setSpacePosition(n, (float)x, (float)(maxSize + 1), 0, 1);
+  setSpaceColor(n, 0.42f, 0.42f, 0.46f, 1);
+}
+
+void voxelFrame_c::addStackBoard(const gridType_c * gt, const stacking::boardLayout_c & lay) {
+  for (unsigned int r = 0; r < lay.rodCount && r < lay.rodX.size(); r++) {
+    const unsigned int h = r < lay.rodHeights.size() ? lay.rodHeights[r] : lay.rodHeight;
+    addPeg(gt, lay.rodX[r], h);
+    if (lay.panex && !(lay.pocket && r + 1 == lay.rodCount))
+      addPanexV(gt, lay.rodX[r], h, lay.maxSize);
+  }
+  float cx = 0;
+  if (!lay.rodX.empty()) {
+    int lo = *std::min_element(lay.rodX.begin(), lay.rodX.end());
+    int hi = *std::max_element(lay.rodX.begin(), lay.rodX.end());
+    addRodBase(gt, lo, hi);
+    cx = 0.5f * (float)(lo + hi);
+  }
+  setCenter(cx, 0, 0.5f * (float)lay.rodHeight);
+}
+
 void voxelFrame_c::showRodSet(const puzzle_c * puz, unsigned int rodSet) {
   if (curAssembly) {
     delete curAssembly;
@@ -1774,23 +1855,21 @@ void voxelFrame_c::showRodSet(const puzzle_c * puz, unsigned int rodSet) {
   }
   int spacing = 2 * maxR + 1;
   const gridType_c * gt = puz->getGridType();
-  for (unsigned int r = 0; r < board.rodCount; r++)
-    addPeg(gt, (int)r * spacing, height);
-  if (board.rodCount > 0)
-    addRodBase(gt, 0, (int)(board.rodCount - 1) * spacing);
-
   drivenSpaces = 0;
   stacking::boardLayout_c lay;
+  lay.spacing = spacing;
+  lay.rodCount = stacking::totalRods(board);
   lay.rodHeight = height;
-  lay.rodX.resize(board.rodCount);
-  for (unsigned int r = 0; r < board.rodCount; r++)
-    lay.rodX[r] = (int)r * spacing;
-  {
-    float cx = 0;
-    if (!lay.rodX.empty())
-      cx = 0.5f * (float)(lay.rodX.front() + lay.rodX.back());
-    setCenter(cx, 0, 0.5f * (float)lay.rodHeight);
+  lay.panex = board.panexColumns;
+  lay.pocket = lay.rodCount > board.rodCount;
+  lay.maxSize = (unsigned int)maxR;
+  /* The pocket stands left of rod 1, so every x stays at 0 or more. */
+  const int shift = lay.rodCount > board.rodCount ? 1 : 0;
+  for (unsigned int r = 0; r < lay.rodCount; r++) {
+    lay.rodX.push_back((stacking::rodPosition(board, r) + shift) * spacing);
+    lay.rodHeights.push_back(stacking::isPocket(board, r) ? board.pocketHeight : height);
   }
+  addStackBoard(gt, lay);
   trans = CenterTranslateRoateScale;
   _showCoordinateSystem = false;
   stackingPlate = true;
@@ -1835,17 +1914,7 @@ void voxelFrame_c::showStacking(const problem_c * puz, bool goal) {
     }
   }
   drivenSpaces = shown;
-  for (unsigned int r = 0; r < lay.rodCount && r < lay.rodX.size(); r++)
-    addPeg(gt, lay.rodX[r], lay.rodHeight);
-  if (!lay.rodX.empty())
-    addRodBase(gt, lay.rodX.front(), lay.rodX.back());
-
-  {
-    float cx = 0;
-    if (!lay.rodX.empty())
-      cx = 0.5f * (float)(lay.rodX.front() + lay.rodX.back());
-    setCenter(cx, 0, 0.5f * (float)lay.rodHeight);
-  }
+  addStackBoard(gt, lay);
   trans = CenterTranslateRoateScale;
   _showCoordinateSystem = false;
   stackingPlate = true;
@@ -1901,17 +1970,7 @@ void voxelFrame_c::showStackingAssembly(const problem_c * puz, unsigned int solN
 
   /* Pegs are added after the discs so the move slider does not slide them. */
   drivenSpaces = piece;
-  for (unsigned int r = 0; r < lay.rodCount && r < lay.rodX.size(); r++)
-    addPeg(gt, lay.rodX[r], lay.rodHeight);
-  if (!lay.rodX.empty())
-    addRodBase(gt, lay.rodX.front(), lay.rodX.back());
-
-  {
-    float cx = 0;
-    if (!lay.rodX.empty())
-      cx = 0.5f * (float)(lay.rodX.front() + lay.rodX.back());
-    setCenter(cx, 0, 0.5f * (float)lay.rodHeight);
-  }
+  addStackBoard(gt, lay);
   trans = CenterTranslateRoateScale;
   _showCoordinateSystem = false;
   stackingPlate = true;
@@ -2746,6 +2805,40 @@ static void drawWash(float grey, float alpha) {
   glMatrixMode(GL_PROJECTION);
   glPopMatrix();
   glMatrixMode(GL_MODELVIEW);
+}
+
+double voxelFrame_c::fitZoom(void) const {
+  /* The bounding box of everything shown, about the view centre. */
+  bool any = false;
+  float lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
+  for (const shapeInfo & s : shapes) {
+    if (!s.shape)
+      continue;
+    const float p0[3] = {s.x - (float)s.shape->getHx(), s.y - (float)s.shape->getHy(),
+                         s.z - (float)s.shape->getHz()};
+    const float sz[3] = {(float)s.shape->getX() * s.scale, (float)s.shape->getY() * s.scale,
+                         (float)s.shape->getZ() * s.scale};
+    for (int a = 0; a < 3; a++) {
+      if (!any || p0[a] < lo[a]) lo[a] = p0[a];
+      if (!any || p0[a] + sz[a] > hi[a]) hi[a] = p0[a] + sz[a];
+    }
+    any = true;
+  }
+  if (!any)
+    return 3.2;
+  const float c[3] = {centerX, centerY, centerZ};
+  double r2 = 0;
+  for (int a = 0; a < 3; a++) {
+    double e = std::max(std::fabs(lo[a] - c[a]), std::fabs(hi[a] - c[a]));
+    r2 += e * e;
+  }
+  /* The camera sits 2 * size away with a 15 degree field of view, so it
+   * sees 2 * size * tan(7.5) either side of the centre; keep a margin so
+   * the board fits however it is turned. */
+  const double tan75 = 0.131652497587;  // tan(7.5 degrees)
+  const double size = 1.05 * std::sqrt(r2) / (2 * tan75);
+  double zoom = 6 - std::log(size);
+  return zoom < 0 ? 0 : (zoom > 6 ? 6 : zoom);
 }
 
 double voxelFrame_c::computeContentRadius(void) const {

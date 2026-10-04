@@ -8,10 +8,12 @@
 #include "lib/solution.h"
 #include "lib/solvethread.h"
 #include "lib/stacking.h"
+#include "lib/panex.h"
 #include "lib/voxel.h"
 
 #include "tools/xml.h"
 
+#include <filesystem>
 #include <memory>
 #include <sstream>
 
@@ -267,4 +269,332 @@ TEST_CASE("stacking: the Hanoi fixture solves in seven transfers", "[stacking][s
   REQUIRE(path != nullptr);
   CHECK(logicalMoves(*path) == 7);
   CHECK(path->getMoves() == 7 * STEPS_PER_MOVE);
+}
+
+/* Panex Jr: six discs on two Panex columns six deep, plus a one-deep pocket
+ * beside the first. A disc of size s goes at most s places down, so the
+ * tower starts with size 6 at the bottom and size 1 at the top. The same
+ * puzzle as a sliding tray takes 143 moves, and the stacking model
+ * reaches exactly the same resting arrangements. */
+static problem_c * makePanexJr(puzzle_c & puz) {
+  rodSet_c & board = puz.getRodSet(0);
+  board.rodCount = 2;
+  board.growHeight = false;
+  board.definedHeight = 6;
+  board.sizeMatters = false;
+  board.panexColumns = true;
+  board.pocketColumn = true;
+  board.pocketHeight = 1;
+  problem_c * pr = puz.getProblem(puz.addProblem());
+  for (unsigned int size = 6; size >= 1; size--)
+    addSized(puz, *pr, size);
+  pr->setRodSetId(0);
+  syncMaps(*pr);
+  for (unsigned int id = 0; id < 6; id++) {
+    REQUIRE(placeDisk(*pr, false, id, 0).empty());
+    REQUIRE(placeDisk(*pr, true, id, 1).empty());
+  }
+  return pr;
+}
+
+TEST_CASE("stacking: Panex Jr with a pocket column is 143 transfers", "[stacking][solver]") {
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexJr(puz);
+  REQUIRE(totalRods(puz.getRodSet(0)) == 3);
+  REQUIRE(isPocket(puz.getRodSet(0), 2));
+  REQUIRE(setupError(*pr).empty());
+
+  stackSearch_c search;
+  std::unique_ptr<separation_c> path = findStackPath(*pr, search);
+  REQUIRE(path);
+  CHECK(search.outcome == STACK_FOUND);
+  CHECK(logicalMoves(*path) == 143);
+
+  /* Without the pocket the tower cannot move at all. */
+  puz.getRodSet(0).pocketColumn = false;
+  syncMaps(*pr);
+  REQUIRE(setupError(*pr).empty());
+  stackSearch_c none;
+  CHECK_FALSE(findStackPath(*pr, none));
+  CHECK(none.outcome == STACK_NO_PATH);
+}
+
+TEST_CASE("stacking: a Panex column limits how deep a disc goes", "[stacking]") {
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexJr(puz);
+
+  /* Ids 0..5 are sizes 6..1. Free the size 1 and size 2 discs. */
+  REQUIRE(liftTop(*pr, false, 0).empty());
+  REQUIRE(liftTop(*pr, false, 0).empty());
+
+  /* The pocket takes any one disc; a second does not fit. */
+  REQUIRE(placeDisk(*pr, false, 4, 2).empty());
+  REQUIRE(liftTop(*pr, false, 0).empty());
+  CHECK(placeDisk(*pr, false, 3, 2) == "That rod is full");
+
+  /* On rod 2 the size 1 disc may go one down, with the size 3 disc raised
+   * into the bridge above it, but not two down. */
+  REQUIRE(placeDisk(*pr, false, 5, 1).empty());
+  REQUIRE(placeDisk(*pr, false, 3, 1).empty());
+  REQUIRE(liftTop(*pr, false, 0).empty());
+  CHECK_FALSE(placeDisk(*pr, false, 2, 1).empty());
+
+  /* An unenforced placement is kept, and setupError names the rule. */
+  REQUIRE(placeDisk(*pr, false, 2, 1, false).empty());
+  CHECK(setupError(*pr).find("Panex column") != std::string::npos);
+}
+
+TEST_CASE("stacking: Panex settings survive a save and load", "[stacking]") {
+  puzzle_c puz = makeBoard();
+  puz.getRodSet(0).panexColumns = true;
+  puz.getRodSet(0).pocketColumn = true;
+  puz.getRodSet(0).pocketHeight = 2;
+
+  std::stringstream saved;
+  {
+    xmlWriter_c xml(saved);
+    puz.save(xml);
+  }
+  std::stringstream in(saved.str());
+  xmlParser_c pars(in);
+  puzzle_c loaded(pars);
+  REQUIRE(loaded.rodSetCount() == 1);
+  CHECK(loaded.getRodSet(0).panexColumns);
+  CHECK(loaded.getRodSet(0).pocketColumn);
+  CHECK(loaded.getRodSet(0).pocketHeight == 2);
+}
+
+/* The classic Panex swap: three Panex columns n deep, a tower of n discs on
+ * each outer column, and the goal is the two towers swapped. */
+static problem_c * makePanexSwap(puzzle_c & puz, unsigned int n) {
+  rodSet_c & board = puz.getRodSet(0);
+  board.rodCount = 3;
+  board.growHeight = false;
+  board.definedHeight = n;
+  board.sizeMatters = false;
+  board.panexColumns = true;
+  problem_c * pr = puz.getProblem(puz.addProblem());
+  for (unsigned int side = 0; side < 2; side++)
+    for (unsigned int size = n; size >= 1; size--)
+      addSized(puz, *pr, size);
+  pr->setRodSetId(0);
+  syncMaps(*pr);
+  for (unsigned int i = 0; i < n; i++) {
+    REQUIRE(placeDisk(*pr, false, i, 0).empty());
+    REQUIRE(placeDisk(*pr, false, n + i, 2).empty());
+    REQUIRE(placeDisk(*pr, true, n + i, 0).empty());
+    REQUIRE(placeDisk(*pr, true, i, 2).empty());
+  }
+  REQUIRE(setupError(*pr).empty());
+  return pr;
+}
+
+TEST_CASE("panex: the Panex Solver finds the published swap lengths", "[stacking][panex]") {
+  /* 3, 4 and 5 discs a tower swap in 42, 128 and 343 transfers. */
+  const unsigned int moves[] = {42, 128, 343};
+  for (unsigned int n = 3; n <= 5; n++) {
+    puzzle_c puz = makeBoard();
+    problem_c * pr = makePanexSwap(puz, n);
+    REQUIRE(panex::unsupported(*pr).empty());
+    panex::panexSearch_c search;
+    std::unique_ptr<separation_c> path = panex::solve(*pr, search);
+    REQUIRE(path);
+    CHECK(search.outcome == panex::PANEX_FOUND);
+    CHECK(logicalMoves(*path) == moves[n - 3]);
+
+    /* Solving each half, instead of keeping every level, finds as short a path. */
+    panex::panexSearch_c halves;
+    halves.keepLimit = 10;
+    std::unique_ptr<separation_c> halved = panex::solve(*pr, halves);
+    REQUIRE(halved);
+    CHECK(logicalMoves(*halved) == moves[n - 3]);
+  }
+}
+
+TEST_CASE("panex: the Panex Solver agrees with the Stacking Solver", "[stacking][panex]") {
+  /* Panex Jr has a pocket, so the search runs from both ends. */
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexJr(puz);
+  std::unique_ptr<separation_c> stacked = findStackPath(*pr);
+  REQUIRE(stacked);
+  panex::panexSearch_c search;
+  search.keepLimit = 50;
+  std::unique_ptr<separation_c> path = panex::solve(*pr, search);
+  REQUIRE(path);
+  CHECK(logicalMoves(*path) == logicalMoves(*stacked));
+  CHECK(logicalMoves(*path) == 143);
+
+  /* The last frame is the goal: the same disc placements as the other solver's. */
+  const state_c * a = path->getState(path->getMoves());
+  const state_c * b = stacked->getState(stacked->getMoves());
+  for (unsigned int i = 0; i < path->getPieceNumber(); i++) {
+    CHECK(a->getX(i) == b->getX(i));
+    CHECK(a->getZ(i) == b->getZ(i));
+  }
+}
+
+TEST_CASE("panex: the Panex Solver needs Panex columns", "[stacking][panex]") {
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexSwap(puz, 3);
+  puz.getRodSet(0).panexColumns = false;
+  puz.getRodSet(0).sizeMatters = false;
+  CHECK(panex::unsupported(*pr).find("Panex Style Columns") != std::string::npos);
+  panex::panexSearch_c search;
+  CHECK_FALSE(panex::solve(*pr, search));
+  CHECK(search.outcome == panex::PANEX_ERROR);
+}
+
+/* Every placement of a stacking path is one disc on one rod's top moving to
+ * another rod's top: the three frames of each transfer agree with the start
+ * and end of it. */
+static void checkTransfers(const separation_c & path) {
+  const unsigned int n = path.getPieceNumber();
+  for (unsigned int m = 0; m + 1 <= logicalMoves(path); m++) {
+    const state_c * a = path.getState(m * STEPS_PER_MOVE);
+    const state_c * b = path.getState((m + 1) * STEPS_PER_MOVE);
+    unsigned int moved = 0;
+    for (unsigned int i = 0; i < n; i++)
+      if (a->getX(i) != b->getX(i))
+        moved++;
+    CHECK(moved == 1);
+  }
+}
+
+TEST_CASE("panex: tracing back between saved levels", "[stacking][panex]") {
+  /* A tiny memory share and disk budget: the levels go to disk, only every
+   * few of them stay, and the path is traced back between those. */
+  const std::string dir = (std::filesystem::temp_directory_path() / "burrtools-panex-test").string();
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexSwap(puz, 5);
+  panex::panexSearch_c search;
+  search.workDir = dir;
+  search.keepLimit = 10;
+  search.diskBudget = 200000;
+  std::unique_ptr<separation_c> path = panex::solve(*pr, search);
+  REQUIRE(path);
+  CHECK(logicalMoves(*path) == 343);
+  CHECK(search.levelInterval > 1);
+  checkTransfers(*path);
+  /* A finished search leaves nothing saved. */
+  CHECK(panex::savedSearch(*pr, dir).empty());
+
+  /* Panex Jr runs from both ends, and so saves both. */
+  puzzle_c jr = makeBoard();
+  problem_c * jp = makePanexJr(jr);
+  panex::panexSearch_c both;
+  both.workDir = dir;
+  both.keepLimit = 10;
+  both.diskBudget = 20000;
+  std::unique_ptr<separation_c> jpath = panex::solve(*jp, both);
+  REQUIRE(jpath);
+  CHECK(logicalMoves(*jpath) == 143);
+  checkTransfers(*jpath);
+  std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("panex: a stopped search carries on where it stopped", "[stacking][panex]") {
+  const std::string dir = (std::filesystem::temp_directory_path() / "burrtools-panex-resume").string();
+  std::filesystem::remove_all(dir);
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexSwap(puz, 5);
+
+  panex::panexSearch_c first;
+  first.workDir = dir;
+  first.keepLimit = 10;
+  first.stopAtDepth = 200;
+  CHECK_FALSE(panex::solve(*pr, first));
+  CHECK(first.outcome == panex::PANEX_STOPPED);
+  CHECK(first.saved);
+  CHECK(panex::savedSearch(*pr, dir).find("200 moves deep") != std::string::npos);
+
+  /* Without resume it starts over; with it, it carries on to the same answer. */
+  panex::panexSearch_c second;
+  second.workDir = dir;
+  second.resume = true;
+  std::unique_ptr<separation_c> path = panex::solve(*pr, second);
+  REQUIRE(path);
+  CHECK(logicalMoves(*path) == 343);
+  /* It went on from the saved count, not from nothing. */
+  CHECK(second.found > first.found);
+  checkTransfers(*path);
+  CHECK(panex::savedSearch(*pr, dir).empty());
+
+  /* Discarding a saved search leaves none. */
+  panex::panexSearch_c third;
+  third.workDir = dir;
+  third.keepLimit = 10;
+  third.stopAtDepth = 100;
+  CHECK_FALSE(panex::solve(*pr, third));
+  CHECK_FALSE(panex::savedSearch(*pr, dir).empty());
+  panex::discardSaved(*pr, dir);
+  CHECK(panex::savedSearch(*pr, dir).empty());
+  std::filesystem::remove_all(dir);
+}
+
+/* The Stacking Solver now runs on the Panex search when the puzzle fits it,
+ * so the two searches must agree on plain rods too: the size rule, the
+ * distance rule, and neither. */
+TEST_CASE("panex: the search agrees with findStackPath on plain rods", "[stacking][panex]") {
+  for (int rules = 0; rules < 4; rules++) {
+    for (unsigned int n = 3; n <= 6; n++) {
+      INFO("rules " << rules << ", " << n << " discs");
+      puzzle_c puz = makeBoard();
+      rodSet_c & board = puz.getRodSet(0);
+      board.sizeMatters = rules != 2;
+      board.distanceMatters = rules == 1 || rules == 3;
+      problem_c * pr = puz.getProblem(puz.addProblem());
+      for (unsigned int size = n; size >= 1; size--)
+        addSized(puz, *pr, size);
+      pr->setRodSetId(0);
+      syncMaps(*pr);
+      for (unsigned int i = 0; i < n; i++) {
+        REQUIRE(placeDisk(*pr, false, i, 0).empty());
+        REQUIRE(placeDisk(*pr, true, i, 2).empty());
+      }
+      REQUIRE(setupError(*pr).empty());
+      REQUIRE(panex::unsupported(*pr, true).empty());
+
+      std::unique_ptr<separation_c> plain = findStackPath(*pr);
+      REQUIRE(plain);
+      panex::panexSearch_c search;
+      search.anyRules = true;
+      search.workDir = (std::filesystem::temp_directory_path() / "burrtools-panex-plain").string();
+      std::unique_ptr<separation_c> path = panex::solve(*pr, search);
+      REQUIRE(path);
+      CHECK(logicalMoves(*path) == logicalMoves(*plain));
+      checkTransfers(*path);
+    }
+  }
+}
+
+/* An export may leave the saved levels out: the search still carries on,
+ * and finds its path back by solving the rest by halves. */
+TEST_CASE("panex: a saved search without its levels still finds the path", "[stacking][panex]") {
+  const std::string dir = (std::filesystem::temp_directory_path() / "burrtools-panex-nolevels").string();
+  std::filesystem::remove_all(dir);
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexSwap(puz, 5);
+
+  panex::panexSearch_c first;
+  first.workDir = dir;
+  first.keepLimit = 10;
+  first.stopAtDepth = 200;
+  CHECK_FALSE(panex::solve(*pr, first));
+  REQUIRE(first.saved);
+
+  /* Keep only the state, as an export without levels does. */
+  const std::filesystem::path folder = panex::searchFolder(*pr, dir);
+  REQUIRE(std::filesystem::exists(folder / "state.bin"));
+  for (const auto & e : std::filesystem::directory_iterator(folder))
+    if (e.path().extension() == ".lvl")
+      std::filesystem::remove(e.path());
+
+  panex::panexSearch_c second;
+  second.workDir = dir;
+  second.resume = true;
+  std::unique_ptr<separation_c> path = panex::solve(*pr, second);
+  REQUIRE(path);
+  CHECK(logicalMoves(*path) == 343);
+  checkTransfers(*path);
+  std::filesystem::remove_all(dir);
 }

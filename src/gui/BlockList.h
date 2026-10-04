@@ -509,9 +509,11 @@ public:
   void onSize(unsigned int index);
 
   virtual void resize(int x, int y, int w, int h);
+  /* About three rows. The list grows with the window and scrolls when it
+   * is shorter, so the rod controls below always fit on screen. */
   virtual void getMinSize(int *width, int *height) const {
     *width = 220;
-    *height = 168;
+    *height = 80;
   }
 
 private:

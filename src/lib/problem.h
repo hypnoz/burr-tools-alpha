@@ -107,6 +107,30 @@ private:
    */
   std::vector<std::unique_ptr<solution_c>> solutions;
 
+public:
+  /**
+   * An assembly found but not yet finished with when the solver paused: still
+   * to be taken apart, or (sliding) still to be searched. The assembler will
+   * not report it again, so the next run does it first.
+   */
+  struct pendingAssembly_c {
+    std::unique_ptr<assembly_c> assembly;
+    /** Already counted in the assemblies, with these numbers. */
+    bool counted = false;
+    unsigned long assemblyNumber = 0;
+    unsigned long solutionNumber = 0;
+  };
+
+  /** Keep an assembly for the next run; safe from any solver thread. */
+  void addPending(std::unique_ptr<assembly_c> a, bool counted, unsigned long assemblyNumber = 0,
+                  unsigned long solutionNumber = 0);
+  /** The pending assemblies, handed over and cleared. */
+  std::vector<pendingAssembly_c> takePending(void);
+  size_t pendingCount(void) const;
+
+private:
+  std::vector<pendingAssembly_c> pending;
+
   /** protects concurrent access to the solutions vector */
   mutable std::recursive_mutex solutionMutex;
 
@@ -175,7 +199,8 @@ private:
   /**
    * the time used up to get to the current state in the solving progress (in seconds)
    */
-  unsigned long usedTime;
+  /** Time spent solving, in milliseconds. */
+  unsigned long long usedMs;
 
   /**
    * number of holes maximally allowed
@@ -478,7 +503,8 @@ public:
   /** call this for each found solution */
   void incNumSolutions(void) { bt_assert(solveState == SS_SOLVING); numSolutions.fetch_add(1, std::memory_order_relaxed); }
   /** add time used to solve the puzzle (in seconds) the value is added to the already accumulated time. */
-  void addTime(unsigned long time) { bt_assert(solveState == SS_SOLVING); usedTime += time; }
+  void addTime(unsigned long time) { bt_assert(solveState == SS_SOLVING); usedMs += 1000ull * time; }
+  void addTimeMs(unsigned long long ms) { bt_assert(solveState == SS_SOLVING); usedMs += ms; }
   /** add an assembly as a solution */
   void addSolution(assembly_c * assm);
   /** add an assembly with disassembly information as a solution.
@@ -532,7 +558,9 @@ public:
   /** find out, if we know something about the time for solving the puzzle */
   bool usedTimeKnown(void) const { return solveState != SS_UNSOLVED; }
   /** find out the time used to solve the puzzle up to the current state. Throws an exception when unknown */
-  unsigned long getUsedTime(void) const { bt_assert(solveState != SS_UNSOLVED); return usedTime; }
+  unsigned long getUsedTime(void) const { bt_assert(solveState != SS_UNSOLVED); return (unsigned long)(usedMs / 1000); }
+  /** Time spent solving, in milliseconds. */
+  unsigned long long getUsedMs(void) const { bt_assert(solveState != SS_UNSOLVED); return usedMs; }
   /** get number of solutions that were stored */
   unsigned int getNumberOfSavedSolutions(void) const { return solutions.size(); }
 

@@ -126,6 +126,10 @@ private:
   bool parallelInterrupted = false;
   /* set when simdSearch() ran to completion. */
   bool simdCompleted = false;
+  /* A stopped SIMD search runs again from the start, passing over the first
+   * simdSkip solutions it already reported; see assembler_0_c. */
+  uint64_t simdDone = 0;
+  uint64_t simdSkip = 0;
 
   std::vector<unsigned int> base_left;
   std::vector<unsigned int> base_right;

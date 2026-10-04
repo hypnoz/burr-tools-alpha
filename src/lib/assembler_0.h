@@ -246,6 +246,13 @@ private:
    */
   bool parallelInterrupted = false;
 
+  /* The SIMD search cannot stop and resume in place. It reports its
+   * solutions in the same order every time, so a stopped one is run again
+   * from the start and its first simdSkip solutions, already reported, are
+   * passed over. simdDone counts solutions as the search reports them. */
+  uint64_t simdDone = 0;
+  uint64_t simdSkip = 0;
+
   void generateSubtreeTasks(std::vector<SubtreeTask> & tasks, unsigned int targetTasks, unsigned int maxDepth);
   void parallelMultiSearch(unsigned int workers);
   bool canUseSimd(void) const;

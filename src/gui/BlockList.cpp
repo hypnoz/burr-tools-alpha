@@ -21,6 +21,7 @@
 #include "BlockList.h"
 
 #include "piececolor.h"
+#include "slidingcolors.h"
 
 #include "../lib/puzzle.h"
 #include "../lib/problem.h"
@@ -355,7 +356,9 @@ void PieceSelector::getText(unsigned int block, char * text) {
 
 void PieceSelector::getColor(unsigned int block, unsigned char *r,  unsigned char *g, unsigned char *b) {
   if (sliding::isStartGoalShape(puzzle->getShape(block))) {
-    *r = *g = *b = 255;
+    *r = slidingColors::LIST_R;
+    *g = slidingColors::LIST_G;
+    *b = slidingColors::LIST_B;
     return;
   }
   *r = pieceColorRi(block);
@@ -1016,7 +1019,7 @@ DiskSelector::DiskSelector(int x, int y, int w, int h, puzzle_c * p)
   scroll->end();
   end();
   resizable(nullptr);
-  setMinimumSize(220, 168);
+  setMinimumSize(220, 80);
   rebuild();
 }
 

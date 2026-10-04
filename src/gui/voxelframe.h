@@ -84,6 +84,8 @@ class VoxelViewCallbacks {
  *
  * additionally pieces can be transparent
  */
+namespace stacking { struct boardLayout_c; }
+
 class voxelFrame_c : public Fl_Gl_Window {
 
   public:
@@ -204,6 +206,10 @@ class voxelFrame_c : public Fl_Gl_Window {
     unsigned int drivenSpaces = ~0u;
     unsigned int addPeg(const gridType_c * gt, int x, unsigned int height);
     void addRodBase(const gridType_c * gt, int x0, int x1);
+    /** Behind a Panex column: a V that narrows to the bottom, as deep discs must be. */
+    void addPanexV(const gridType_c * gt, int x, unsigned int height, unsigned int maxSize);
+    /** Every rod of a stacking board, its base, and the view centre. */
+    void addStackBoard(const gridType_c * gt, const stacking::boardLayout_c & lay);
     void showStackingAssembly(const problem_c * puz, unsigned int solNum);
     /** Sliding solution walls: x0,y0,x1,y1 per segment, in tray coordinates. */
     std::vector<float> wallLines;
@@ -317,6 +323,12 @@ class voxelFrame_c : public Fl_Gl_Window {
 
     // conservative bounding-sphere radius (from the origin) of everything in shapes
     double computeContentRadius(void) const;
+  public:
+    /** Zoom slider value that frames everything shown, whichever way it is turned. */
+    double fitZoom(void) const;
+    /** A stacking board of rods is shown. */
+    bool showsStackingBoard(void) const { return stackingPlate; }
+  private:
 
     bool insideVisible;
 };
