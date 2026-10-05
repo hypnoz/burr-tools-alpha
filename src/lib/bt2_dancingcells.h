@@ -42,6 +42,9 @@ public:
    * null when there is nothing to hand over. The two searches never visit
    * the same branch. */
   bt2Cells_c * split(void);
+  /* After a split: the part of this search's estimated remaining work, as
+   * it was before the split, that the copy took (0..1). */
+  float lastSplitShare(void) const { return splitShare; }
 
   const std::vector<unsigned int> & currentRowIds(void) const { return solRows; }
 
@@ -105,6 +108,7 @@ private:
   void * cbUser;
   solution_fn cbFn;
   unsigned long iterations;
+  float splitShare = 0;
 
   /* Scratch lists, kept so the search allocates nothing per step. */
   std::vector<unsigned int> othersBuf;

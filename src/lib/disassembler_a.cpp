@@ -28,10 +28,71 @@
 #include "assembly.h"
 #include "disassembly.h"
 #include "rotationmoves_0.h"
+#include "disassemblerhashes.h"
+#include "helperpool.h"
+
+#include <chrono>
+#include <cstdlib>
+#include <unordered_set>
+
+namespace {
+
+unsigned long long nowUs(void) {
+  using namespace std::chrono;
+  return (unsigned long long)duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+void dropNode(disassemblerNode_c * n) {
+  if (n->decRefCount())
+    delete n;
+}
+
+/* BURRTOOLS_NO_DISASM_PAR=1: search every level on the calling thread */
+bool levelThreadsAllowed(void) {
+  static const bool allowed = []() {
+    const char * e = getenv("BURRTOOLS_NO_DISASM_PAR");
+    return !(e && e[0] && e[0] != '0');
+  }();
+  return allowed;
+}
+
+}
+
+namespace {
+/* see setLevelThreadCostUs */
+std::atomic<double> levelThreadCostUs{400.0};
+}
+
+void disassembler_a_c::setLevelThreadCostUs(double us) {
+  levelThreadCostUs.store(us, std::memory_order_relaxed);
+}
+
+/* What the search of one position of a level gave, when the level is spread
+ * over threads. */
+struct disassembler_a_c::expansion_c {
+  /* the positions it leads to that neither the old, the current nor (as it
+   * was when the threads set out) the new front has, in the order found */
+  std::vector<disassemblerNode_c *> cands;
+  /* moves taken from find() to get them */
+  unsigned int raw = 0;
+  /* searched, not passed over or stopped */
+  bool expanded = false;
+  /* the last of cands separates the puzzle */
+  bool separation = false;
+  /* the search was left before find() ran out */
+  bool more = false;
+
+  void reset(void) {
+    cands.clear();
+    raw = 0;
+    expanded = separation = more = false;
+  }
+};
 
 disassembler_a_c::disassembler_a_c(const problem_c & puz, bool enableRotations,
                                    solverType_e solverType) :
-  disassembler_c(), puzzle(puz), groups(std::make_unique<grouping_c>()), abort(false) {
+  disassembler_c(), puzzle(puz), groups(std::make_unique<grouping_c>()), abort(false),
+  rotationsEnabled(enableRotations), solverKind(solverType) {
 
   /* Initialise the grouping class */
   for (unsigned int i = 0; i < puz.getNumberOfParts(); i++)
@@ -48,18 +109,391 @@ disassembler_a_c::disassembler_a_c(const problem_c & puz, bool enableRotations,
       piece2shape[p++] = i;
 
   analyse = std::make_unique<movementAnalysator_c>(puzzle, enableRotations, solverType);
+  analyse->setStopFlag(&abort);
 }
 
 void disassembler_a_c::setCheckRotations(bool enable) {
+  rotationsEnabled = enable;
   analyse->setCheckRotations(enable);
+  std::lock_guard<std::mutex> lock(helperMutex);
+  for (std::unique_ptr<movementAnalysator_c> & h : helpers)
+    if (h)
+      h->setCheckRotations(enable);
 }
 
 unsigned long long disassembler_a_c::getRotationSearchUs(void) const {
-  return analyse ? analyse->getRotationSearchUs() : 0;
+  unsigned long long us = analyse ? analyse->getRotationSearchUs() : 0;
+  std::lock_guard<std::mutex> lock(helperMutex);
+  for (const std::unique_ptr<movementAnalysator_c> & h : helpers)
+    if (h)
+      us += h->getRotationSearchUs();
+  return us;
 }
 
 unsigned long long disassembler_a_c::getLinearSearchUs(void) const {
-  return analyse ? analyse->getLinearSearchUs() : 0;
+  unsigned long long us = analyse ? analyse->getLinearSearchUs() : 0;
+  std::lock_guard<std::mutex> lock(helperMutex);
+  for (const std::unique_ptr<movementAnalysator_c> & h : helpers)
+    if (h)
+      us += h->getLinearSearchUs();
+  return us;
+}
+
+void disassembler_a_c::setHelperPool(helperPool_c * p) {
+  pool = levelThreadsAllowed() ? p : nullptr;
+}
+
+movementAnalysator_c & disassembler_a_c::analysatorFor(unsigned int slot) {
+
+  if (slot == 0)
+    return *analyse;
+
+  std::lock_guard<std::mutex> lock(helperMutex);
+  if (helpers.size() < slot)
+    helpers.resize(slot);
+  if (!helpers[slot - 1]) {
+    helpers[slot - 1] = std::make_unique<movementAnalysator_c>(puzzle, rotationsEnabled, solverKind);
+    helpers[slot - 1]->setStopFlag(&abort);
+  }
+  return *helpers[slot - 1];
+}
+
+bool disassembler_a_c::getProgress(disassemblyProgress_c & p) const {
+
+  p = disassemblyProgress_c();
+
+  const unsigned long long start = progStartUs.load(std::memory_order_relaxed);
+  if (start == 0)
+    return true;
+
+  const unsigned long long now = nowUs();
+  p.active = true;
+  p.elapsedMs = now > start ? (now - start) / 1000 : 0;
+  p.pieces = progPieces.load(std::memory_order_relaxed);
+  p.searchPieces = progSearchPieces.load(std::memory_order_relaxed);
+  p.separations = progSeparations.load(std::memory_order_relaxed);
+  p.depth = progDepth.load(std::memory_order_relaxed);
+  p.level = progLevel.load(std::memory_order_relaxed);
+  p.levelDone = progLevelDone.load(std::memory_order_relaxed);
+  p.levelSize = progLevelSize.load(std::memory_order_relaxed);
+  if (p.levelDone > p.levelSize)
+    p.levelDone = p.levelSize;
+  p.nextLevelSize = progNextSize.load(std::memory_order_relaxed);
+  p.nodes = progNodes.load(std::memory_order_relaxed);
+  p.threads = progThreads.load(std::memory_order_relaxed);
+  return true;
+}
+
+void disassembler_a_c::expandNode(movementAnalysator_c & an, disassemblerNode_c * node,
+                                  const std::vector<unsigned int> & pieces,
+                                  const nodeHash & oldFront, const nodeHash & curFront, const nodeHash & newFront,
+                                  unsigned int maxSuccessors, expansion_c & e) {
+
+  /* a position can be reached from this one in more than one way */
+  std::unordered_set<disassemblerNode_c *, disassemblerNodePtrHash, disassemblerNodePtrEqual> seen;
+  unsigned int added = 0;
+
+  an.init_find(node, pieces);
+
+  disassemblerNode_c * st;
+
+  while ((st = an.find())) {
+
+    e.raw++;
+
+    if (oldFront.contains(st) || curFront.contains(st) || newFront.contains(st) ||
+        !seen.insert(st).second) {
+      dropNode(st);
+      continue;
+    }
+
+    e.cands.push_back(st);
+
+    if (st->is_separation()) {
+      e.separation = true;
+      e.more = true;
+      break;
+    }
+
+    if (maxSuccessors && ++added >= maxSuccessors) {
+      e.more = true;
+      break;
+    }
+  }
+
+  /* The analysator keeps hold of positions it has handed out. Let go now,
+   * while this thread is the only one to touch this position's count of
+   * references. */
+  an.endFind();
+
+  e.expanded = !aborted();
+}
+
+/* This is the search of the disassemblers. It is a breadth first search
+ * through the positions: first all that can be reached with one move, then
+ * with 2 moves and so on, until a position is found that separates the
+ * puzzle into 2 parts.
+ *
+ * Closed positions are kept only as long as they can be on a shortest path
+ * to something still to come: in 3 fronts, each all the positions at one
+ * distance from the start. A position found from the current front that is
+ * in the old one is a step back, one in the current front a step sideways,
+ * one in the new front one we already have a way to. Only what none of them
+ * has is new. When the current front is through, the old one is let go
+ * (reference counting frees what nothing points to any more), the current
+ * becomes the old and the new the current.
+ */
+separation_c * disassembler_a_c::searchLevels(const std::vector<unsigned int> & pieces, disassemblerNode_c * start,
+                                              unsigned int maxSuccessors) {
+
+  struct depth_c {
+    std::atomic<unsigned int> & d;
+    explicit depth_c(std::atomic<unsigned int> & depth) : d(depth) { d.fetch_add(1, std::memory_order_relaxed); }
+    ~depth_c() { d.fetch_sub(1, std::memory_order_relaxed); }
+  } depth(progDepth);
+
+  progSearchPieces.store((unsigned int)pieces.size(), std::memory_order_relaxed);
+
+  nodeHash closed[3];
+  int oldFront = 0;
+  int curFront = 1;
+  int newFront = 2;
+
+  /* the positions of the current front, in the order found, and what is
+   * found for the next; both are kept alive by the fronts */
+  std::vector<disassemblerNode_c *> level, next;
+
+  closed[curFront].insert(start);
+  level.push_back(start);
+
+  std::vector<expansion_c> exp;
+  disassemblerNode_c * found = 0;
+  unsigned int levelNo = 0;
+
+  /* what one position takes to search, to tell whether a level is worth
+   * waking other threads for; 0 until one has been timed */
+  double usPerNode = 0;
+
+  while (!level.empty() && !found) {
+
+    progLevel.store(levelNo, std::memory_order_relaxed);
+    progLevelSize.store((unsigned long)level.size(), std::memory_order_relaxed);
+    progLevelDone.store(0, std::memory_order_relaxed);
+    progNextSize.store(0, std::memory_order_relaxed);
+
+    size_t pos = 0;
+
+    while (pos < level.size() && !found) {
+
+      if (aborted())
+        return 0;
+
+      const size_t remaining = level.size() - pos;
+      size_t batch = 1;
+      if (pool && remaining >= 2 &&
+          usPerNode * (double)remaining >= levelThreadCostUs.load(std::memory_order_relaxed)) {
+        batch = (size_t)pool->cores() * 32;
+        if (batch > remaining)
+          batch = remaining;
+      }
+
+      const unsigned long long t0 = nowUs();
+      size_t done = 0;
+      unsigned int used = 1;
+
+      if (batch == 1) {
+
+        /* one position, on this thread: what it leads to goes straight
+         * into the new front */
+        disassemblerNode_c * node = level[pos];
+        unsigned int added = 0;
+        disassemblerNode_c * st;
+
+        analyse->init_find(node, pieces);
+
+        while ((st = analyse->find())) {
+
+          if (closed[oldFront].contains(st) || closed[curFront].contains(st) || closed[newFront].insert(st)) {
+            /* known: a longer or equally long way to it */
+            dropNode(st);
+            continue;
+          }
+
+          if (st->is_separation()) {
+            found = st;
+            break;
+          }
+
+          next.push_back(st);
+          dropNode(st);
+
+          if (maxSuccessors && ++added >= maxSuccessors)
+            break;
+        }
+
+        done = 1;
+
+      } else {
+
+        /* Several positions at once. Each thread takes the next one not
+         * taken and notes what it leads to; nothing shared is changed. */
+        if (exp.size() < batch)
+          exp.resize(batch);
+        for (size_t i = 0; i < batch; i++)
+          exp[i].reset();
+
+        std::atomic<size_t> nextIdx{0};
+        /* the first position found to lead to a separation: the ones
+         * after it will not be wanted */
+        std::atomic<size_t> sepIdx{batch};
+
+        const nodeHash & oF = closed[oldFront];
+        const nodeHash & cF = closed[curFront];
+        const nodeHash & nF = closed[newFront];
+        disassemblerNode_c * const * nodes = &level[pos];
+
+        used = pool->run((unsigned int)(batch < pool->cores() ? batch : pool->cores()),
+                         [&](unsigned int slot) {
+          movementAnalysator_c & an = analysatorFor(slot);
+          for (;;) {
+            const size_t i = nextIdx.fetch_add(1, std::memory_order_relaxed);
+            if (i >= batch || i > sepIdx.load(std::memory_order_relaxed) || aborted())
+              break;
+            expandNode(an, nodes[i], pieces, oF, cF, nF, maxSuccessors, exp[i]);
+            progLevelDone.fetch_add(1, std::memory_order_relaxed);
+            if (exp[i].separation) {
+              size_t s = sepIdx.load(std::memory_order_relaxed);
+              while (i < s && !sepIdx.compare_exchange_weak(s, i, std::memory_order_relaxed)) {}
+            }
+          }
+        });
+
+        /* Put together what they found, position by position in the order
+         * of the level: exactly what the search on one thread would have
+         * put into the new front, and in that order. */
+        for (; done < batch && exp[done].expanded && !found && !aborted(); done++) {
+
+          expansion_c & e = exp[done];
+          unsigned int added = 0;
+          bool full = false;
+          size_t k = 0;
+
+          while (k < e.cands.size()) {
+            disassemblerNode_c * st = e.cands[k++];
+
+            if (closed[newFront].insert(st)) {
+              dropNode(st);
+              continue;
+            }
+
+            if (st->is_separation()) {
+              found = st;
+              break;
+            }
+
+            next.push_back(st);
+            dropNode(st);
+
+            if (maxSuccessors && ++added >= maxSuccessors) {
+              full = true;
+              break;
+            }
+          }
+
+          for (; k < e.cands.size(); k++)
+            dropNode(e.cands[k]);
+          e.cands.clear();
+
+          if (!found && !full && e.more) {
+
+            /* Its thread left this position early, at the most new
+             * positions one may give or at a separation, counting some
+             * that another position turned out to have given first. Go on
+             * from where it left. */
+            unsigned int skip = e.raw;
+            disassemblerNode_c * st;
+
+            analyse->init_find(nodes[done], pieces);
+
+            while ((st = analyse->find())) {
+
+              if (skip) {
+                skip--;
+                dropNode(st);
+                continue;
+              }
+
+              if (closed[oldFront].contains(st) || closed[curFront].contains(st) || closed[newFront].insert(st)) {
+                dropNode(st);
+                continue;
+              }
+
+              if (st->is_separation()) {
+                found = st;
+                break;
+              }
+
+              next.push_back(st);
+              dropNode(st);
+
+              if (maxSuccessors && ++added >= maxSuccessors)
+                break;
+            }
+          }
+        }
+
+        /* what was searched for nothing: after a separation, or a stop */
+        for (size_t i = done; i < batch; i++) {
+          for (disassemblerNode_c * st : exp[i].cands)
+            dropNode(st);
+          exp[i].cands.clear();
+        }
+      }
+
+      analyse->endFind();
+
+      if (aborted()) {
+        if (found)
+          dropNode(found);
+        return 0;
+      }
+
+      bt_assert(done > 0);
+
+      pos += done;
+      progNodes.fetch_add(done, std::memory_order_relaxed);
+      progLevelDone.store((unsigned long)pos, std::memory_order_relaxed);
+      progNextSize.store((unsigned long)next.size(), std::memory_order_relaxed);
+      progThreads.store(used, std::memory_order_relaxed);
+
+      const double us = (double)(nowUs() - t0) * (double)used / (double)done;
+      usPerNode = usPerNode > 0 ? 0.75 * usPerNode + 0.25 * us : us;
+    }
+
+    if (found)
+      break;
+
+    /* the current front is through: open up the next */
+    closed[oldFront].clear();
+    oldFront = curFront;
+    curFront = newFront;
+    newFront = (newFront + 1) % 3;
+
+    level.swap(next);
+    next.clear();
+    levelNo++;
+  }
+
+  if (!found)
+    return 0;
+
+  /* a position that separates the puzzle: on into the two parts, which
+   * calls this search again for each */
+  separation_c * res = checkSubproblems(found, pieces);
+
+  dropNode(found);
+
+  return res;
 }
 
 disassembler_a_c::~disassembler_a_c() = default;
@@ -108,7 +542,9 @@ separation_c * disassembler_a_c::checkSubproblem(int pieceCount, const std::vect
     if (n->decRefCount())
       delete n;
 
-    *ok = res || subProbGrouping(pn);
+    /* A search that was stopped has not shown that the pieces cannot come
+     * apart, so they are not to be taken for a group either. */
+    *ok = res || (!aborted() && subProbGrouping(pn));
   }
 
   return res;
@@ -121,6 +557,8 @@ separation_c * disassembler_a_c::checkSubproblems(const disassemblerNode_c * st,
    * with them that needs to be returned
    */
   separation_c * erg = 0;
+
+  progSeparations.fetch_add(1, std::memory_order_relaxed);
 
   /* count the pieces in both parts */
   int part1 = 0, part2 = 0;
@@ -267,7 +705,28 @@ std::unique_ptr<separation_c> disassembler_a_c::disassemble(const assembly_c * a
     if (assembly->isPlaced(j))
       pieces.push_back(j);
 
-  separation_c * s = disassemble_rec(pieces, start);
+  /* for those who watch: from here until the end this take-apart runs */
+  struct running_c {
+    std::atomic<unsigned long long> & startUs;
+    explicit running_c(std::atomic<unsigned long long> & s) : startUs(s) {
+      startUs.store(nowUs() | 1, std::memory_order_relaxed);
+    }
+    ~running_c() { startUs.store(0, std::memory_order_relaxed); }
+  };
+
+  progPieces.store((unsigned int)pieces.size(), std::memory_order_relaxed);
+  progSeparations.store(0, std::memory_order_relaxed);
+  progNodes.store(0, std::memory_order_relaxed);
+  progLevel.store(0, std::memory_order_relaxed);
+  progLevelDone.store(0, std::memory_order_relaxed);
+  progLevelSize.store(0, std::memory_order_relaxed);
+  progNextSize.store(0, std::memory_order_relaxed);
+
+  separation_c * s;
+  {
+    running_c running(progStartUs);
+    s = disassemble_rec(pieces, start);
+  }
 
   if (start->decRefCount())
     delete start;

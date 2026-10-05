@@ -33,7 +33,9 @@
 #include "stacking.h"
 #include "panex.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <string>
 
@@ -75,18 +77,24 @@ unsigned int chooseDisasmWorkerCount(bool rotationsEnabled) {
 #ifdef NO_THREADING
   return 1;
 #else
-  /* 90° rotation search is memory-bandwidth heavy. Extra workers contend
-   * with the assembler and with each other, and on rotation puzzles that
-   * made wall-clock time worse than a single worker. */
-  if (rotationsEnabled)
-    return 1;
+  /* BURRTOOLS_DISASM_WORKERS=n: that many, whatever the puzzle */
+  if (const char * env = getenv("BURRTOOLS_DISASM_WORKERS")) {
+    const int n = atoi(env);
+    if (n > 0)
+      return (unsigned int)(n > 64 ? 64 : n);
+  }
 
-  unsigned int hw = std::thread::hardware_concurrency();
-  if (hw < 1)
-    hw = 1;
-  if (hw <= 2)
+  /* Rotation puzzles get the same count as the others. One worker used to
+   * be the rule for them, from when extra ones made the run slower; with
+   * the faster rotation search, eight workers on ten cores take a quarter
+   * of the time one does (CoverUp3 9.9 s -> 2.5 s, CornerCube 26.6 s ->
+   * 6.1 s). */
+  (void)rotationsEnabled;
+
+  const unsigned int budget = solveThreadBudget();
+  if (budget <= 2)
     return 1;
-  unsigned int n = hw - 2;
+  unsigned int n = budget - 2;
   /* Leave headroom for GUI + assembler. Cap concurrent BFS fronts so a
    * large machine does not spawn dozens of searches at once. */
   if (n > 16)
@@ -331,18 +339,35 @@ void solveThread_c::run(void){
         enqueueDisassembly(std::move(p.assembly), p.assemblyNumber, p.solutionNumber);
 #endif
       }
-      if (solverType == SOLVER_BT2) {
-        const unsigned int workers = bt2ChooseAssemblerWorkers(a);
-        assemblerThreadCount.store(workers, std::memory_order_relaxed);
-        assemblerThreadCount.store(bt2Assemble(a, this, workers), std::memory_order_relaxed);
-      } else {
-        assemblerThreadCount.store(a->getEffectiveThreads(), std::memory_order_relaxed);
-        a->assemble(this);
+      {
+        /* the assembly search uses its threads' cores until it is through */
+        struct load_c {
+          helperPool_c * pool;
+          int n;
+          load_c(helperPool_c * p, int cores) : pool(p), n(cores) { if (pool) pool->addLoad(n); }
+          ~load_c() { if (pool) pool->addLoad(-n); }
+        };
+        if (solverType == SOLVER_BT2) {
+          const unsigned int workers = bt2ChooseAssemblerWorkers(a);
+          assemblerThreadCount.store(workers, std::memory_order_relaxed);
+          load_c load(helperPool.get(), (int)workers);
+          assemblerThreadCount.store(bt2Assemble(a, this, workers), std::memory_order_relaxed);
+        } else {
+          assemblerThreadCount.store(a->getEffectiveThreads(), std::memory_order_relaxed);
+          load_c load(helperPool.get(), (int)a->getEffectiveThreads());
+          a->assemble(this);
+        }
       }
       endPhase(assemblyMs);
 
       if (!stopPressed.load(std::memory_order_relaxed)) {
         beginPhase(PHASE_DRAIN);
+        /* only when there is something left to take apart, and not over a
+         * stop that the GUI thread has just asked for */
+        if ((parameters & PAR_DISASSM) && disasmPending.load(std::memory_order_acquire) > 0) {
+          unsigned int expected = ACT_ASSEMBLING;
+          action.compare_exchange_strong(expected, ACT_DISASSEMBLING, std::memory_order_relaxed);
+        }
         flushDisassemblyQueue();
         endPhase(drainMs);
       } else {
@@ -435,9 +460,7 @@ disasmInseparable(0),
 prepareMs(0),
 reduceMs(0),
 assemblyMs(0),
-drainMs(0),
-disasmCreepActive(false),
-disasmCreepShown(0)
+drainMs(0)
 {
 
   /* Persist solutions under <solutionsWithRotations> so older BurrTools skip them */
@@ -479,8 +502,16 @@ void solveThread_c::startDisasmWorker(void) {
   unsigned int n = chooseDisasmWorkerCount(checkRotations);
   disasmWorkerCount.store(n, std::memory_order_relaxed);
 
-  for (unsigned int i = 0; i < n; i++)
+  /* A take-apart with no others waiting spreads each level of its search
+   * over the cores nothing else is using. */
+  helperPool = std::make_unique<helperPool_c>(solveThreadBudget());
+  disasmQueueLimit = std::max<size_t>(64, 8 * (size_t)n);
+
+  for (unsigned int i = 0; i < n; i++) {
     disassemblers.push_back(createDisassembler(puzzle, checkRotations, solverType));
+    if (disassemblers.back())
+      disassemblers.back()->setHelperPool(helperPool.get());
+  }
 
 #ifndef NO_THREADING
   disasmWorkerStop.store(false, std::memory_order_relaxed);
@@ -512,6 +543,7 @@ void solveThread_c::cancelDisassemblyWork(void) {
       disassemblers[i]->stop();
 
   disasmQueueCv.notify_all();
+  disasmSpaceCv.notify_all();
 
 #ifndef NO_THREADING
   for (unsigned int i = 0; i < disasmWorkers.size(); i++)
@@ -552,6 +584,7 @@ void solveThread_c::disasmWorkerRun(disassembler_c * workerDisassm) {
       task = std::move(disasmQueue.front());
       disasmQueue.pop();
     }
+    disasmSpaceCv.notify_one();
 
     if (disasmWorkerStop.load(std::memory_order_acquire)) {
       puzzle.addPending(std::move(task.assembly), true, task.assemblyNumber, task.solutionNumber);
@@ -560,7 +593,15 @@ void solveThread_c::disasmWorkerRun(disassembler_c * workerDisassm) {
       continue;
     }
 
-    processDisassembly(task, solutionAction, workerDisassm);
+    /* this thread uses a core now: fewer to lend to the others' levels */
+    helperPool->addLoad(1);
+    try {
+      processDisassembly(task, solutionAction, workerDisassm);
+    } catch (...) {
+      helperPool->addLoad(-1);
+      throw;
+    }
+    helperPool->addLoad(-1);
 
     if (disasmPending.fetch_sub(1, std::memory_order_acq_rel) == 1)
       disasmQueueCv.notify_all();
@@ -587,7 +628,18 @@ void solveThread_c::enqueueDisassembly(std::unique_ptr<assembly_c> a, unsigned l
       ;
   }
   {
-    std::lock_guard<std::mutex> lock(disasmQueueMutex);
+    /* When assemblies come faster than they are taken apart, the thread
+     * that found this one waits here until there is room. That keeps the
+     * queue (and the memory it takes) small, and leaves the cores to the
+     * take-aparts. A stop ends the wait: what is queued is kept. */
+    std::unique_lock<std::mutex> lock(disasmQueueMutex);
+#ifndef NO_THREADING
+    disasmSpaceCv.wait(lock, [this]() {
+      return disasmQueue.size() < disasmQueueLimit ||
+             stopPressed.load(std::memory_order_acquire) ||
+             disasmWorkerStop.load(std::memory_order_acquire);
+    });
+#endif
     disasmQueue.push(std::move(task));
   }
   disasmQueueCv.notify_one();
@@ -757,7 +809,7 @@ void solveThread_c::trimSavedSolutions(int _solutionAction) {
     idx = (idx % (solutionLimit * solutionDrop * dropMultiplicator)) / (solutionDrop * dropMultiplicator);
 
     if (idx == solutionLimit-1)
-      dropMultiplicator *= 2;
+      dropMultiplicator.store(dropMultiplicator.load(std::memory_order_relaxed) * 2, std::memory_order_relaxed);
 
     puzzle.removeSolution(idx+1);
   }
@@ -947,7 +999,7 @@ bool solveThread_c::start(bool stop_after_prep) {
 
   /* With no limit every solution is kept: nothing to thin out. */
   while (solutionLimit && a+solutionDrop > 2 * solutionLimit * solutionDrop) {
-    dropMultiplicator *= 2;
+    dropMultiplicator.store(dropMultiplicator.load(std::memory_order_relaxed) * 2, std::memory_order_relaxed);
     a = (a+1) / 2;
   }
 
@@ -978,9 +1030,17 @@ void solveThread_c::endPhase(std::atomic<unsigned long long> & total) {
   statsPhase.store(PHASE_NONE, std::memory_order_release);
 }
 
+bool solveThread_c::searchReadable(void) const {
+  /* While the assembler is being prepared and reduced it is building the
+   * very tables its progress is read from. */
+  const unsigned int act = action.load(std::memory_order_relaxed);
+  return act != ACT_PREPARATION && act != ACT_REDUCE;
+}
+
 float solveThread_c::assemblerFinished(void) const {
   float f = lastFinished.load(std::memory_order_relaxed);
-  withAssembler([&f](assembler_c * a) { f = a->getFinished(); });
+  if (searchReadable())
+    withAssembler([&f](assembler_c * a) { f = a->getFinished(); });
   return f;
 }
 
@@ -994,130 +1054,242 @@ unsigned int solveThread_c::currentActionParameter(void) {
   return piece;
 }
 
-namespace {
+std::string solveProgress_c::activity(void) const {
 
-/* Seconds between creep steps while take-apart is running.
- * Classic / BurrTools 2: 1% steps on the one-left vs many-left schedule.
- * Andrew Crowell: 5% per second (speed is unknown). Halt at 95% for all types. */
-double disasmCreepInterval(int pct, bool oneLeft, solverType_e type, int *step) {
-  if (pct >= 95) {
-    *step = 0;
-    return 1e9;
+  char tmp[200];
+
+  /* the longest running take-apart: the level it is on and how far that is */
+  std::string row;
+  if (!running.empty()) {
+    const disassemblyProgress_c & d = running[0];
+    snprintf(tmp, sizeof(tmp), ", level %u: %lu/%lu", d.level, d.levelDone, d.levelSize);
+    row = tmp;
+    if (d.pieces > 2) {
+      snprintf(tmp, sizeof(tmp), ", split %u/%u", d.separations, d.pieces - 1);
+      row += tmp;
+    }
+    if (d.threads > 1) {
+      snprintf(tmp, sizeof(tmp), ", %u threads", d.threads);
+      row += tmp;
+    }
   }
-  if (type == SOLVER_CROWELL) {
-    *step = 5;
-    return 1.0;
+
+  switch (stage) {
+    case STAGE_PREPARE:
+      snprintf(tmp, sizeof(tmp), "prepare piece %u of %u", piece, pieces);
+      return tmp;
+    case STAGE_REDUCE:
+      snprintf(tmp, sizeof(tmp), "optimize piece %u of %u", piece, pieces);
+      return tmp;
+    case STAGE_ASSEMBLE:
+      if (!disassembly)
+        return "assemble";
+      snprintf(tmp, sizeof(tmp), "assemble, disassemble %u done %u waiting",
+               disasmCompleted, disasmPending);
+      return tmp + row;
+    case STAGE_DISASSEMBLE:
+      snprintf(tmp, sizeof(tmp), "disassemble %u of %u",
+               disasmCompleted + (disasmPending ? 1 : 0), disasmCompleted + disasmPending);
+      return tmp + row;
+    case STAGE_STOPPING:
+      return "please wait";
+    case STAGE_PAUSED:
+      return "pause";
+    case STAGE_DONE:
+      return "finished";
+    case STAGE_ERROR:
+      return "error";
+    default:
+      return "";
   }
-  *step = 1;
-  if (oneLeft) {
-    if (pct < 80) return 1.0;
-    if (pct < 90) return 2.0;
-    if (pct < 95) return 5.0;
-  } else {
-    if (pct < 80) return 3.0;
-    if (pct < 90) return 5.0;
-    if (pct < 95) return 15.0;
-  }
-  *step = 0;
-  return 1e9;
 }
 
-} // namespace
+solveProgress_c solveThread_c::getProgressSnapshot(void) const {
+  return progressSnapshot(0, false);
+}
 
 float solveThread_c::getProgress(float assemblyFraction) const {
+  return progressSnapshot(assemblyFraction, true).overall;
+}
 
-  if (assemblyFraction < 0)
-    assemblyFraction = 0;
-  else if (assemblyFraction > 1)
-    assemblyFraction = 1;
+solveProgress_c solveThread_c::progressSnapshot(float assemblyFraction, bool haveFraction) const {
 
-  if (!(parameters & PAR_DISASSM))
-    return assemblyFraction;
+  solveProgress_c p;
 
-  const unsigned int pending = disasmPending.load(std::memory_order_relaxed);
-  const unsigned int completed = disasmCompleted.load(std::memory_order_relaxed);
-  const unsigned long assemblies = puzzle.numAssembliesKnown() ? puzzle.getNumAssemblies() : 0;
+  p.elapsedMs = getTimeMs();
+  p.disassembly = (parameters & PAR_DISASSM) != 0 && !disassemblers.empty();
+  p.assemblies = puzzle.numAssembliesKnown() ? puzzle.getNumAssemblies() : 0;
+  p.solutions = puzzle.numSolutionsKnown() ? puzzle.getNumSolutions() : 0;
+  p.disasmCompleted = disasmCompleted.load(std::memory_order_relaxed);
+  p.disasmPending = disasmPending.load(std::memory_order_relaxed);
+  p.disasmWorkers = disasmWorkerCount.load(std::memory_order_relaxed);
+  p.assemblerThreads = assemblerThreadCount.load(std::memory_order_relaxed);
 
-  float futureAsm = 0;
-  if (assemblyFraction > 0.0001f && assemblyFraction < 0.999f && assemblies > 0)
-    futureAsm = (float)assemblies * (1.0f - assemblyFraction) / assemblyFraction;
+  float af = lastFinished.load(std::memory_order_relaxed);
+  unsigned int piece = 0;
+  unsigned long iterations = 0;
+  const bool readable = searchReadable();
+  withAssembler([&](assembler_c * a) {
+    if (readable) {
+      af = a->getFinished();
+      iterations = a->getIterations();
+    }
+    piece = a->getReducePiece();
+  });
+  if (haveFraction)
+    af = assemblyFraction;
+  if (af < 0) af = 0;
+  if (af > 1) af = 1;
+  p.assemblyFraction = af;
+  p.iterations = iterations;
 
-  const float disasmDone = (float)completed;
-  const float disasmLeft = (float)pending + futureAsm;
-  const float disasmTotal = disasmDone + disasmLeft;
+  const unsigned int act = action.load(std::memory_order_relaxed);
+  const bool ownReport = stacking::isStacking(puzzle) ||
+                         (sliding::isSliding(puzzle) && (parameters & PAR_DISASSM));
 
-  float disasmFrac;
-  if (disasmTotal < 1.0f) {
-    /* No take-apart work seen yet. Covering complete with zero assemblies
-     * means there is nothing to disassemble. */
-    disasmFrac = (assemblyFraction >= 0.999f) ? 1.0f : 0.0f;
-  } else {
-    disasmFrac = disasmDone / disasmTotal;
-    if (disasmFrac > 1.0f)
-      disasmFrac = 1.0f;
-  }
-
-  /* When workers keep up, disasmFrac tracks assemblyFraction and any mix
-   * still equals covering progress. When covering finishes first, the bar
-   * continues with the queue. Rotations make take-apart much slower, so
-   * weight that side more. */
-  const bool rotations = (parameters & PAR_CHECK_ROTATIONS) != 0;
-  const float asmWeight = rotations ? 0.2f : 0.5f;
-  float progress = asmWeight * assemblyFraction + (1.0f - asmWeight) * disasmFrac;
-
-  if ((pending > 0 || assemblyFraction < 0.999f) && progress > 0.999f)
-    progress = 0.999f;
-
-  if (progress < 0)
-    progress = 0;
-
-  /* While at least one assembly is still being taken apart, creep the bar
-   * forward so it does not sit frozen. Real progress always wins if it
-   * jumps ahead. Cap at 95% until the solve actually finishes. */
-  if (pending == 0) {
-    disasmCreepActive = false;
-    return progress;
-  }
-
-  const bool oneLeft = (disasmLeft <= 1.001f);
-  const auto now = std::chrono::steady_clock::now();
-
-  if (!disasmCreepActive) {
-    disasmCreepActive = true;
-    disasmCreepShown = progress;
-    disasmCreepTick = now;
-    return progress;
-  }
-
-  if (progress > disasmCreepShown) {
-    disasmCreepShown = progress;
-    disasmCreepTick = now;
-  }
-
-  int pct = (int)(disasmCreepShown * 100.0f + 1e-4f);
-  if (pct < 0) pct = 0;
-  if (pct > 95) pct = 95;
-
-  double elapsed = std::chrono::duration<double>(now - disasmCreepTick).count();
-  while (pct < 95) {
-    int step = 1;
-    const double iv = disasmCreepInterval(pct, oneLeft, solverType, &step);
-    if (step <= 0 || elapsed + 1e-9 < iv)
+  switch (act) {
+    case ACT_PREPARATION:
+      p.stage = solveProgress_c::STAGE_PREPARE;
+      p.pieces = puzzle.getNumberOfParts();
+      p.piece = piece + 1 > p.pieces ? p.pieces : piece + 1;
       break;
-    elapsed -= iv;
-    pct += step;
-    if (pct > 95)
-      pct = 95;
+    case ACT_REDUCE:
+      p.stage = solveProgress_c::STAGE_REDUCE;
+      p.pieces = puzzle.getNumberOfPieces();
+      p.piece = piece + 1 > p.pieces ? p.pieces : piece + 1;
+      break;
+    case ACT_ASSEMBLING:
+      p.stage = ownReport ? solveProgress_c::STAGE_OTHER : solveProgress_c::STAGE_ASSEMBLE;
+      break;
+    case ACT_DISASSEMBLING:
+      p.stage = solveProgress_c::STAGE_DISASSEMBLE;
+      break;
+    case ACT_WAIT_TO_STOP:
+      p.stage = solveProgress_c::STAGE_STOPPING;
+      break;
+    case ACT_PAUSING:
+      p.stage = solveProgress_c::STAGE_PAUSED;
+      break;
+    case ACT_FINISHED:
+      p.stage = solveProgress_c::STAGE_DONE;
+      break;
+    default:
+      p.stage = solveProgress_c::STAGE_ERROR;
+      break;
   }
 
-  disasmCreepTick = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(elapsed));
-  disasmCreepShown = (float)pct / 100.0f;
+  /* the take-aparts under way, the longest running first */
+  for (unsigned int i = 0; i < disassemblers.size(); i++) {
+    disassemblyProgress_c d;
+    if (disassemblers[i] && disassemblers[i]->getProgress(d) && d.active)
+      p.running.push_back(d);
+  }
+  std::sort(p.running.begin(), p.running.end(),
+            [](const disassemblyProgress_c & a, const disassemblyProgress_c & b) {
+              return a.elapsedMs > b.elapsedMs;
+            });
+  if (!p.running.empty() && p.running[0].levelSize > 0)
+    p.levelFraction = (float)p.running[0].levelDone / (float)p.running[0].levelSize;
 
-  if (disasmCreepShown < progress)
-    disasmCreepShown = progress;
+  /* how long the assembly search has run, for what it has left */
+  const phase_e phase = statsPhase.load(std::memory_order_acquire);
+  double asmSeconds = (double)assemblyMs.load(std::memory_order_relaxed) / 1000.0;
+  if (phase == PHASE_ASSEMBLE)
+    asmSeconds += (double)elapsedMs(std::chrono::steady_clock::time_point{
+        std::chrono::steady_clock::duration(phaseOrigin.load(std::memory_order_relaxed))}) / 1000.0;
 
-  return disasmCreepShown;
+  /* the fraction covers what earlier runs of a continued solve did, too */
+  if (puzzle.usedTimeKnown())
+    asmSeconds += (double)puzzle.getUsedMs() / 1000.0;
+
+  const bool searching = p.stage == solveProgress_c::STAGE_ASSEMBLE ||
+                         p.stage == solveProgress_c::STAGE_DISASSEMBLE;
+
+  double asmLeft = -1;
+  if (af >= 0.999f)
+    asmLeft = 0;
+  else if (af > 0.001f)
+    asmLeft = asmSeconds * (1.0 - af) / af;
+
+  if (p.stage == solveProgress_c::STAGE_DONE) {
+
+    p.overall = 1;
+    p.secondsLeft = 0;
+
+  } else if (!p.disassembly) {
+
+    p.overall = af;
+    if (searching)
+      p.secondsLeft = asmLeft;
+
+  } else {
+
+    /* assemblies the search has still to find, at the rate so far */
+    double future = 0;
+    if (af > 0.0001f && af < 0.999f && p.assemblies > 0)
+      future = (double)p.assemblies * (1.0 - af) / af;
+
+    /* A take-apart under way counts by the separations it has found of
+     * the ones it needs: the one thing known about how far it is. */
+    double partDone = 0, runningSeconds = 0;
+    for (const disassemblyProgress_c & d : p.running) {
+      if (d.pieces > 1)
+        partDone += (double)d.separations / (double)(d.pieces - 1);
+      runningSeconds += (double)d.elapsedMs / 1000.0;
+    }
+    if (partDone > (double)p.disasmPending)
+      partDone = (double)p.disasmPending;
+
+    const double done = (double)p.disasmCompleted + partDone;
+    const double left = (double)p.disasmPending - partDone + future;
+    const double total = done + left;
+
+    double disasmFrac;
+    if (total < 1.0)
+      /* none seen: with the search through, there is nothing to take apart */
+      disasmFrac = af >= 0.999f ? 1.0 : 0.0;
+    else
+      disasmFrac = done / total;
+
+    /* Taking apart with rotations is much the slower side. */
+    const double asmWeight = (parameters & PAR_CHECK_ROTATIONS) ? 0.2 : 0.5;
+    p.overall = (float)(asmWeight * af + (1.0 - asmWeight) * disasmFrac);
+
+    /* how long a take-apart takes is only known once one is through */
+    const double avg = getAverageDisassemblySeconds();
+    double disLeft = -1;
+    if (p.disasmPending == 0 && future < 0.5)
+      disLeft = 0;
+    else if (p.disasmCompleted > 0) {
+      const double count = (double)p.disasmPending + future;
+      double work = avg * count - (runningSeconds < avg * (double)p.running.size()
+                                     ? runningSeconds : avg * (double)p.running.size());
+      if (work < 0)
+        work = 0;
+      double workers = (double)p.disasmWorkers;
+      if (workers > count) workers = count;
+      if (workers < 1) workers = 1;
+      disLeft = work / workers;
+    }
+
+    p.overallKnown = disLeft >= 0;
+
+    if (searching && asmLeft >= 0 && disLeft >= 0)
+      p.secondsLeft = asmLeft > disLeft ? asmLeft : disLeft;
+  }
+
+  if (p.stage != solveProgress_c::STAGE_DONE) {
+    if (p.overall > 0.999f)
+      p.overall = 0.999f;
+    if (p.overall < 0)
+      p.overall = 0;
+    /* an estimate that is corrected downwards does not take the bar back */
+    if (p.overall < progressShown)
+      p.overall = progressShown;
+  }
+  progressShown = p.overall;
+
+  return p;
 }
 
 solveStats_c solveThread_c::getStats(void) const {
@@ -1143,10 +1315,11 @@ solveStats_c solveThread_c::getStats(void) const {
   s.disasmWorkMs = disasmMsTotal.load(std::memory_order_relaxed);
   s.avgDisasmSeconds = getAverageDisassemblySeconds();
 
-  withAssembler([&s](assembler_c * a) {
-    s.dlxIterations = a->getIterations();
-    s.assemblyProgress = a->getFinished();
-  });
+  if (searchReadable())
+    withAssembler([&s](assembler_c * a) {
+      s.dlxIterations = a->getIterations();
+      s.assemblyProgress = a->getFinished();
+    });
 
   const phase_e phase = statsPhase.load(std::memory_order_acquire);
   unsigned long long extra = 0;
@@ -1174,6 +1347,12 @@ solveStats_c solveThread_c::getStats(void) const {
     }
   s.rotationSearchMs = rotUs / 1000;
   s.linearSearchMs = linUs / 1000;
+
+  for (unsigned int i = 0; i < disassemblers.size(); i++) {
+    disassemblyProgress_c d;
+    if (disassemblers[i] && disassemblers[i]->getProgress(d) && d.active)
+      s.running.push_back(d);
+  }
 
   unsigned int act = action.load(std::memory_order_relaxed);
   switch (act) {

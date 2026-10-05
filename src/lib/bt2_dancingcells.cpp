@@ -382,6 +382,7 @@ bt2Cells_c * bt2Cells_c::split(void) {
   for (unsigned int i = 0; i < activeFrames; i++) {
     if (frames[i].state != 3)
       continue;
+    const float before = progress();
     bt2Cells_c * other = new bt2Cells_c(*this);
     Frame & f = other->frames[i];
     other->activeFrames = i + 1;
@@ -392,6 +393,12 @@ bt2Cells_c * bt2Cells_c::split(void) {
     other->pushFrame();
     /* Here, coming back up to that frame is now the end of it. */
     frames[i].state = 1;
+    /* No shallower branch is open, so all that was left lies under this
+     * frame, and the copy's part of it is what its own estimate says is
+     * left to it. */
+    splitShare = (before < 1.0f) ? (1.0f - other->progress()) / (1.0f - before) : 0.0f;
+    if (splitShare > 1.0f)
+      splitShare = 1.0f;
     return other;
   }
 
@@ -420,6 +427,8 @@ bt2Cells_c * bt2Cells_c::split(void) {
   other->frames[other->activeFrames - 1].state = 1;
   other->pushFrame();
 
+  /* one of the item's options, taken as all alike */
+  splitShare = 1.0f / (float)itemSize[chosen];
   discardOption(opt);
   return other;
 }

@@ -12,6 +12,7 @@
 #ifndef __ROTATION_MOVES_H__
 #define __ROTATION_MOVES_H__
 
+#include <atomic>
 #include <vector>
 
 class disassemblerNode_c;
@@ -38,6 +39,24 @@ public:
 
   virtual void init_find(disassemblerNode_c * nd, const std::vector<unsigned int> & pcs) = 0;
   virtual disassemblerNode_c * find(void) = 0;
+
+  /**
+   * A flag that ends find() early when another thread sets it: one call
+   * can try every subset of the pieces about every pivot. find() then
+   * returns 0 as if there were no more moves, so the caller must look at
+   * the flag itself.
+   */
+  void setStopFlag(const std::atomic<bool> * flag) { stopFlag = flag; }
+
+protected:
+
+  bool stopRequested(void) const {
+    return stopFlag && stopFlag->load(std::memory_order_relaxed);
+  }
+
+private:
+
+  const std::atomic<bool> * stopFlag = nullptr;
 };
 
 #endif

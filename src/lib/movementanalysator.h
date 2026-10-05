@@ -89,6 +89,7 @@ class movementAnalysator_c {
     bool bricksGrid;
     std::unique_ptr<rotationMoves_c> rotationMoves;
     bool rotationsActive;
+    const std::atomic<bool> * stopFlag = nullptr;
     std::atomic<unsigned long long> rotationSearchUs;
     std::atomic<unsigned long long> linearSearchUs;
     unsigned long long searchPhaseStartUs;
@@ -133,6 +134,13 @@ class movementAnalysator_c {
 
     void setCheckRotations(bool enable);
 
+    /**
+     * A flag that ends find() early when another thread sets it. find()
+     * then returns 0 as if there were no more moves, so the caller must
+     * look at the flag itself.
+     */
+    void setStopFlag(const std::atomic<bool> * flag);
+
     unsigned long long getRotationSearchUs(void) const {
       return rotationSearchUs.load(std::memory_order_relaxed);
     }
@@ -150,6 +158,12 @@ class movementAnalysator_c {
      */
     void init_find(disassemblerNode_c * nd, const std::vector<unsigned int> & pieces);
     disassemblerNode_c * find(void);
+    /**
+     * Give up what find() still holds of the node it was searching. Needed
+     * when the search of a node is left before find() has returned 0 and
+     * another thread may touch that node before the next init_find here.
+     */
+    void endFind(void);
 
     void completeFind(disassemblerNode_c * searchnode, const std::vector<unsigned int> & pieces, std::vector<disassemblerNode_c*> * result);
 

@@ -26,6 +26,41 @@
 
 class assembly_c;
 
+class helperPool_c;
+
+/**
+ * What a take-apart search under way is doing, for showing progress.
+ *
+ * The search goes level by level: every position one move further from the
+ * start than the last level. How many levels there will be is not known
+ * before the end, but how far the level at hand is done is, and so is how
+ * many of the separations needed to get every piece out have been found.
+ */
+struct disassemblyProgress_c {
+  /** a take-apart is running; nothing else is set when it is not */
+  bool active = false;
+  /** milliseconds since this take-apart began */
+  unsigned long long elapsedMs = 0;
+  /** pieces of the assembly, and of the part being searched now */
+  unsigned int pieces = 0;
+  unsigned int searchPieces = 0;
+  /** separations found so far; every piece is out after pieces - 1 */
+  unsigned int separations = 0;
+  /** how many parts deep the search is: 1 for the whole assembly */
+  unsigned int depth = 0;
+  /** moves from the start of the part being searched */
+  unsigned int level = 0;
+  /** positions of this level looked at, and how many it has */
+  unsigned long levelDone = 0;
+  unsigned long levelSize = 0;
+  /** positions found for the next level so far */
+  unsigned long nextLevelSize = 0;
+  /** positions looked at since this take-apart began */
+  unsigned long long nodes = 0;
+  /** threads that worked on the level at hand */
+  unsigned int threads = 1;
+};
+
 /**
  * Base class for a disassembler.
  *
@@ -61,6 +96,19 @@ public:
 
   /** microseconds spent in sliding / linear move search; default 0 */
   virtual unsigned long long getLinearSearchUs(void) const { return 0; }
+
+  /**
+   * What the take-apart under way is doing; may be called from another
+   * thread at any time. False when this disassembler does not say.
+   */
+  virtual bool getProgress(disassemblyProgress_c & /*p*/) const { return false; }
+
+  /**
+   * Threads to spread a level of the search over; null (the default) to
+   * search on the calling thread alone. The pool must outlive the
+   * disassembler. Not to be called while a take-apart runs.
+   */
+  virtual void setHelperPool(helperPool_c * /*pool*/) {}
 
 
   // no copying and assigning

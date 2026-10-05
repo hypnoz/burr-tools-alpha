@@ -97,6 +97,7 @@ libburr_src = [
   'src/lib/blockpack.cpp',
   'src/lib/burrgrower.cpp',
   'src/lib/converter.cpp',
+  'src/lib/helperpool.cpp',
   'src/lib/disassembler_0.cpp',
   'src/lib/disassembler_a.cpp',
   'src/lib/disassembler_factory.cpp',

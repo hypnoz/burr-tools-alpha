@@ -702,6 +702,74 @@ rotations, and the hidden tests:
     puzzle has no assembly, changes nothing for one that has, and a wrong
     "impossible" would be worse than a slow search.
 
+## Round 4 — threads and progress (2026-10-04)
+
+How every solver splits its work over threads was read, and how a solve
+reports progress. Numbers from this machine (4 fast + 6 slow cores), old
+and new binaries run one after the other. Answers are unchanged: the 161
+corpus puzzles give the same JSON with Classic and with Crowell.
+
+- [x] R4.1 A take-apart spreads each level of its search over the free cores
+  (disassembler_a_c::searchLevels, helperpool.cpp). Classic and Crowell now
+  share that one search; it was two copies.
+  - The positions of a level are searched on several threads, each with its
+    own movementAnalysator_c. What they find is put into the new front by
+    one thread in the order of the level, so the same disassembly comes out
+    as on one thread (test "a take-apart spread over threads gives the same
+    disassembly as on one").
+  - A level is only spread when what is left of it is reckoned to take
+    longer than 400 microseconds; short searches stay on one thread.
+  - Threads are lent only while cores are free: the assembly search and
+    every take-apart under way count as load.
+  - `burrTxt -dR --json --solver classic`: Climburr_OldVer 1.46 s -> 0.34 s,
+    Climburr 2.24 -> 0.49, CoverUp3 5.40 -> 1.46, CornerCube 13.3 -> 5.6;
+    corpus 36.3 s -> 15.7 s. Crowell: CornerCube 3.64 -> 1.70, Climburr
+    0.58 -> 0.14.
+  - Switch: BURRTOOLS_NO_DISASM_PAR=1.
+- [x] R4.2 Rotation puzzles get the usual number of take-apart workers
+  (solvethread.cpp chooseDisasmWorkerCount); it was fixed at one. With R4.1,
+  GUI path (`burrTxt2 -R -d --rotations`): Climburr_OldVer 1.48 s -> 0.31 s,
+  CoverUp3 5.40 -> 1.11, CornerCube 13.4 -> 2.84.
+  Switch: BURRTOOLS_DISASM_WORKERS=n.
+- [x] R4.3 The queue of assemblies waiting to be taken apart is bounded (64,
+  or 8 for each worker): the thread that found one waits when it is full.
+- [x] R4.4 BurrTools 2 assembly driver (bt2_assemble.cpp): threads that stay
+  for the whole run; a busy one splits its own search between two slices when
+  another waits. It was new threads every 8000 steps with the splitting done
+  between rounds. A split copies the search state only, not the matrix.
+  - Bug: with more than one thread Stop and Pause did nothing (each slice
+    cleared the flag). Fixed; the branches not finished are kept and
+    Continue goes on with them (test "BurrTools 2: a search split over
+    threads stops and continues").
+  - Bug: the progress list could hold a freed search; the count of
+    iterations was about double; the shape caches were not filled before the
+    threads started. Fixed.
+  - 6x10 pentominoes, back to back: 8 threads 0.79 s -> 0.64 s; 4 threads
+    0.87 s -> 0.93 s (slower: to look at).
+- [x] R4.5 One picture of a solve's progress: solveProgress_c from
+  solveThread_c::getProgressSnapshot(), used by the Solver tab, the Debug
+  pane, `burrTxt2 --progress` and (its own lines) `burrTxt --progress`.
+  - A take-apart says the level it is on, how many of the level's positions
+    are done, how many separations it has of the ones it needs, and how many
+    threads work on it (disassemblyProgress_c).
+  - The bar no longer creeps by the clock. While only take-aparts of unknown
+    length are left it shows the level at hand.
+  - ACT_DISASSEMBLING is now set while the queue drains.
+  - Classic assembly: tasks have weights and each thread reports how far it
+    is inside its task; it was tasks done out of tasks.
+  - assembler_1: a continued search split over threads showed 0% all
+    through; a SIMD search ended as "paused". Fixed.
+  - Stop reaches into the move search (rotation subsets too); a stopped
+    sub-search is no longer taken for a group of pieces that stays together.
+  - problem_c solveState and usedMs are atomic; the assembler's progress is
+    not read while it is being prepared (found by `just build-tsan`).
+- Looked at, not done: finer or dynamic tasks for assembler_0. 64 or 256
+  tasks for each thread, 6 or 8 levels deep, made the pentominoes slower,
+  not faster; on one thread Classic runs its SIMD search, on several the
+  plain one, and that, not the split, is what holds it back there.
+  Also not done: the "Add disassembly" dialogs still show nothing while one
+  runs; saving a BurrTools 2 search that is split (it starts again).
+
 ## Open items found while working
 
 - [ ] **8.1 One unexplained test-regression failure** — on 2026-10-03,

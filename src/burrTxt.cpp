@@ -25,6 +25,7 @@
 #include "lib/assembly.h"
 #include "lib/disassembler.h"
 #include "lib/disassembler_factory.h"
+#include "lib/helperpool.h"
 #include "lib/solvertype.h"
 #include "lib/bt2_assemble.h"
 #include "lib/disassembly.h"
@@ -52,6 +53,8 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <thread>
+#include <cstdio>
 #include <string>
 
 using namespace std;
@@ -91,6 +94,11 @@ bool quiet;
 bool jsonOutput;
 solverType_e solverType;
 
+/* Threads a take-apart spreads a level of its search over. Before d, so
+ * that it outlives the disassembler that uses it. */
+std::unique_ptr<helperPool_c> helperPool;
+/* --progress: say on stderr, once a second, what the solve is doing */
+bool showProgress = false;
 std::unique_ptr<disassembler_c> d;
 
 #ifndef _WIN32
@@ -209,6 +217,8 @@ public:
   int Solutions;
   int pn;
   problem_c * puzzle;
+  /* Assemblies and Solutions again, for the thread that prints progress */
+  std::atomic<unsigned long> seenAssemblies{0}, seenSolutions{0};
   std::mutex cbMutex;
   std::map<std::string, unsigned int> slideBestMoves;
   /* Sliding starts whose search stopped at its limit, not at its end. */
@@ -254,6 +264,7 @@ public:
     std::lock_guard<std::mutex> lock(cbMutex);
 
     Assemblies++;
+    seenAssemblies.fetch_add(1, std::memory_order_relaxed);
 
     if (disassemble) {
 
@@ -429,6 +440,9 @@ void usage(puzzleKind_e kind = PK_ANY) {
   cout << "          prints one JSON object with the highest disassembly level.\n";
   cout << "          Fields: assemblies, solutions, dotlevel, level, totalmoves,\n";
   cout << "          solvetime (seconds); with -R also moves (linear) and rotations)\n";
+  cout << "  --progress\n";
+  cout << "          print to stderr, once a second, how far the solve is (with\n";
+  cout << "          --json stderr is silenced, so leave that out to see it)\n";
   cout << "  Short options may be combined (e.g. -dR, -rq).\n";
   cout << "  -d      solve: take apart (brick), find the slide path (sliding) or the rod\n";
   cout << "          transfers (stacking); only print what solves\n";
@@ -634,6 +648,10 @@ int main(int argv, char* args[]) {
 
     case 0:
 
+      if (strcmp(args[i], "--progress") == 0) {
+        showProgress = true;
+        continue;
+      }
       if (strcmp(args[i], "--json") == 0) {
         jsonOutput = true;
         disassemble = true;
@@ -1060,13 +1078,60 @@ int main(int argv, char* args[]) {
       asm_cb a(problem);
 
       d.reset();
-      if (disassemble && !sliding::isSliding(*problem))
+      if (disassemble && !sliding::isSliding(*problem)) {
         d = createDisassembler(*problem, checkRotations, solverType);
+        if (!helperPool)
+          helperPool = std::make_unique<helperPool_c>(threads > 0 ? threads : solveThreadBudget());
+        if (d)
+          d->setHelperPool(helperPool.get());
+      }
+
+      /* --progress: a line a second to stderr saying how far the assembly
+       * search is and what the take-apart under way is doing */
+      std::atomic<bool> progressDone{false};
+      std::thread progressThread;
+      if (showProgress)
+        progressThread = std::thread([&]() {
+          unsigned int tick = 0;
+          while (!progressDone.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (++tick % 10)
+              continue;
+            const double t = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - solveStart).count();
+            fprintf(stderr, "%7.1f s  assembly %5.1f%%, %lu found", t,
+                    100.0 * assm->getFinished(), a.seenAssemblies.load(std::memory_order_relaxed));
+            disassemblyProgress_c dp;
+            if (d && d->getProgress(dp) && dp.active) {
+              fprintf(stderr, "  disassemble %lu: level %u: %lu/%lu, %llu positions",
+                      a.seenAssemblies.load(std::memory_order_relaxed), dp.level,
+                      dp.levelDone, dp.levelSize, dp.nodes);
+              if (dp.pieces > 2)
+                fprintf(stderr, ", split %u/%u", dp.separations, dp.pieces - 1);
+              if (dp.threads > 1)
+                fprintf(stderr, ", %u threads", dp.threads);
+            }
+            fprintf(stderr, "\n");
+          }
+        });
+      struct progressEnd_c {
+        std::atomic<bool> & done;
+        std::thread & t;
+        ~progressEnd_c() {
+          done.store(true, std::memory_order_relaxed);
+          if (t.joinable())
+            t.join();
+        }
+      } progressEnd{progressDone, progressThread};
 
       if (solverType == SOLVER_BT2)
         bt2Assemble(assm.get(), &a, bt2ChooseAssemblerWorkers(assm.get()));
       else
         assm->assemble(&a);
+
+      progressDone.store(true, std::memory_order_relaxed);
+      if (progressThread.joinable())
+        progressThread.join();
 
       const double solveSeconds = std::chrono::duration<double>(
           std::chrono::steady_clock::now() - solveStart).count();
@@ -1122,8 +1187,13 @@ int main(int argv, char* args[]) {
       }
 
       const bool slide = sliding::isSliding(*problem);
-      if (!slide)
+      if (!slide) {
         d = createDisassembler(*problem, checkRotations, solverType);
+        if (!helperPool)
+          helperPool = std::make_unique<helperPool_c>(threads > 0 ? threads : solveThreadBudget());
+        if (d)
+          d->setHelperPool(helperPool.get());
+      }
 
       for (unsigned int sol = 0; sol < problem->getNumberOfSavedSolutions(); sol++) {
 

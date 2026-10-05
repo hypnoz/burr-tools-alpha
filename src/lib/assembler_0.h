@@ -128,6 +128,8 @@ private:
    * the pos value contains the number of pieces placed
    */
   unsigned int pos;
+  /* see getFinished() */
+  mutable std::mutex positionMutex;
   std::vector<unsigned int> rows;
   std::vector<unsigned int> columns;
 
@@ -225,6 +227,9 @@ private:
 
   struct SubtreeTask {
     std::vector<PrefixStep> prefix;
+    /* estimated part of the whole search: one over the number of choices
+     * at each step of the prefix. Not saved; a loaded task has 1. */
+    double weight = 1.0;
   };
 
   std::vector<SubtreeTask> parallelTasks;

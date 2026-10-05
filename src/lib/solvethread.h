@@ -23,6 +23,8 @@
 
 #include "assembler.h"
 #include "disassembler.h"
+#include "helperpool.h"
+#include "solveprogress.h"
 #include "bt_assert.h"
 #include "thread.h"
 #include "solvertype.h"
@@ -83,6 +85,8 @@ struct solveStats_c {
   unsigned long long rotationSearchMs;
   unsigned long long drainMs;
   float avgDisasmSeconds;
+  /** what each take-apart under way is doing, see disassemblyProgress_c */
+  std::vector<disassemblyProgress_c> running;
 };
 
 class solveThread_c : public assembler_cb, public thread_c {
@@ -162,10 +166,17 @@ class solveThread_c : public assembler_cb, public thread_c {
      * assemblyFraction is the covering-search (DLX) fraction from the assembler.
      * When disassembly is enabled this also includes take-apart work so the
      * value does not jump to 100% while the disassembly queue is still draining.
-     * While a take-apart is running, the value also creeps forward on a
-     * time schedule (capped at 95%) so the bar keeps moving.
+     * It does not go back during a run. The same value as
+     * getProgressSnapshot().overall; to be called from one thread only.
      */
     float getProgress(float assemblyFraction) const;
+
+    /**
+     * Where the whole solve stands: the stage, how far each stage is, what
+     * every take-apart under way is doing, and an estimate of the time
+     * left. To be called from one thread only (the one showing progress).
+     */
+    solveProgress_c getProgressSnapshot(void) const;
 
     solveStats_c getStats(void) const;
 
@@ -236,7 +247,7 @@ class solveThread_c : public assembler_cb, public thread_c {
     /* this is used to increase the drop with time, when the limit is reached
      * and only every 2nd valid solution is taken
      */
-    unsigned int dropMultiplicator = 1;
+    std::atomic<unsigned int> dropMultiplicator{1};
 
   public:
 
@@ -262,6 +273,10 @@ class solveThread_c : public assembler_cb, public thread_c {
     bool return_after_prep = false;  // sometimes it is useful to only prepare and return,
                              // if this flag is set, the program will return
 
+    /* Threads the take-aparts spread a level of their search over while
+     * cores are free. Declared before the disassemblers, which use it, so
+     * that it goes after them. */
+    std::unique_ptr<helperPool_c> helperPool;
     std::vector<std::unique_ptr<disassembler_c>> disassemblers;
 
     /* The worker publishes the assembler here once it is fully constructed so
@@ -289,6 +304,9 @@ class solveThread_c : public assembler_cb, public thread_c {
     std::vector<std::thread> disasmWorkers;
     std::mutex disasmQueueMutex;
     std::condition_variable disasmQueueCv;
+    /* signalled when the queue has room again, see enqueueDisassembly */
+    std::condition_variable disasmSpaceCv;
+    size_t disasmQueueLimit = 64;
     std::queue<disasmTask_c> disasmQueue;
     std::atomic<bool> disasmWorkerStop;
     std::atomic<unsigned int> disasmWorkerCount;
@@ -311,10 +329,12 @@ class solveThread_c : public assembler_cb, public thread_c {
     /* End the phase under way, storing how long it took in total. */
     void endPhase(std::atomic<unsigned long long> & total);
 
-    /* GUI-thread-only state for the disassembly progress-bar creep. */
-    mutable bool disasmCreepActive;
-    mutable float disasmCreepShown;
-    mutable std::chrono::steady_clock::time_point disasmCreepTick;
+    /* The furthest overall progress shown so far, so that it never goes
+     * back; used by the one thread that asks for progress. */
+    mutable float progressShown = 0;
+    solveProgress_c progressSnapshot(float assemblyFraction, bool haveFraction) const;
+    /** may the assembler's progress be read: not while it is being built */
+    bool searchReadable(void) const;
 
     void startDisasmWorker(void);
     void stopDisasmWorker(void);

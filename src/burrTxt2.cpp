@@ -25,10 +25,14 @@
 #include "lib/bt_assert.h"
 #include "lib/gridtype.h"
 #include "lib/voxel.h"
+#include "lib/solvertype.h"
 #include "tools/xml.h"
 #include "tools/gzstream.h"
 
+#include <chrono>
+#include <cstdio>
 #include <fstream>
+#include <thread>
 #include <iostream>
 
 #include <stdlib.h>
@@ -53,6 +57,9 @@ void usage(void) {
   cout << "  -r    keep rotated solutions\n";
   cout << "  -p    drop disassemblies and replace by information about disassembly\n";
   cout << "  -b    selecte problem, else 0\n";
+  cout << "  --rotations   try 90 degree piece rotations when disassembling\n";
+  cout << "  --solver TYPE classic, crowell or bt2\n";
+  cout << "  --progress    print what the solver is doing to stderr once a second\n";
 }
 
 
@@ -85,6 +92,8 @@ static int solve(int argv, char* args[]) {
   int filenumber = 0;
   int firstProblem = 0;
   int lastProblem = 1;
+  bool showProgress = false;
+  solverType_e solverType = SOLVER_CLASSIC;
 
   for(int i = 1; i < argv; i++) {
 
@@ -100,6 +109,17 @@ static int solve(int argv, char* args[]) {
       par |= solveThread_c::PAR_KEEP_ROTATIONS;
     else if (strcmp(args[i], "-p") == 0)
       par |= solveThread_c::PAR_DROP_DISASSEMBLIES;
+    else if (strcmp(args[i], "--rotations") == 0)
+      par |= solveThread_c::PAR_CHECK_ROTATIONS;
+    else if (strcmp(args[i], "--progress") == 0)
+      showProgress = true;
+    else if (strcmp(args[i], "--solver") == 0 && i + 1 < argv) {
+      if (!solverTypeFromName(args[i+1], &solverType)) {
+        cout << "unknown solver type \"" << args[i+1] << "\"\n";
+        return 2;
+      }
+      i++;
+    }
     else if (strcmp(args[i], "-b") == 0) {
       firstProblem = atoi(args[i+1]);
       lastProblem = firstProblem + 1;
@@ -185,10 +205,30 @@ static int solve(int argv, char* args[]) {
     }
 
     solveThread_c assmThread(*problem, par);
+    assmThread.setSolverType(solverType);
 
     if (!assmThread.start(false)) {
       cout << "Could not start Solver\n";
       continue;
+    }
+
+    if (showProgress) {
+      /* what the GUI shows on its Solver tab, a line a second */
+      for (;;) {
+        const unsigned int act = assmThread.currentAction();
+        if (act == solveThread_c::ACT_FINISHED || act == solveThread_c::ACT_PAUSING ||
+            act == solveThread_c::ACT_ERROR || act == solveThread_c::ACT_ASSERT)
+          break;
+        const solveProgress_c pg = assmThread.getProgressSnapshot();
+        fprintf(stderr, "%7.1f s  %5.1f%%  %s", (double)pg.elapsedMs / 1000.0,
+                100.0 * pg.overall, pg.activity().c_str());
+        if (pg.stage == solveProgress_c::STAGE_ASSEMBLE)
+          fprintf(stderr, "  [assembly %.1f%%, %lu found]", 100.0 * pg.assemblyFraction, pg.assemblies);
+        if (pg.secondsLeft >= 0)
+          fprintf(stderr, "  about %.0f s left", pg.secondsLeft);
+        fprintf(stderr, "\n");
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+      }
     }
 
     assmThread.waitUntilFinished();

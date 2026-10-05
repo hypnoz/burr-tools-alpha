@@ -109,7 +109,7 @@ void problem_c::save(xmlWriter_c & xml) const
   if (name.length() > 0)
     xml.newAttrib("name", name);
 
-  xml.newAttrib("state", solveState);
+  xml.newAttrib("state", solveState.load(std::memory_order_relaxed));
 
   if (solveState != SS_UNSOLVED)
   {
@@ -117,7 +117,7 @@ void problem_c::save(xmlWriter_c & xml) const
     xml.newAttrib("solutions", numSolutions.load(std::memory_order_relaxed));
     xml.newAttrib("time", (unsigned long)(usedMs / 1000));
     /* The same to the millisecond; older versions read only "time". */
-    xml.newAttrib("timeMs", std::to_string(usedMs));
+    xml.newAttrib("timeMs", std::to_string(usedMs.load(std::memory_order_relaxed)));
   }
 
   if (maxHoles != 0xFFFFFFFF)

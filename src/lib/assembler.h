@@ -26,6 +26,8 @@
  */
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <vector>
 #include <mutex>
 #include <atomic>
@@ -253,7 +255,24 @@ public:
 
   /** Register a clone whose getFinished/getIterations should be mixed in. */
   virtual void addProgressPeer(assembler_c * /*peer*/) {}
+  /** Forget a clone that is about to go; what it did stays counted. */
+  virtual void removeProgressPeer(assembler_c * /*peer*/) {}
   virtual void clearProgressPeers(void) {}
+
+  /** Withdraw a stop request before a new run of split searches. */
+  virtual void clearStop(void) {}
+  /** True from stop() until clearStop() or the next assemble(). */
+  virtual bool stopRequested(void) const { return false; }
+  /** Called once, on the calling thread, before split searches run on others. */
+  virtual void prepareForWorkers(void) {}
+  /**
+   * Keep an unfinished split branch across a pause. The next run takes the
+   * branches back with takeParkedSearches() and goes on with them.
+   */
+  virtual void parkSearch(std::unique_ptr<assembler_c> /*branch*/) {}
+  virtual std::vector<std::unique_ptr<assembler_c>> takeParkedSearches(void) {
+    return std::vector<std::unique_ptr<assembler_c>>();
+  }
 
   /**
    * this function returns a number reflecting the complexity of the
@@ -363,6 +382,37 @@ public:
    */
   std::atomic<size_t> totalTasks{0};
   std::atomic<size_t> completedTasks{0};
+
+  /* Finer progress of the same search. The tasks are not of one size, so
+   * each has a weight (taskWeights, an estimate of its part of the whole;
+   * all alike when nothing better is known), held as whole units so that
+   * threads can add them up without a lock. progressDone is the units of
+   * the finished tasks; progressRunning has, for each worker thread, the
+   * units it reckons it has done of the task it is in.
+   */
+  static const uint64_t PROGRESS_UNITS = uint64_t(1) << 40;
+  std::vector<double> taskWeights;
+  std::vector<uint64_t> taskUnits;
+  std::atomic<uint64_t> progressTotal{0};
+  std::atomic<uint64_t> progressDone{0};
+  std::array<std::atomic<uint64_t>, MAX_THREADS> progressRunning{};
+
+  /* Set the counters above for a run over the tasks, completed[i] nonzero
+   * for the ones an earlier run has finished. Call before the workers start.
+   */
+  void beginTaskProgress(const std::vector<uint8_t> & completed);
+  /* a worker's report: fraction (0..1) done of the task it is searching */
+  void reportTaskProgress(unsigned int worker, size_t task, float fraction) {
+    progressRunning[worker].store((uint64_t)((double)taskUnits[task] * fraction),
+                                  std::memory_order_relaxed);
+  }
+  void finishTaskProgress(unsigned int worker, size_t task) {
+    progressDone.fetch_add(taskUnits[task], std::memory_order_relaxed);
+    progressRunning[worker].store(0, std::memory_order_relaxed);
+    completedTasks.fetch_add(1, std::memory_order_relaxed);
+  }
+  /* 0..1 over all tasks; only meaningful while totalTasks > 0 */
+  float taskProgress(void) const;
 
   /* serialises the hand off of a finished assembly to the callback */
   mutable std::mutex callbackMutex;

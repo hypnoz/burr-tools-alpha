@@ -63,13 +63,16 @@
  * (forwardToNextBranch). State-0: peel the first MRV option onto the clone.
  *
  * === 5. Time-sliced solve and split-largest-leftover =======================
- * IMPLEMENTED in bt2_assemble.cpp. Fill the pool by peeling, then run
- * iteration slices in parallel. Idle workers steal from remainingSearchWork().
+ * IMPLEMENTED in bt2_assemble.cpp. Fill the pool by peeling; each thread
+ * then searches its branch a slice at a time. A thread whose branch is
+ * through waits, and a busy one, between two slices, splits its own search
+ * and hands the half over.
  *
  * === 6. MCCTree persist / restore / SQLite =================================
- * NOT IMPLEMENTED (would need a new save format and a database). In-session
- * pause uses abort; XML resume of a split tree is not supported. Treat Stop
- * during BT2 assembly as abort.
+ * NOT IMPLEMENTED (would need a new save format and a database). Pause and
+ * Continue in one session work: the branches not finished are kept with the
+ * assembler (parkSearch) and taken up again. XML resume of a split tree is
+ * not supported: a saved search starts again from the beginning.
  *
  * === 7. assembler_1_c (ranges, multi-copies) ===============================
  * NOT IMPLEMENTED. findAssembler falls back to serial assembler_1_c.

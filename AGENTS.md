@@ -159,6 +159,8 @@ Solver engines support runtime feature toggles via environment variables to allo
 | `BURRTOOLS_NO_NEON=1` | Disables the NEON kernels **on ARM**, falling back to the same scalar loop. Honoured by `SimdExactCover` and `SimdHuangCover256`. | The ARM equivalent of `BURRTOOLS_NO_AVX2`; without it an A/B on Apple Silicon silently measures the same code twice. |
 | `BURRTOOLS_NO_DISASM_SIMD=1` | Disables vector instructions in disassembler Roy-Floyd-Warshall closure. | Measure pure disassembler vector speedup. |
 | `BURRTOOLS_NO_DISASM_POOL=1` | Disables multi-threaded disassembly pool, running disassemblies synchronously. | Measure speedup and scaling of parallel disassembly pool against synchronous baseline. |
+| `BURRTOOLS_DISASM_WORKERS=N` | Number of disassembly workers (assemblies taken apart at the same time) in the GUI solve path; default is the thread budget minus 2, at most 16. | Scaling of the disassembly queue. |
+| `BURRTOOLS_NO_DISASM_PAR=1` | A take-apart searches every level on one thread instead of spreading it over the free cores. | Compare against the search on one thread; answers must be identical. |
 | `BURRTOOLS_THREADS=N` | Forces solver to use $N$ worker threads (default: `hardware_concurrency`, clamped to `assembler_c::MAX_THREADS`). **Note:** read independently by the assembler and, once the disassembly pool lands, by that pool too, so `N` may yield `2N` workers overall. | Measure thread scaling curves (e.g. 1, 2, 4, 8 cores). |
 
 ### Running an Interleaved A/B Benchmark

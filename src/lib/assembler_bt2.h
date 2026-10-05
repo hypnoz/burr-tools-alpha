@@ -65,7 +65,7 @@ private:
   std::atomic<bool> abort;
 
   /* used to save if the search is running */
-  bool running;
+  std::atomic<bool> running;
 
   /* cover one column:
    * - remove the column from the column header node list,
@@ -149,8 +149,10 @@ private:
   errState errorsState = ERR_NONE;
   int errorsParam = 0;
 
-  /* number of iterations the assemble routine run */
-  unsigned long iterations = 0;
+  /* iterations of earlier runs (a loaded position) and of split branches
+   * that have finished; this search's own are in liveIterations */
+  std::atomic<unsigned long> iterations{0};
+  std::atomic<unsigned long> liveIterations{0};
 
   /* the number of holes the assembles piece will have. Holes are
    * voxels in the variable voxel set that are not filled. The other
@@ -171,7 +173,7 @@ private:
   /* this value contains the piecenumber that the reduce procedure is currently working on
    * the value is only valid, when reduce is running
    */
-  unsigned int reducePiece;
+  std::atomic<unsigned int> reducePiece;
 
   /* this vector contains the placement (transformation and position) for
    * a piece in a row
@@ -216,8 +218,29 @@ private:
   void solutionFromRowNodes(const unsigned int * rowNodes, unsigned int n);
   static void cellsSolutionThunk(void * user, const unsigned int * rowIds, unsigned int n);
 
-  /* Other assembler_bt2_c workers searching disjoint split branches. */
+  /* Split searches. The first one (the root) is the assembler the caller
+   * made; every branch split off it, however indirectly, points back at it.
+   * The root lists the live branches as its peers and owns the ones a pause
+   * left unfinished. peerMutex guards both lists and retiredShare. */
+  assembler_bt2_c * root = nullptr;
+  mutable std::mutex peerMutex;
   std::vector<assembler_bt2_c *> progressPeers;
+  std::vector<std::unique_ptr<assembler_c>> parked;
+  double retiredShare = 0;
+
+  /* Progress, published by the thread that runs this search so that others
+   * never read the search's own data. What this search has done of the whole
+   * is shareBase + shareScale * (cells.progress() - shareOffset): a split
+   * divides the estimated rest between the two searches and the total does
+   * not move. */
+  double shareBase = 0, shareScale = 1, shareOffset = 0;
+  std::atomic<float> contribution{0};
+  std::atomic<bool> searchPublished{false};
+  std::atomic<bool> searchDone{false};
+  void publishProgress(void);
+
+  /* a split branch: the search state only, without the matrix it came from */
+  assembler_bt2_c(const assembler_bt2_c & src, const bt2Cells_c & branch);
 
   float finishedLocal(void) const;
 
@@ -300,15 +323,21 @@ public:
   void assembleLimited(assembler_cb * callback, unsigned int iterationBudget) override;
   void addIterations(unsigned long n) override;
   void addProgressPeer(assembler_c * peer) override;
+  void removeProgressPeer(assembler_c * peer) override;
   void clearProgressPeers(void) override;
+  void clearStop(void) override;
+  bool stopRequested(void) const override { return abort.load(std::memory_order_acquire); }
+  void prepareForWorkers(void) override;
+  void parkSearch(std::unique_ptr<assembler_c> branch) override;
+  std::vector<std::unique_ptr<assembler_c>> takeParkedSearches(void) override;
   int getErrorsParam(void) override { return errorsParam; }
   float getFinished(void) const override;
   void stop(void) override;
-  bool stopped(void) const override { return !running; }
+  bool stopped(void) const override { return !running.load(std::memory_order_relaxed); }
   errState setPosition(const char * string, const char * version) override;
   void save(xmlWriter_c & xml) const override;
   void reduce(void) override;
-  unsigned int getReducePiece(void) const override { return reducePiece; }
+  unsigned int getReducePiece(void) const override { return reducePiece.load(std::memory_order_relaxed); }
   unsigned long getIterations(void) override;
 
   /* some more special information to find out possible piece placements */

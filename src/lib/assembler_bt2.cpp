@@ -20,6 +20,8 @@
  */
 #include "assembler_bt2.h"
 
+#include <algorithm>
+
 #include "bt_assert.h"
 #include "problem.h"
 #include "puzzle.h"
@@ -237,7 +239,7 @@ assembler_bt2_c::assembler_bt2_c(const assembler_bt2_c & src) :
   varivoxelEnd(src.varivoxelEnd),
   piecenumber(src.piecenumber),
   asm_bc(0),
-  reducePiece(src.reducePiece),
+  reducePiece(src.reducePiece.load(std::memory_order_relaxed)),
   piecePositions(src.piecePositions),
   avoidTransformedAssemblies(src.avoidTransformedAssemblies),
   rotationFilterActive(src.rotationFilterActive),
@@ -248,6 +250,38 @@ assembler_bt2_c::assembler_bt2_c(const assembler_bt2_c & src) :
   debug_loops(0),
   cells(src.cells),
   cellsBuilt(src.cellsBuilt)
+{
+  strictColorRestrictions = src.strictColorRestrictions;
+}
+
+assembler_bt2_c::assembler_bt2_c(const assembler_bt2_c & src, const bt2Cells_c & branch) :
+  assembler_c(),
+  problem(src.problem),
+  abort(false),
+  running(false),
+  pos(0),
+  rows(src.piecenumber, 0),
+  columns(src.piecenumber, 0),
+  errorsState(src.errorsState),
+  errorsParam(src.errorsParam),
+  iterations(0),
+  holes(src.holes),
+  varivoxelStart(src.varivoxelStart),
+  varivoxelEnd(src.varivoxelEnd),
+  piecenumber(src.piecenumber),
+  asm_bc(0),
+  reducePiece(0),
+  piecePositions(src.piecePositions),
+  avoidTransformedAssemblies(src.avoidTransformedAssemblies),
+  rotationFilterActive(src.rotationFilterActive),
+  avoidTransformedPivot(src.avoidTransformedPivot),
+  avoidTransformedMirror(src.avoidTransformedMirror),
+  complete(src.complete),
+  debug(false),
+  debug_loops(0),
+  cells(branch),
+  cellsBuilt(true),
+  root(src.root ? src.root : const_cast<assembler_bt2_c *>(&src))
 {
   strictColorRestrictions = src.strictColorRestrictions;
 }
@@ -1460,7 +1494,14 @@ void assembler_bt2_c::solutionFromRowNodes(const unsigned int * rowNodes, unsign
 }
 
 void assembler_bt2_c::assemble(assembler_cb * callback) {
-  assembleLimited(callback, 0);
+
+  clearStop();
+
+  /* in slices, so that the progress others read is published as it goes */
+  do {
+    assembleLimited(callback, 65536);
+  } while (cellsBuilt && errorsState == ERR_NONE && !cells.finished() &&
+           !abort.load(std::memory_order_acquire));
 }
 
 void assembler_bt2_c::assembleLimited(assembler_cb * callback, unsigned int iterationBudget) {
@@ -1470,14 +1511,29 @@ void assembler_bt2_c::assembleLimited(assembler_cb * callback, unsigned int iter
   if (errorsState != ERR_NONE)
     return;
 
+  /* abort is not cleared here: a run made of many slices would lose a stop
+   * that arrived between two of them. clearStop() starts a run. */
   asm_bc = callback;
-  abort.store(false, std::memory_order_relaxed);
-  running = true;
+  running.store(true, std::memory_order_relaxed);
   buildCells();
   cells.setSolutionCallback(this, cellsSolutionThunk);
   cells.solve(iterationBudget, &abort);
-  iterations = cells.getIterations();
-  running = false;
+  publishProgress();
+  running.store(false, std::memory_order_relaxed);
+}
+
+void assembler_bt2_c::publishProgress(void) {
+
+  if (!cellsBuilt)
+    return;
+
+  liveIterations.store(cells.getIterations(), std::memory_order_relaxed);
+  double c = shareBase + shareScale * ((double)cells.progress() - shareOffset);
+  if (c < 0)
+    c = 0;
+  contribution.store((float)c, std::memory_order_relaxed);
+  searchDone.store(cells.finished(), std::memory_order_relaxed);
+  searchPublished.store(true, std::memory_order_release);
 }
 
 std::unique_ptr<assembler_c> assembler_bt2_c::clonePrepared(void) {
@@ -1490,17 +1546,44 @@ std::unique_ptr<assembler_c> assembler_bt2_c::clonePrepared(void) {
 
 std::unique_ptr<assembler_c> assembler_bt2_c::splitSearch(void) {
 
+  if (errorsState != ERR_NONE)
+    return nullptr;
+
   buildCells();
+
+  const double before = cells.progress();
   std::unique_ptr<bt2Cells_c> branch(cells.split());
   if (!branch)
     return nullptr;
 
-  std::unique_ptr<assembler_bt2_c> c(new assembler_bt2_c(*this));
-  c->cells = *branch;
+  std::unique_ptr<assembler_bt2_c> c(new assembler_bt2_c(*this, *branch));
+
+  /* Divide what this search had left between the two. Each one's own
+   * estimate runs on from where it stands now, so it is scaled to end on
+   * its part exactly. */
+  const double done = shareBase + shareScale * (before - shareOffset);
+  const double rest = shareScale * (1.0 - before);
+  const double given = rest * (double)cells.lastSplitShare();
+
+  const double childAt = c->cells.progress();
+  c->shareBase = 0;
+  c->shareOffset = childAt;
+  c->shareScale = (childAt < 1.0) ? given / (1.0 - childAt) : 0.0;
+
+  const double after = cells.progress();
+  shareBase = done;
+  shareOffset = after;
+  shareScale = (after < 1.0) ? (rest - given) / (1.0 - after) : 0.0;
+
+  publishProgress();
+  c->publishProgress();
   return c;
 }
 
 bool assembler_bt2_c::searchFinished(void) const {
+  /* nothing to search when preparing failed */
+  if (errorsState != ERR_NONE)
+    return true;
   if (!cellsBuilt)
     return false;
   return cells.finished();
@@ -1513,22 +1596,81 @@ unsigned int assembler_bt2_c::remainingSearchWork(void) const {
 }
 
 void assembler_bt2_c::addIterations(unsigned long n) {
-  iterations += n;
+  iterations.fetch_add(n, std::memory_order_relaxed);
 }
 
 void assembler_bt2_c::addProgressPeer(assembler_c * peer) {
 
   assembler_bt2_c * p = dynamic_cast<assembler_bt2_c *>(peer);
-  if (p && p != this)
+  if (!p || p == this)
+    return;
+
+  std::lock_guard<std::mutex> lock(peerMutex);
+  if (std::find(progressPeers.begin(), progressPeers.end(), p) == progressPeers.end())
     progressPeers.push_back(p);
 }
 
+void assembler_bt2_c::removeProgressPeer(assembler_c * peer) {
+
+  std::lock_guard<std::mutex> lock(peerMutex);
+  std::vector<assembler_bt2_c *>::iterator it =
+    std::find(progressPeers.begin(), progressPeers.end(), peer);
+  if (it == progressPeers.end())
+    return;
+
+  /* what it did stays in the totals */
+  retiredShare += (*it)->contribution.load(std::memory_order_relaxed);
+  iterations.fetch_add((*it)->liveIterations.load(std::memory_order_relaxed),
+                       std::memory_order_relaxed);
+  progressPeers.erase(it);
+}
+
 void assembler_bt2_c::clearProgressPeers(void) {
+  std::lock_guard<std::mutex> lock(peerMutex);
   progressPeers.clear();
+}
+
+void assembler_bt2_c::clearStop(void) {
+
+  std::lock_guard<std::mutex> lock(peerMutex);
+  abort.store(false, std::memory_order_release);
+  for (unsigned int i = 0; i < progressPeers.size(); i++)
+    progressPeers[i]->abort.store(false, std::memory_order_release);
+}
+
+void assembler_bt2_c::prepareForWorkers(void) {
+
+  /* The split searches call smallerRotationExists() at the same time, and
+   * that reaches the lazily filled caches of the shapes. */
+  if (avoidTransformedAssemblies)
+    prewarmSharedShapeCaches(problem);
+}
+
+void assembler_bt2_c::parkSearch(std::unique_ptr<assembler_c> branch) {
+
+  if (!branch)
+    return;
+  std::lock_guard<std::mutex> lock(peerMutex);
+  parked.push_back(std::move(branch));
+}
+
+std::vector<std::unique_ptr<assembler_c>> assembler_bt2_c::takeParkedSearches(void) {
+
+  std::lock_guard<std::mutex> lock(peerMutex);
+  std::vector<std::unique_ptr<assembler_c>> res;
+  res.swap(parked);
+  return res;
 }
 
 void assembler_bt2_c::stop(void) {
 
+  /* a split branch is told to stop by its callback: stop them all */
+  if (root) {
+    root->stop();
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(peerMutex);
   abort.store(true, std::memory_order_release);
   for (unsigned int i = 0; i < progressPeers.size(); i++)
     progressPeers[i]->abort.store(true, std::memory_order_release);
@@ -1536,21 +1678,15 @@ void assembler_bt2_c::stop(void) {
 
 unsigned long assembler_bt2_c::getIterations(void) {
 
-  unsigned long n = iterations;
-  if (cellsBuilt)
-    n += cells.getIterations();
-  for (unsigned int i = 0; i < progressPeers.size(); i++) {
-    n += progressPeers[i]->iterations;
-    if (progressPeers[i]->cellsBuilt)
-      n += progressPeers[i]->cells.getIterations();
-  }
+  std::lock_guard<std::mutex> lock(peerMutex);
+  unsigned long n = iterations.load(std::memory_order_relaxed) +
+                    liveIterations.load(std::memory_order_relaxed);
+  for (unsigned int i = 0; i < progressPeers.size(); i++)
+    n += progressPeers[i]->liveIterations.load(std::memory_order_relaxed);
   return n;
 }
 
 float assembler_bt2_c::finishedLocal(void) const {
-
-  if (cellsBuilt)
-    return cells.progress();
 
   /* we don't need locking, as I hope that I have written the
    * code in a way that updated the data so, that it will never
@@ -1585,17 +1721,24 @@ float assembler_bt2_c::finishedLocal(void) const {
 
 float assembler_bt2_c::getFinished(void) const {
 
-  float local = finishedLocal();
-  if (progressPeers.empty())
-    return local;
+  /* before the search has run: the position a saved file gave, if any */
+  if (!searchPublished.load(std::memory_order_acquire))
+    return finishedLocal();
 
-  float sum = local;
-  unsigned int n = 1;
-  for (unsigned int i = 0; i < progressPeers.size(); i++) {
-    sum += progressPeers[i]->finishedLocal();
-    n++;
-  }
-  return sum / (float)n;
+  std::lock_guard<std::mutex> lock(peerMutex);
+
+  if (progressPeers.empty() && parked.empty() &&
+      searchDone.load(std::memory_order_relaxed))
+    return 1;
+
+  double sum = retiredShare + contribution.load(std::memory_order_relaxed);
+  for (unsigned int i = 0; i < progressPeers.size(); i++)
+    sum += progressPeers[i]->contribution.load(std::memory_order_relaxed);
+
+  /* an estimate: only the search itself says when it is over */
+  if (sum > 0.9999)
+    sum = 0.9999;
+  return (float)sum;
 }
 
 static unsigned int getInt(const char * s, unsigned int * i) {
@@ -1641,7 +1784,9 @@ assembler_c::errState assembler_bt2_c::setPosition(const char * string, const ch
   spos += getInt(string+spos, &pos);
   if (spos >= len) return ERR_CAN_NOT_RESTORE_SYNTAX;
 
-  spos += getLong(string+spos, &iterations);
+  unsigned long savedIterations = 0;
+  spos += getLong(string+spos, &savedIterations);
+  iterations.store(savedIterations, std::memory_order_relaxed);
   if (spos >= len) return ERR_CAN_NOT_RESTORE_SYNTAX;
 
   if (pos <= piecenumber)
@@ -1696,7 +1841,9 @@ void assembler_bt2_c::save(xmlWriter_c & xml) const
 
   std::ostream & str = xml.addContent();
 
-  str << pos << " " << iterations << " ";
+  str << pos << " "
+      << (iterations.load(std::memory_order_relaxed) + liveIterations.load(std::memory_order_relaxed))
+      << " ";
 
   if (pos <= piecenumber)
     for (unsigned int j = 0; j <= pos; j++)

@@ -533,6 +533,12 @@ void movementAnalysator_c::setCheckRotations(bool enable) {
   checkRotations = enable && bricksGrid && rotationMoves;
 }
 
+void movementAnalysator_c::setStopFlag(const std::atomic<bool> * flag) {
+  stopFlag = flag;
+  if (rotationMoves)
+    rotationMoves->setStopFlag(flag);
+}
+
 movementAnalysator_c::~movementAnalysator_c() = default;
 
 static int max(int a, int b) { if (a > b) return a; else return b; }
@@ -765,6 +771,9 @@ disassemblerNode_c * movementAnalysator_c::find(void) {
   // repeat until we either find a movement or have checked everything
   while (!n) {
 
+    if (stopFlag && stopFlag->load(std::memory_order_relaxed))
+      return 0;
+
     switch (nextstate) {
       case 0:
         // check, if a single piece can be removed
@@ -892,6 +901,12 @@ disassemblerNode_c * movementAnalysator_c::find(void) {
 
   stats.nodesReturned++;
   return n;
+}
+
+void movementAnalysator_c::endFind(void) {
+  nodes->clear();
+  flushSearchPhase();
+  nextstate = -1;
 }
 
 /*

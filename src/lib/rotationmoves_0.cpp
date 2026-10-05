@@ -392,6 +392,9 @@ disassemblerNode_c * rotationMoves_0_c::find(void) {
 
   while (true) {
 
+    if (stopRequested())
+      return 0;
+
     disassemblerNode_c * node = tryCurrentCandidate();
 
     nextsense++;

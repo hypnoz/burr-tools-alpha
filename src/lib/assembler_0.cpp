@@ -1335,6 +1335,33 @@ public:
   unsigned int pos;
   unsigned long local_iterations;
   unsigned long flushed_iterations;
+  /* which of the parent's progress places this thread reports to, the task
+   * it is in, and a count of flushes to report only now and then */
+  unsigned int slot = 0;
+  size_t taskIndex = 0;
+  unsigned int flushCount = 0;
+
+  /* How far through the task: at each step below the prefix, the choices
+   * already done out of all of them, every choice taken as alike (what the
+   * search on one thread reports for the whole). */
+  float taskFraction(unsigned int prefixDepth) const {
+    float erg = 0;
+    for (int i = (int)pos - 1; i >= (int)prefixDepth; i--) {
+      const unsigned int col = columns[i];
+      const unsigned int n = colCount[col];
+      if (!n)
+        continue;
+      unsigned int r = rows[i];
+      unsigned int l = n;
+      while (l && r && (r != down(col))) {
+        erg += 1;
+        r = up(r);
+        l--;
+      }
+      erg /= (float)n;
+    }
+    return erg;
+  }
 
   assemblerWorker_c(assembler_0_c & p) :
     parent(p),
@@ -1479,6 +1506,8 @@ public:
       if ((local_iterations - flushed_iterations) >= 128) {
         parent.iterations.fetch_add(local_iterations - flushed_iterations, std::memory_order_relaxed);
         flushed_iterations = local_iterations;
+        if ((++flushCount & 31) == 0)
+          parent.reportTaskProgress(slot, taskIndex, taskFraction(prefixDepth));
       }
 
       if (!rows[pos]) {
@@ -1640,6 +1669,7 @@ void assembler_0_c::generateSubtreeTasks(
         for (unsigned int r = down(c); r != c; r = down(r)) {
           SubtreeTask child = t;
           child.prefix.push_back({ c, r });
+          child.weight = t.weight / (double)s;
           nextTasks.push_back(child);
         }
       }
@@ -1674,9 +1704,12 @@ void assembler_0_c::parallelMultiSearch(unsigned int workers) {
     unsigned int maxDepth = std::min(piecenumber > 1 ? piecenumber - 1 : 1u, 3u);
     generateSubtreeTasks(parallelTasks, targetTasks, maxDepth);
     taskCompleted.assign(parallelTasks.size(), 0);
-    totalTasks.store(parallelTasks.size(), std::memory_order_relaxed);
-    completedTasks.store(0, std::memory_order_relaxed);
   }
+
+  taskWeights.resize(parallelTasks.size());
+  for (size_t i = 0; i < parallelTasks.size(); i++)
+    taskWeights[i] = parallelTasks[i].weight;
+  beginTaskProgress(taskCompleted);
 
   if (parallelTasks.empty()) {
     running.store(false, std::memory_order_relaxed);
@@ -1700,9 +1733,10 @@ void assembler_0_c::parallelMultiSearch(unsigned int workers) {
   std::exception_ptr workerException = nullptr;
   std::mutex exceptionMutex;
 
-  auto workerFunc = [this, &remainingIndices, &nextIndexPtr, &workerException, &exceptionMutex]() {
+  auto workerFunc = [this, &remainingIndices, &nextIndexPtr, &workerException, &exceptionMutex](unsigned int slot) {
     try {
       assemblerWorker_c worker(*this);
+      worker.slot = slot;
 
       while (!abbort.load(std::memory_order_relaxed)) {
         size_t idx = nextIndexPtr.fetch_add(1, std::memory_order_relaxed);
@@ -1710,10 +1744,11 @@ void assembler_0_c::parallelMultiSearch(unsigned int workers) {
           break;
 
         size_t taskIdx = remainingIndices[idx];
+        worker.taskIndex = taskIdx;
         worker.searchSubtree(parallelTasks[taskIdx]);
         if (!abbort.load(std::memory_order_relaxed)) {
           taskCompleted[taskIdx] = 1;
-          completedTasks.fetch_add(1, std::memory_order_relaxed);
+          finishTaskProgress(slot, taskIdx);
         }
       }
 
@@ -1730,10 +1765,10 @@ void assembler_0_c::parallelMultiSearch(unsigned int workers) {
   threads.reserve(workers - 1);
 
   for (unsigned int i = 1; i < workers; i++) {
-    threads.emplace_back(workerFunc);
+    threads.emplace_back(workerFunc, i);
   }
 
-  workerFunc();
+  workerFunc(0);
 
   for (auto & t : threads) {
     if (t.joinable())
@@ -1746,7 +1781,11 @@ void assembler_0_c::parallelMultiSearch(unsigned int workers) {
   }
 
   if (!abbort.load(std::memory_order_relaxed)) {
-    pos = piecenumber + 1;
+    {
+      /* getFinished() may be reading pos on another thread */
+      std::lock_guard<std::mutex> lock(positionMutex);
+      pos = piecenumber + 1;
+    }
     parallelTasks.clear();
     taskCompleted.clear();
     emittedSignatures.clear();
@@ -1898,18 +1937,18 @@ void assembler_0_c::assemble(assembler_cb * callback) {
 
 float assembler_0_c::getFinished(void) const {
 
-  size_t total = totalTasks.load(std::memory_order_relaxed);
-  if (total > 0) {
-    if (!running.load(std::memory_order_relaxed) && !abbort.load(std::memory_order_relaxed))
-      return 1.0f;
-    return static_cast<float>(completedTasks.load(std::memory_order_relaxed)) / static_cast<float>(total);
-  }
+  if (totalTasks.load(std::memory_order_relaxed) > 0)
+    return taskProgress();
 
   /* we don't need locking, as I hope that I have written the
    * code in a way that updated the data so, that it will never
    * be in an inconsistent state. The thing that will happen is that
    * the value may jump
    */
+
+  /* against the search split over threads, which sets pos when it is
+   * through; the search on one thread goes without, as said above */
+  std::lock_guard<std::mutex> lock(positionMutex);
 
   if (rows.empty() || columns.empty() || upDown.empty())
     return 0;
@@ -2049,8 +2088,8 @@ assembler_c::errState assembler_0_c::setPosition(const char * string, const char
     taskCompleted = std::move(tail.completed);
     emittedSignatures = std::move(tail.signatures);
     if (interrupted == 2) {
-      totalTasks.store(parallelTasks.size(), std::memory_order_relaxed);
-      completedTasks.store(done, std::memory_order_relaxed);
+      taskWeights.clear();
+      beginTaskProgress(taskCompleted);
     }
     parallelInterrupted = true;
   }

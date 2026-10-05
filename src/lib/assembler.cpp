@@ -251,6 +251,66 @@ void assembler_c::assemble(std::function<bool(std::unique_ptr<assembly_c>)> call
   assemble(&adapter);
 }
 
+void assembler_c::beginTaskProgress(const std::vector<uint8_t> & completed) {
+
+  const size_t n = completed.size();
+
+  if (taskWeights.size() != n)
+    taskWeights.assign(n, 1.0);
+
+  double sum = 0;
+  for (size_t i = 0; i < n; i++)
+    sum += taskWeights[i];
+  if (!(sum > 0)) {
+    taskWeights.assign(n, 1.0);
+    sum = (double)n;
+  }
+
+  taskUnits.resize(n);
+  uint64_t total = 0, done = 0;
+  size_t doneTasks = 0;
+  for (size_t i = 0; i < n; i++) {
+    uint64_t u = (uint64_t)(taskWeights[i] / sum * (double)PROGRESS_UNITS);
+    if (u < 1)
+      u = 1;
+    taskUnits[i] = u;
+    total += u;
+    if (completed[i]) {
+      done += u;
+      doneTasks++;
+    }
+  }
+
+  for (std::atomic<uint64_t> & r : progressRunning)
+    r.store(0, std::memory_order_relaxed);
+  progressDone.store(done, std::memory_order_relaxed);
+  progressTotal.store(total, std::memory_order_relaxed);
+  completedTasks.store(doneTasks, std::memory_order_relaxed);
+  totalTasks.store(n, std::memory_order_relaxed);
+}
+
+float assembler_c::taskProgress(void) const {
+
+  const size_t tasks = totalTasks.load(std::memory_order_relaxed);
+  if (tasks == 0)
+    return 0;
+  if (completedTasks.load(std::memory_order_relaxed) >= tasks)
+    return 1;
+
+  const uint64_t total = progressTotal.load(std::memory_order_relaxed);
+  if (total == 0)
+    return (float)completedTasks.load(std::memory_order_relaxed) / (float)tasks;
+
+  uint64_t v = progressDone.load(std::memory_order_relaxed);
+  for (const std::atomic<uint64_t> & r : progressRunning)
+    v += r.load(std::memory_order_relaxed);
+
+  /* a task being finished is for a moment counted twice */
+  if (v >= total)
+    return 0.9999f;
+  return (float)((double)v / (double)total);
+}
+
 void assembler_c::prewarmSharedShapeCaches(const problem_c & problem) {
 
   const symmetries_c * sym = problem.getPuzzle().getGridType()->getSymmetries();

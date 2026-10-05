@@ -339,6 +339,32 @@ std::string formatReport(const solveStats_c & stats) {
     }
     formatDuration(buf, sizeof(buf), stats.drainMs);
     appendKv(out, "Queue drain after assembly:", buf, true);
+
+    /* one row for each take-apart under way */
+    for (size_t i = 0; i < stats.running.size(); i++) {
+      const disassemblyProgress_c & d = stats.running[i];
+      char key[64];
+      snprintf(key, sizeof(key), "Disassembly %u running:", (unsigned int)(i + 1));
+      formatDuration(buf, sizeof(buf), d.elapsedMs);
+      std::string row = buf;
+      snprintf(buf, sizeof(buf), ", level %u: %lu of %lu positions (next level %lu so far)",
+               d.level, d.levelDone, d.levelSize, d.nextLevelSize);
+      row += buf;
+      snprintf(buf, sizeof(buf), ", %llu positions in all", d.nodes);
+      row += buf;
+      if (d.elapsedMs > 0) {
+        snprintf(buf, sizeof(buf), " (%.0f a second)", (double)d.nodes * 1000.0 / (double)d.elapsedMs);
+        row += buf;
+      }
+      if (d.pieces > 1) {
+        snprintf(buf, sizeof(buf), ", %u of %u separations, searching %u of %u pieces",
+                 d.separations, d.pieces - 1, d.searchPieces, d.pieces);
+        row += buf;
+      }
+      snprintf(buf, sizeof(buf), ", %u thread%s", d.threads, d.threads == 1 ? "" : "s");
+      row += buf;
+      appendKv(out, key, row.c_str(), true);
+    }
   }
 
   formatDuration(buf, sizeof(buf), stats.elapsedMs);

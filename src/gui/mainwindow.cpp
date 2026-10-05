@@ -2150,61 +2150,6 @@ static const char * usedTimeToString(unsigned long long ms) {
   return timeToString(ms / 1000.0f);
 }
 
-static bool computeTimeLeftEstimate(float finished, unsigned long ut, const solveThread_c * thread,
-                                    unsigned long assembliesFound, float & remaining)
-{
-  const bool haveAsmFrac = (finished > 0.0001f && finished < 0.999f);
-  float asmRemain = -1.0f;
-  if (haveAsmFrac)
-    asmRemain = ut / finished - ut;
-  else if (finished >= 0.999f)
-    asmRemain = 0.0f;
-
-  const bool disasmOn = thread && thread->disassemblyEnabled();
-  unsigned int pending = disasmOn ? thread->getDisassemblyPending() : 0;
-  float avgDisasm = disasmOn ? thread->getAverageDisassemblySeconds() : 0.0f;
-  unsigned int workers = disasmOn ? thread->getDisassemblyWorkerCount() : 1;
-  if (workers < 1)
-    workers = 1;
-
-  float futureAsm = -1.0f;
-  if (haveAsmFrac && assembliesFound > 0)
-    futureAsm = (float)assembliesFound * (1.0f - finished) / finished;
-  else if (finished >= 0.999f)
-    futureAsm = 0.0f;
-
-  float disasmRemain = -1.0f;
-  if (avgDisasm > 0.0f && futureAsm >= 0.0f)
-    disasmRemain = avgDisasm * ((float)pending + futureAsm) / (float)workers;
-
-  if (!disasmOn || (pending == 0 && futureAsm <= 0.0f && haveAsmFrac)) {
-    /* Assembly-only: original extrapolation from getFinished(). */
-    if (asmRemain < 1.0f)
-      return false;
-    remaining = asmRemain;
-    return true;
-  }
-
-  /* Assembly and disassembly run in parallel. Remaining wall time is the
-   * slower of: finishing the assembly search, and draining current plus
-   * expected future disassemblies at the measured average duration. */
-  float combined = -1.0f;
-  if (asmRemain >= 0.0f && disasmRemain >= 0.0f)
-    combined = (asmRemain > disasmRemain) ? asmRemain : disasmRemain;
-  else if (disasmRemain >= 0.0f)
-    combined = disasmRemain;
-  else if (asmRemain >= 1.0f)
-    combined = asmRemain;
-  else
-    return false;
-
-  if (combined < 1.0f)
-    return false;
-
-  remaining = combined;
-  return true;
-}
-
 void mainWindow_c::initViewMenuIcons(void) {
 
 #ifdef __APPLE__
@@ -2679,14 +2624,18 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
   const bool running = assmThread &&
       (prob < puzzle->getNumberOfProblems()) &&
       (&(assmThread->getProblem()) == puzzle->getProblem(prob));
+  /* One picture of the running solve for everything shown below. */
+  solveProgress_c progress;
+  if (assmThread)
+    progress = assmThread->getProgressSnapshot();
   float asmFrac = 0;
   if (running)
-    asmFrac = assmThread->assemblerFinished();
+    asmFrac = progress.assemblyFraction;
   else if ((prob < puzzle->getNumberOfProblems()) && puzzle->getProblem(prob)->getAssembler())
     asmFrac = puzzle->getProblem(prob)->getAssembler()->getFinished();
   float finished = asmFrac;
   if (running)
-    finished = assmThread->getProgress(asmFrac);
+    finished = progress.overall;
   /* Stacking has no assembler, so getFinished() stays 0 after the search.
    * A finished search is the whole job. */
   else if (prob < puzzle->getNumberOfProblems() &&
@@ -2714,12 +2663,18 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
 
     // we have a valid problem selected, so update the information visible
 
-    SolvingProgress->value(100*finished);
-    SolvingProgress->show();
-
     {
       static char tmp[100];
-      snprintf(tmp, 100, "%.4f%%", 100*finished);
+      if (running && !progress.overallKnown && !progress.running.empty()) {
+        /* Take-aparts of a length nobody can know yet: show how far the
+         * level at hand of the search is, which is exact. */
+        SolvingProgress->value(100*progress.levelFraction);
+        snprintf(tmp, 100, "level %u: %.0f%%", progress.running[0].level, 100*progress.levelFraction);
+      } else {
+        SolvingProgress->value(100*finished);
+        snprintf(tmp, 100, "%.1f%%", 100*finished);
+      }
+      SolvingProgress->show();
       SolvingProgress->label(tmp);
     }
 
@@ -2943,19 +2898,12 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
     unsigned long long usedMs = assmThread->getTimeMs();
     if (pr->usedTimeKnown())
       usedMs += pr->getUsedMs();
-    const unsigned int ut = (unsigned int)(usedMs / 1000);
 
     TimeUsed->value(usedTimeToString(usedMs));
-    {
-      float remaining;
-      unsigned long nAsm = 0;
-      if (pr->numAssembliesKnown())
-        nAsm = pr->getNumAssemblies();
-      if (computeTimeLeftEstimate(asmFrac, ut, assmThread.get(), nAsm, remaining))
-        TimeEst->value(timeToString(remaining));
-      else
-        TimeEst->value("unknown");
-    }
+    if (progress.secondsLeft >= 1)
+      TimeEst->value(timeToString((float)progress.secondsLeft));
+    else
+      TimeEst->value("unknown");
 
   } else {
 
@@ -2973,18 +2921,8 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
 
     switch(assmThread->currentAction()) {
     case solveThread_c::ACT_PREPARATION:
-      {
-        char tmp[20];
-        snprintf(tmp, 20, "prepare piece %u", assmThread->currentActionParameter()+1);
-        OutputActivity->value(tmp);
-      }
-      break;
     case solveThread_c::ACT_REDUCE:
-      {
-        char tmp[20];
-        snprintf(tmp, 20, "optimize piece %u", assmThread->currentActionParameter()+1);
-        OutputActivity->value(tmp);
-      }
+      OutputActivity->value(progress.activity().c_str());
       break;
     case solveThread_c::ACT_ASSEMBLING:
       if (sliding::isSliding(*puzzle) && assmThread->disassemblyEnabled()) {
@@ -3014,18 +2952,13 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
         char tmp[64];
         snprintf(tmp, 64, "stack search: %lu stackings", assmThread->getSlideProgress());
         OutputActivity->value(tmp);
-      } else if (assmThread->disassemblyEnabled()) {
-        char tmp[64];
-        snprintf(tmp, 64, "assemble (%u×disasm, %u pending)",
-                 assmThread->getDisassemblyWorkerCount(),
-                 assmThread->getDisassemblyPending());
-        OutputActivity->value(tmp);
       } else {
-        OutputActivity->value("assemble");
+        /* with what each take-apart under way is doing */
+        OutputActivity->value(progress.activity().c_str());
       }
       break;
     case solveThread_c::ACT_DISASSEMBLING:
-      OutputActivity->value("disassemble");
+      OutputActivity->value(progress.activity().c_str());
       break;
     case solveThread_c::ACT_PAUSING:
       OutputActivity->value("pause");

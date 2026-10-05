@@ -2574,9 +2574,13 @@ void assembler_1_c::parallelMultiSearch(unsigned int workers) {
     unsigned int maxDepth = std::min(piecenumber, 3u);
     generateSubtreeTasks(parallelTasks, targetTasks, maxDepth);
     taskCompleted.assign(parallelTasks.size(), 0);
-    totalTasks.store(parallelTasks.size(), std::memory_order_relaxed);
-    completedTasks.store(0, std::memory_order_relaxed);
   }
+
+  /* Also for the tasks a stopped run left, in this session or a loaded
+   * file: assemble() has cleared the counts, and without them the whole
+   * run would show nothing done. */
+  taskWeights.clear();
+  beginTaskProgress(taskCompleted);
 
   if (parallelTasks.empty() || abbort.load(std::memory_order_relaxed)) {
     if (!abbort.load(std::memory_order_relaxed)) {
@@ -2618,7 +2622,7 @@ void assembler_1_c::parallelMultiSearch(unsigned int workers) {
         worker.searchSubtree(parallelTasks[taskIdx]);
         if (!abbort.load(std::memory_order_relaxed)) {
           taskCompleted[taskIdx] = 1;
-          completedTasks.fetch_add(1, std::memory_order_relaxed);
+          finishTaskProgress(0, taskIdx);
         }
       }
 
@@ -2803,6 +2807,10 @@ void assembler_1_c::simdSearch(void) {
     simdSkip = std::max(simdSkip, simdDone);
   } else {
     simdSkip = 0;
+    /* as the other searches leave it when they are through: this is what
+     * getFinished() takes for finished */
+    next_row_stack.clear();
+    task_stack.clear();
   }
 
   running.store(false, std::memory_order_relaxed);
@@ -2867,12 +2875,8 @@ void assembler_1_c::popFinished(void) {
 
 float assembler_1_c::getFinished(void) const {
 
-  size_t total = totalTasks.load(std::memory_order_relaxed);
-  if (total > 0) {
-    if (!running.load(std::memory_order_relaxed) && !abbort.load(std::memory_order_relaxed))
-      return 1.0f;
-    return static_cast<float>(completedTasks.load(std::memory_order_relaxed)) / static_cast<float>(total);
-  }
+  if (totalTasks.load(std::memory_order_relaxed) > 0)
+    return taskProgress();
 
   if (next_row_stack.size() == 0) return 1;
 
@@ -2980,6 +2984,11 @@ assembler_c::errState assembler_1_c::setPosition(const char * string, const char
     taskCompleted = std::move(tail.completed);
     emittedSignatures = std::move(tail.signatures);
     parallelInterrupted = true;
+    /* so that the loaded search shows how far it had come */
+    if (!parallelTasks.empty()) {
+      taskWeights.clear();
+      beginTaskProgress(taskCompleted);
+    }
   }
 
   // not we need to restore the matrix to the right state

@@ -178,7 +178,8 @@ private:
   /**
    * this state reflects how far we are with solving this problem
    */
-  solveState_e solveState;
+  /* atomic: the solver thread sets these while the GUI thread reads them */
+  std::atomic<solveState_e> solveState;
 
   /**
    * Number of found assemblies for the problem.
@@ -213,7 +214,7 @@ private:
    * the time used up to get to the current state in the solving progress (in seconds)
    */
   /** Time spent solving, in milliseconds. */
-  unsigned long long usedMs;
+  std::atomic<unsigned long long> usedMs;
 
   /**
    * number of holes maximally allowed
@@ -554,7 +555,7 @@ public:
    */
   //@{
   /** find out how far we are with solving (no, started, finished) */
-  solveState_e getSolveState(void) const { return solveState; }
+  solveState_e getSolveState(void) const { return solveState.load(std::memory_order_relaxed); }
   /** true when setAssembler() will accept a new or resumed run */
   bool canStartSolving(void) const {
     return solveState == SS_UNSOLVED ||
@@ -573,7 +574,7 @@ public:
   /** find out the time used to solve the puzzle up to the current state. Throws an exception when unknown */
   unsigned long getUsedTime(void) const { bt_assert(solveState != SS_UNSOLVED); return (unsigned long)(usedMs / 1000); }
   /** Time spent solving, in milliseconds. */
-  unsigned long long getUsedMs(void) const { bt_assert(solveState != SS_UNSOLVED); return usedMs; }
+  unsigned long long getUsedMs(void) const { bt_assert(solveState != SS_UNSOLVED); return usedMs.load(std::memory_order_relaxed); }
   /** get number of solutions that were stored */
   unsigned int getNumberOfSavedSolutions(void) const { return solutions.size(); }
 

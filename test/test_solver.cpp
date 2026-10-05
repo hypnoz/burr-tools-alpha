@@ -1268,6 +1268,79 @@ TEST_CASE("Pentominoes: every solver type finds the published counts at any thre
   CHECK(countAssemblies(*wide, SOLVER_BT2, 4) == 2339);
 }
 
+/* Stops the search from inside after a number of assemblies. */
+class StoppingCallback : public assembler_cb {
+public:
+  std::atomic<unsigned long> assemblies{0};
+  std::atomic<unsigned long> stopAfter{0};
+  bool assembly(std::unique_ptr<assembly_c>) override {
+    const unsigned long n = assemblies.fetch_add(1, std::memory_order_relaxed) + 1;
+    const unsigned long limit = stopAfter.load(std::memory_order_relaxed);
+    return limit == 0 || n < limit;
+  }
+};
+
+/* A BurrTools 2 search split over threads must stop when told to, keep the
+ * branches it had not finished, and find every assembly once when it is
+ * continued. */
+TEST_CASE("BurrTools 2: a search split over threads stops and continues",
+          "[solver][assembler][pentomino][bt2]") {
+  std::unique_ptr<puzzle_c> wide = pentominoPuzzle(10, 6);
+  problem_c * pr = wide->getProblem(0);
+
+  for (unsigned int threads : {1u, 4u}) {
+    INFO(threads << " threads");
+    std::unique_ptr<assembler_c> assm = wide->getGridType()->findAssembler(*pr, true, SOLVER_BT2);
+    REQUIRE(assm != nullptr);
+    assm->setNumThreads(threads);
+    REQUIRE(assm->createMatrix(false, false, false) == assembler_c::ERR_NONE);
+    assm->reduce();
+
+    StoppingCallback cb;
+    float last = 0;
+    unsigned int runs = 0;
+
+    /* stop every 300 assemblies */
+    do {
+      cb.stopAfter.store(cb.assemblies.load() + 300);
+      bt2Assemble(assm.get(), &cb, threads);
+      runs++;
+      const float f = assm->getFinished();
+      CHECK(f >= last);
+      last = f;
+      REQUIRE(runs < 100);
+    } while (assm->getFinished() < 1);
+
+    CHECK(runs > 2);
+    CHECK(cb.assemblies.load() == 2339);
+    CHECK(assm->getIterations() > 0);
+  }
+
+  SECTION("stop() from another thread ends the run early") {
+    std::unique_ptr<assembler_c> assm = wide->getGridType()->findAssembler(*pr, true, SOLVER_BT2);
+    REQUIRE(assm != nullptr);
+    REQUIRE(assm->createMatrix(false, false, false) == assembler_c::ERR_NONE);
+    assm->reduce();
+
+    StoppingCallback cb;
+    std::thread stopper([&]() {
+      while (cb.assemblies.load() < 50)
+        std::this_thread::yield();
+      assm->stop();
+    });
+    bt2Assemble(assm.get(), &cb, 4);
+    stopper.join();
+
+    CHECK(cb.assemblies.load() < 2339);
+    CHECK(assm->getFinished() < 1);
+
+    cb.stopAfter.store(0);
+    bt2Assemble(assm.get(), &cb, 4);
+    CHECK(cb.assemblies.load() == 2339);
+    CHECK(assm->getFinished() == 1);
+  }
+}
+
 /* Hidden: assembly speed of each solver type on the 6 x 10 pentomino tray.
  *   ./build/test_burrtools "[.bench][pentomino]" */
 TEST_CASE("Pentominoes: benchmark", "[.bench][pentomino]") {

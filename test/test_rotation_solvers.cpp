@@ -8,8 +8,21 @@
 #include "lib/solvethread.h"
 #include "lib/solvertype.h"
 
+#include "lib/assembler.h"
+#include "lib/assembly.h"
+#include "lib/disassembler.h"
+#include "lib/disassembler_a.h"
+#include "lib/disassembler_factory.h"
+#include "lib/gridtype.h"
+#include "lib/helperpool.h"
+#include "tools/xml.h"
+
+#include <atomic>
 #include <chrono>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -284,4 +297,198 @@ TEST_CASE("rotation rules: a turned scene gets the same answers", "[rotation]") 
   }
   CHECK(differ == 0);
   CHECK(allowed > 1000);
+}
+
+namespace {
+
+/* every assembly of problem 0 */
+std::vector<std::unique_ptr<assembly_c>> allAssemblies(puzzle_c & puzzle) {
+  problem_c * pr = puzzle.getProblem(0);
+  std::unique_ptr<assembler_c> assm = puzzle.getGridType()->findAssembler(*pr, true, SOLVER_CLASSIC);
+  REQUIRE(assm != nullptr);
+  assm->setNumThreads(1);
+  REQUIRE(assm->createMatrix(false, false, false) == assembler_c::ERR_NONE);
+  assm->reduce();
+  std::vector<std::unique_ptr<assembly_c>> res;
+  assm->assemble([&res](std::unique_ptr<assembly_c> a) {
+    res.push_back(std::move(a));
+    return true;
+  });
+  return res;
+}
+
+/* a disassembly as it would be saved, or "none" */
+std::string disassemblyText(const separation_c * s) {
+  if (!s)
+    return "none";
+  std::ostringstream str;
+  {
+    xmlWriter_c xml(str);
+    s->save(xml, 0, true);
+  }
+  return str.str();
+}
+
+/* resets the threshold a test has changed */
+struct levelThreadCost_c {
+  explicit levelThreadCost_c(double us) { disassembler_a_c::setLevelThreadCostUs(us); }
+  ~levelThreadCost_c() { disassembler_a_c::setLevelThreadCostUs(400.0); }
+};
+
+/* Take every assembly apart on one thread and with every level spread over
+ * four, and require the very same disassembly from both. */
+void requireSameOnThreads(const char * file, bool rotations, solverType_e type, bool comesApart) {
+  INFO(file << ", " << solverTypeLabel(type) << (rotations ? ", rotations" : ""));
+
+  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load(file);
+  REQUIRE(puzzle != nullptr);
+  problem_c * pr = puzzle->getProblem(0);
+  REQUIRE(pr != nullptr);
+  pr->removeAllSolutions();
+
+  std::vector<std::unique_ptr<assembly_c>> assemblies = allAssemblies(*puzzle);
+  REQUIRE(!assemblies.empty());
+
+  helperPool_c pool(4);
+  levelThreadCost_c always(0);
+
+  std::unique_ptr<disassembler_c> serial = createDisassembler(*pr, rotations, type);
+  std::unique_ptr<disassembler_c> spread = createDisassembler(*pr, rotations, type);
+  REQUIRE(serial != nullptr);
+  REQUIRE(spread != nullptr);
+  spread->setHelperPool(&pool);
+
+  unsigned int found = 0;
+  for (size_t i = 0; i < assemblies.size() && i < 40; i++) {
+    INFO("assembly " << i);
+    std::unique_ptr<separation_c> a = serial->disassemble(assemblies[i].get());
+    std::unique_ptr<separation_c> b = spread->disassemble(assemblies[i].get());
+    CHECK(disassemblyText(a.get()) == disassemblyText(b.get()));
+    if (a)
+      found++;
+  }
+  CHECK((found > 0) == comesApart);
+}
+
+} // namespace
+
+TEST_CASE("a take-apart spread over threads gives the same disassembly as on one",
+          "[disassembler][threads]") {
+  for (solverType_e type : {SOLVER_CLASSIC, SOLVER_CROWELL}) {
+    requireSameOnThreads("test/test_rotation_solvers.xmpuzzle", true, type, true);
+    /* without rotations the same puzzle does not come apart: the whole
+     * search is gone through, on any number of threads */
+    requireSameOnThreads("test/test_rotation_solvers.xmpuzzle", false, type, false);
+    requireSameOnThreads("examples/PelikanBurr.xmpuzzle", false, type, true);
+  }
+}
+
+TEST_CASE("a take-apart says how far it is, and stops when told to",
+          "[disassembler][threads][progress]") {
+  std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_rotation_solvers.xmpuzzle");
+  REQUIRE(puzzle != nullptr);
+  problem_c * pr = puzzle->getProblem(0);
+  pr->removeAllSolutions();
+  std::vector<std::unique_ptr<assembly_c>> assemblies = allAssemblies(*puzzle);
+  REQUIRE(!assemblies.empty());
+
+  helperPool_c pool(4);
+  levelThreadCost_c always(0);
+
+  SECTION("progress is there while it runs and gone afterwards") {
+    std::unique_ptr<disassembler_c> d = createDisassembler(*pr, true, SOLVER_CLASSIC);
+    d->setHelperPool(&pool);
+
+    disassemblyProgress_c p;
+    REQUIRE(d->getProgress(p));
+    CHECK(!p.active);
+
+    std::atomic<bool> done{false};
+    std::atomic<unsigned long long> mostNodes{0};
+    std::atomic<unsigned int> mostPieces{0};
+    std::thread watcher([&]() {
+      while (!done.load()) {
+        disassemblyProgress_c q;
+        if (d->getProgress(q) && q.active) {
+          if (q.nodes > mostNodes.load()) mostNodes.store(q.nodes);
+          if (q.pieces > mostPieces.load()) mostPieces.store(q.pieces);
+          CHECK(q.levelDone <= q.levelSize);
+          CHECK(q.separations < q.pieces);
+        }
+        std::this_thread::yield();
+      }
+    });
+
+    bool any = false;
+    for (size_t i = 0; i < assemblies.size(); i++)
+      if (d->disassemble(assemblies[i].get()))
+        any = true;
+    done.store(true);
+    watcher.join();
+
+    CHECK(any);
+    CHECK(mostNodes.load() > 0);
+    CHECK(mostPieces.load() == pr->getNumberOfPieces());
+    REQUIRE(d->getProgress(p));
+    CHECK(!p.active);
+  }
+
+  SECTION("a stopped take-apart gives no disassembly") {
+    for (solverType_e type : {SOLVER_CLASSIC, SOLVER_CROWELL}) {
+      std::unique_ptr<disassembler_c> d = createDisassembler(*pr, true, type);
+      d->setHelperPool(&pool);
+      d->stop();
+      for (size_t i = 0; i < assemblies.size(); i++)
+        CHECK(d->disassemble(assemblies[i].get()) == nullptr);
+    }
+  }
+}
+
+/* The picture of a running solve can be asked for at any time; the overall
+ * figure never goes back and ends at 1. */
+TEST_CASE("solve progress: asked for all through a solve, it only goes forward",
+          "[solver][rotations][progress][threads]") {
+  for (solverType_e type : {SOLVER_CLASSIC, SOLVER_CROWELL, SOLVER_BT2}) {
+    INFO(solverTypeLabel(type));
+    std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_rotation_solvers.xmpuzzle");
+    REQUIRE(puzzle != nullptr);
+    problem_c * pr = puzzle->getProblem(0);
+    pr->removeAllSolutions();
+
+    levelThreadCost_c always(0);
+
+    solveThread_c solver(*pr, solveThread_c::PAR_REDUCE | solveThread_c::PAR_DISASSM |
+                              solveThread_c::PAR_CHECK_ROTATIONS);
+    solver.setSolverType(type);
+    REQUIRE(solver.start());
+
+    float last = 0;
+    unsigned int asked = 0;
+    for (;;) {
+      const unsigned int act = solver.currentAction();
+      if (act == solveThread_c::ACT_FINISHED || act == solveThread_c::ACT_PAUSING ||
+          act == solveThread_c::ACT_ERROR || act == solveThread_c::ACT_ASSERT)
+        break;
+      const solveProgress_c p = solver.getProgressSnapshot();
+      CHECK(p.overall >= last);
+      CHECK(p.overall <= 1.0f);
+      CHECK(p.levelFraction <= 1.0f);
+      /* the line is made without trouble whatever the stage */
+      (void)p.activity();
+      (void)solver.getStats();
+      last = p.overall;
+      asked++;
+      std::this_thread::yield();
+    }
+    solver.waitUntilFinished();
+
+    REQUIRE(solver.currentAction() == solveThread_c::ACT_FINISHED);
+    const solveProgress_c end = solver.getProgressSnapshot();
+    CHECK(end.stage == solveProgress_c::STAGE_DONE);
+    CHECK(end.overall == 1.0f);
+    CHECK(end.activity() == "finished");
+    CHECK(end.running.empty());
+    CHECK(asked > 0);
+    CHECK(pr->getNumberOfSavedSolutions() == 1);
+  }
 }

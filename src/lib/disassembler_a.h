@@ -27,9 +27,12 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 class grouping_c;
+class helperPool_c;
+class nodeHash;
 class problem_c;
 class disassemblerNode_c;
 class assembly_c;
@@ -77,6 +80,33 @@ class disassembler_a_c : public disassembler_c {
 
     std::atomic<bool> abort;
 
+    /* what the analysators are made with */
+    bool rotationsEnabled;
+    solverType_e solverKind;
+
+    /* Threads to spread a level of the search over, and the movement
+     * analysator each of them uses (the calling thread has analyse). They
+     * are made when first needed; helperMutex guards the list. */
+    helperPool_c * pool = nullptr;
+    mutable std::mutex helperMutex;
+    std::vector<std::unique_ptr<movementAnalysator_c>> helpers;
+    movementAnalysator_c & analysatorFor(unsigned int slot);
+
+    /* progress, see disassemblyProgress_c; startUs is 0 when idle */
+    std::atomic<unsigned long long> progStartUs{0};
+    std::atomic<unsigned int> progPieces{0}, progSearchPieces{0};
+    std::atomic<unsigned int> progSeparations{0}, progDepth{0};
+    std::atomic<unsigned int> progLevel{0}, progThreads{1};
+    std::atomic<unsigned long> progLevelDone{0}, progLevelSize{0}, progNextSize{0};
+    std::atomic<unsigned long long> progNodes{0};
+
+    /* what the search of one position of a level gave */
+    struct expansion_c;
+    void expandNode(movementAnalysator_c & an, disassemblerNode_c * node,
+                    const std::vector<unsigned int> & pieces,
+                    const nodeHash & oldFront, const nodeHash & curFront, const nodeHash & newFront,
+                    unsigned int maxSuccessors, expansion_c & e);
+
     unsigned short subProbGroup(const disassemblerNode_c * st, const std::vector<unsigned int> & pn, bool cond);
     bool subProbGrouping(const std::vector<unsigned int> & pn);
 
@@ -105,6 +135,19 @@ class disassembler_a_c : public disassembler_c {
     /** this function must be implemented by the real disassemblers */
     virtual separation_c * disassemble_rec(const std::vector<unsigned int> & pieces, disassemblerNode_c * start) = 0;
 
+    /**
+     * The search the disassemblers share: level by level from start until a
+     * position separates the pieces, then on into the two parts with
+     * checkSubproblems. maxSuccessors, when not 0, is the most new positions
+     * taken from any one position.
+     *
+     * With a helper pool the positions of a level are searched on several
+     * threads. What they find is put together in the order the search on
+     * one thread would have found it, so the result is the same either way.
+     */
+    separation_c * searchLevels(const std::vector<unsigned int> & pieces, disassemblerNode_c * start,
+                                unsigned int maxSuccessors);
+
   public:
 
     /**
@@ -124,6 +167,16 @@ class disassembler_a_c : public disassembler_c {
 
     virtual unsigned long long getRotationSearchUs(void) const override;
     virtual unsigned long long getLinearSearchUs(void) const override;
+
+    bool getProgress(disassemblyProgress_c & p) const override;
+    void setHelperPool(helperPool_c * p) override;
+
+    /**
+     * A level is spread over threads only when what is left of it is
+     * reckoned to take longer than this many microseconds on one. 0 spreads
+     * every level of two positions or more (for tests); the default is 400.
+     */
+    static void setLevelThreadCostUs(double us);
 
     /**
      * Disassemble an assembly of the puzzle.

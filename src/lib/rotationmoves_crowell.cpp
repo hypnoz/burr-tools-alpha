@@ -499,6 +499,9 @@ disassemblerNode_c * rotationMoves_crowell_c::find(void) {
 
   while (active) {
 
+    if (stopRequested())
+      return 0;
+
     if (skipCurrentDirection()) {
       advanceCandidate();
       continue;

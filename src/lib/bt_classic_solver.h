@@ -24,8 +24,9 @@
  *                 Cutler slides +      heuristics cloned     (disassembler_0_c +
  *                 all 90° subsets      from SolveSlidingCube rotationMoves_0_c)
  * Assembly        assembler_0 / _1     same as Classic       assembler_bt2_c
- *                 single-thread DLX                          dancing cells +
- *                                                            split / steal
+ *                 DLX, the tree cut                          dancing cells +
+ *                 into tasks for                             split / steal
+ *                 the threads
  * Completeness    yes                  no (can miss paths)   same take-apart as
  *                                                            Classic; assembly
  *                                                            covers the same tree
@@ -40,7 +41,10 @@
  *   - Linear slides are Bill Cutler (movementAnalysator_c), not Fortran SimpleMove.
  *   - Rotation geometry (bevel arc, sandwich, perp, axis-cross) is rotationRules_c.
  *   - Check Rotations must be on or no 90° moves are generated.
- *   - assembler_1_c (ranges / multi-copies of a shape) is always serial.
+ *   - assembler_1_c (ranges / multi-copies of a shape) cuts its search into
+ *     tasks for the threads just as assembler_0_c does.
+ *   - A take-apart spreads each level of its search over the cores that
+ *     are free (disassembler_a_c::searchLevels, helperPool_c).
  *
  * Docs per engine:
  *   BurrTools Classic  this file
@@ -81,12 +85,15 @@
  * MagellanTIC has 1 assembly so the pool never runs in parallel anyway.
  *
  * ---------------------------------------------------------------------------
- * ASSEMBLY (single-thread dancing links)
+ * ASSEMBLY (dancing links)
  * ---------------------------------------------------------------------------
  *
  * assembler_0_c: Knuth DLX, one of each piece, iterativeMultiSearch.
  * assembler_1_c: ranges / multi-pieces, recursive/iterative covering.
- * Both run assemble() on one thread. createMatrix + reduce happen once.
+ * On one thread assemble() runs the SIMD search where it can. With more it
+ * cuts the first levels of the tree into tasks (parallelMultiSearch) that
+ * the threads take one after the other. createMatrix + reduce happen once,
+ * on one thread.
  * Resume uses setPosition / save() (ASSEMBLER_VERSION "1.4").
  *
  * BurrTools 2 does not use these classes for assembly. Its assembler is
