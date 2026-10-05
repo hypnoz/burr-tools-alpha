@@ -1076,6 +1076,53 @@ TEST_CASE("Solver: pausing and continuing finds every assembly and solution once
   CHECK(paused >= 2);
 }
 
+/* A pause just after the assembler starts lands while the parallel search is
+ * still splitting the work into subtrees. The subtrees made so far are not
+ * the whole search: continuing must not finish with just those. The delays
+ * sweep that window; on a slow machine (CI) the 20 ms pause of the test
+ * above landed there now and then. */
+TEST_CASE("Solver: a pause as assembling starts loses nothing", "[solver][resume]") {
+  const char * file = "examples/SolidSixPieceBurrs.xmpuzzle";
+  const int par = solveThread_c::PAR_REDUCE | solveThread_c::PAR_DISASSM;
+  unsigned long assemblies = 0, solutions = 0;
+  {
+    auto p = puzzle_c::load(file);
+    REQUIRE(p != nullptr);
+    p->getProblem(0)->removeAllSolutions();
+    solveThread_c solver(*p->getProblem(0), par);
+    REQUIRE(solver.start());
+    solver.waitUntilFinished();
+    assemblies = p->getProblem(0)->getNumAssemblies();
+    solutions = p->getProblem(0)->getNumSolutions();
+  }
+
+  for (int delayUs : {0, 100, 200, 400, 700, 1000, 1500, 2000, 3000, 5000}) {
+    INFO("pause " << delayUs << " us into assembling");
+    auto p = puzzle_c::load(file);
+    REQUIRE(p != nullptr);
+    problem_c * pr = p->getProblem(0);
+    pr->removeAllSolutions();
+    {
+      solveThread_c solver(*pr, par);
+      REQUIRE(solver.start());
+      while (solver.currentAction() == solveThread_c::ACT_PREPARATION ||
+             solver.currentAction() == solveThread_c::ACT_REDUCE)
+        std::this_thread::yield();
+      std::this_thread::sleep_for(std::chrono::microseconds(delayUs));
+      solver.stop();
+      solver.waitUntilFinished();
+    }
+    while (pr->getSolveState() != SS_SOLVED) {
+      solveThread_c solver(*pr, par);
+      REQUIRE(solver.start());
+      solver.waitUntilFinished();
+      REQUIRE(solver.currentAction() != solveThread_c::ACT_ERROR);
+    }
+    CHECK(pr->getNumAssemblies() == assemblies);
+    CHECK(pr->getNumSolutions() == solutions);
+  }
+}
+
 /* The autosave pause: only the assembler stops, work under way finishes, and
  * what is saved carries on to the same totals. */
 TEST_CASE("Solver: an autosave pause saves a solve that carries on to the same totals",

@@ -2556,6 +2556,12 @@ void assembler_1_c::generateSubtreeTasks(
       break;
     cutoff_depth++;
   }
+
+  /* A stop part way through leaves only some of the subtrees. Kept, the
+   * next run would take them for the whole search and finish early with
+   * most assemblies missing; empty, it generates them again. */
+  if (abbort.load(std::memory_order_relaxed))
+    tasks.clear();
 }
 
 void assembler_1_c::parallelMultiSearch(unsigned int workers) {
