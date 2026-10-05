@@ -323,7 +323,7 @@ std::string gltfExport::solutionAnimation(const problem_c & pr, unsigned int sol
         if (!buildMesh(*v, opt.bevel, m))
           return "A piece mesh could not be generated.";
 
-        mat3 b;
+        mat3 b = mat3::identity();
         v->getTransformMatrix(pi.trans0, b.m);
         pi.base0inv = b.transposed();
         pi.centre0 = m.centre();
@@ -387,7 +387,7 @@ std::string gltfExport::solutionAnimation(const problem_c & pr, unsigned int sol
       mat3 R = mat3::identity();
       vec3 d { 0, 0, 0 };
       if (t != pi.trans0) {
-        mat3 mt;
+        mat3 mt = mat3::identity();
         v->getTransformMatrix(t, mt.m);
         R = mt * pi.base0inv;
         if (fabs(R.det() - 1) > 1e-6)
