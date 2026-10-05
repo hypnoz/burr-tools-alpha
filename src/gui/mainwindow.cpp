@@ -2503,6 +2503,22 @@ void mainWindow_c::updateInterface(void) {
   TaskSelectionTab->resize(TaskSelectionTab->x(), TaskSelectionTab->y(),
                            TaskSelectionTab->w(), TaskSelectionTab->h());
 
+  /* File > Export > Solution Animation: only while a disassembly is shown. */
+  {
+    const bool animated = disassemble && !SolutionEmpty && !stackingPuzzle;
+    static int shown = -1;
+    if ((int)animated != shown) {
+      shown = animated;
+      if (MainMenu) {
+        const int idx = liveMenuIndex(MainMenu, cb_ExportGltf_stub);
+        if (idx >= 0) {
+          setLiveMenuActive(MainMenu, idx, animated);
+          MainMenu->update();
+        }
+      }
+    }
+  }
+
   /* File > Export > Paused solver state: only for a paused solve. */
   {
     const bool paused = solutionProblem && problemPaused(solutionProblem->getSelection());

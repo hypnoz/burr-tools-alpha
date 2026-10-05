@@ -77,6 +77,7 @@ void cb_Toggle3D_stub(Fl_Widget*, void*);
 void cb_ImageExport_stub(Fl_Widget*, void*);
 void cb_ImageExportVector_stub(Fl_Widget*, void*);
 void cb_STLExport_stub(Fl_Widget*, void*);
+void cb_ExportGltf_stub(Fl_Widget*, void*);
 void cb_StatusWindow_stub(Fl_Widget*, void*);
 void cb_Comment_stub(Fl_Widget*, void*);
 void cb_Config_stub(Fl_Widget*, void*);

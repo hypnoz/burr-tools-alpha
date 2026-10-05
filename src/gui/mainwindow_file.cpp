@@ -61,6 +61,8 @@
 #include "assmimportwindow.h"
 #include "bulkrangewindow.h"
 #include "stlexportsolution.h"
+#include "gltfexportwindow.h"
+#include "piececolor.h"
 
 #include "LFl_Tile.h"
 
@@ -72,6 +74,8 @@
 #include "../lib/assembler.h"
 #include "../lib/solvethread.h"
 #include "../lib/disassembly.h"
+#include "../lib/solution.h"
+#include "../lib/gltfexport.h"
 #include "../lib/disassembler_factory.h"
 #include "../lib/solvertype.h"
 #include "../lib/gridtype.h"
@@ -576,6 +580,72 @@ void mainWindow_c::cb_STLExport(void) {
   while (w.visible()) {
     Fl::wait();
   }
+}
+
+void cb_ExportGltf_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_ExportGltf(); }
+void mainWindow_c::cb_ExportGltf(void) {
+
+  unsigned int prob = solutionProblem->getSelection();
+  if (prob >= puzzle->getNumberOfProblems())
+    return;
+  problem_c * pr = puzzle->getProblem(prob);
+
+  unsigned int sol = (unsigned int)SolutionSel->value() - 1;
+  unsigned int steps = 0;
+  {
+    problem_c::SolutionsLock lock(*pr);
+    if (sol < pr->getNumberOfSavedSolutions() && pr->getSavedSolution(sol)->getDisassembly())
+      steps = pr->getSavedSolution(sol)->getDisassembly()->sumSteps();
+  }
+  if (!steps || stacking::isStacking(*puzzle)) {
+    fl_alert("The selected solution has no disassembly to animate.");
+    return;
+  }
+
+  /* the options stay for the next export in this session */
+  static gltfExport::options_c opt;
+
+  gltfExportWindow_c w(opt, steps);
+  w.show();
+  while (w.visible())
+    Fl::wait();
+  if (!w.wasAccepted())
+    return;
+  opt = w.options();
+
+  std::string preset;
+  if (!fname.empty()) {
+    preset = fname;
+    if (hasFileExtension(preset.c_str(), ".xmpuzzle"))
+      preset.resize(preset.size() - strlen(".xmpuzzle"));
+    preset += "-solution" + std::to_string(sol + 1) + ".glb";
+  }
+
+  const char * f = bt_file_chooser_save("Export Solution Animation", "glTF Binary\t*.glb", preset.c_str());
+  if (!f)
+    return;
+
+  const std::string f2 = hasFileExtension(f, ".glb") ? std::string(f) : std::string(f) + ".glb";
+  if (f2 != f && fileExists(f2.c_str()) && !fl_choice("File exists; overwrite?", "Cancel", "Overwrite", 0))
+    return;
+
+  /* the colours the 3D view paints the pieces in */
+  std::vector<gltfExport::color_c> colors;
+  for (unsigned int p = 0; p < pr->getNumberOfParts(); p++)
+    for (unsigned int q = 0; q < pr->getPartMaximum(p); q++) {
+      unsigned int shape = pr->getShapeIdOfPart(p);
+      colors.push_back({ darkPieceColor(pieceColorR(shape, q)),
+                         darkPieceColor(pieceColorG(shape, q)),
+                         darkPieceColor(pieceColorB(shape, q)) });
+    }
+
+  std::string err;
+  {
+    problem_c::SolutionsLock lock(*pr);
+    err = gltfExport::writeSolutionAnimation(f2.c_str(), *pr, sol, colors, opt);
+  }
+  if (!err.empty())
+    fl_alert("Could not export the animation:\n%s", err.c_str());
 }
 
 void cb_Export_Scad_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_Export_Scad(); }

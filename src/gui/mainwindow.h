@@ -528,6 +528,7 @@ public:
   void cb_ImageExport(void);
   void cb_ImageExportVector(void);
   void cb_STLExport(void);
+  void cb_ExportGltf(void);
   void cb_Export_Scad(void);
   void cb_ExportPaused(void);
   void cb_ImportPaused(void);
