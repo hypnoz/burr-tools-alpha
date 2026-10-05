@@ -1495,7 +1495,8 @@ void assembler_bt2_c::solutionFromRowNodes(const unsigned int * rowNodes, unsign
 
 void assembler_bt2_c::assemble(assembler_cb * callback) {
 
-  clearStop();
+  /* an earlier stop no longer holds; one armed for this run does (armStop) */
+  beginRun();
 
   /* in slices, so that the progress others read is published as it goes */
   do {

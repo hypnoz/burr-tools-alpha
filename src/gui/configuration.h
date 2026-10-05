@@ -53,6 +53,9 @@ public:
 
   bool reverseScrollZoom(void) { return i_reverseScrollZoom; }
 
+  /* threads a solve may use; 0 for every core */
+  int solverThreads(void) { return i_solver_threads < 0 ? 0 : i_solver_threads; }
+
   bool debugRotations(void) { return i_debugRotations; }
   bool debugStatistics(void) { return i_debugStatistics; }
 
@@ -82,7 +85,8 @@ private:
   } cnf_type;
 
   void parse(void);
-  void register_entry(const char *cnf_name, cnf_type cnf_typ, void *cnf_var, long maxlen, bool dialog, const char * dtext, const char * dhelp, const char * def);
+  void register_entry(const char *cnf_name, cnf_type cnf_typ, void *cnf_var, long maxlen, bool dialog, const char * dtext, const char * dhelp, const char * def,
+                      int minVal = 0, int maxVal = 0);
 
   struct config_data {
     const char *cnf_name;  // name of entry in configuration file
@@ -94,6 +98,8 @@ private:
     const char * dialogHelp;
     void *    widget;    // used in the dialogue to save pointer to the widget
     const char * defaultValue; // the variable will have this value, when not initialized in script file
+    int       minVal;    // for a number shown in the dialogue: the ends of its slider
+    int       maxVal;
   };
 
   std::vector<config_data> data;
@@ -108,6 +114,7 @@ private:
   bool i_debugRotations;
   bool i_debugStatistics;
   int i_render_style;
+  int i_solver_threads;
 
   int i_window_pos_x;
   int i_window_pos_y;

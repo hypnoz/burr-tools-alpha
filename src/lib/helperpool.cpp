@@ -23,11 +23,41 @@
 #include <cstdlib>
 #include <exception>
 
+namespace {
+std::atomic<unsigned int> threadLimit{0};
+}
+
+void setSolveThreadLimit(unsigned int n) {
+  threadLimit.store(n > 256 ? 256 : n, std::memory_order_relaxed);
+}
+
+unsigned int solveThreadLimit(void) {
+#ifdef NO_THREADING
+  return 0;
+#else
+  return threadLimit.load(std::memory_order_relaxed);
+#endif
+}
+
+solveThreadSplit_s solveThreadSplit(unsigned int n) {
+  solveThreadSplit_s s;
+  if (n < 2) {
+    s.assembly = s.disassembly = 1;
+    return s;
+  }
+  /* a quarter for the take-aparts, at least one */
+  s.disassembly = n / 4 > 0 ? n / 4 : 1;
+  s.assembly = n - s.disassembly;
+  return s;
+}
+
 unsigned int solveThreadBudget(void) {
 
 #ifdef NO_THREADING
   return 1;
 #else
+  if (const unsigned int limit = solveThreadLimit())
+    return limit;
   const char * env = getenv("BURRTOOLS_THREADS");
   if (env) {
     int val = atoi(env);

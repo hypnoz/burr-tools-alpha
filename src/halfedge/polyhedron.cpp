@@ -206,18 +206,17 @@ void Polyhedron::finalize(void)
     // add the edge, to make sure we don't process it again
     handeled.insert(idx);
 
-    map<pair<int,int>, HalfEdge*>::iterator cit = connections.find(idx);
-    // now we have the very first halfedge conection our 2 vertices, first let's count how many there are
+    // equal_range, not find: on a multimap find() may return any element with
+    // the key (newer libc++ returns whichever node it meets first), and all
+    // that follows walks forward from the first one. With find() an edge with
+    // two halfedges could be counted as having one, be left without a twin
+    // and then trip the assertion in closeSurface()
+    pair<multimap<pair<int,int>, HalfEdge*>::iterator,
+         multimap<pair<int,int>, HalfEdge*>::iterator> range = connections.equal_range(idx);
+    multimap<pair<int,int>, HalfEdge*>::iterator cit = range.first;
 
-    int n = 0;
-    {
-      map<pair<int,int>, HalfEdge*>::iterator cit2 = cit;
-      while (cit2 != connections.end() && cit2->first == idx)
-      {
-        n++;
-        ++cit2;
-      }
-    }
+    // count how many halfedges connect our 2 vertices
+    int n = (int)distance(range.first, range.second);
 
     // when there is only one halfedge here, we continue because that one will be closed later on
     if (n == 1) continue;
@@ -532,14 +531,14 @@ bool Polyhedron::check ( bool holesFilled ) const
 {
   for ( unsigned i=0 ; i<_vertices.size() ; i++ )
   {
-    const Vertex* V = _vertices[i];
+    [[maybe_unused]] const Vertex* V = _vertices[i];
     bt_assert ( V->index() == ( int ) i );
     bt_assert ( V->check ( holesFilled ) );
   }
 
   for ( Polyhedron::const_edge_iterator it=eBegin() ; it!=eEnd() ; ++it )
   {
-    const HalfEdge* he = *it;
+    [[maybe_unused]] const HalfEdge* he = *it;
     bt_assert ( _halfEdges[he->index() ] == *it );
     bt_assert ( he->check ( holesFilled ) );
     if ( holesFilled )

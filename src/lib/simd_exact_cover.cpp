@@ -71,6 +71,31 @@ void SimdExactCover<BitsetType>::setRequiredColumns(const BitsetType &required) 
 }
 
 template <typename BitsetType>
+void SimdExactCover<BitsetType>::setOptionalColumn(unsigned int col) {
+  bt_assert(col < num_columns);
+  bt_assert(col < BitsetType::NUM_WORDS * 64);
+  bt_assert(!required_columns.test(col));
+  if (!optional_columns.test(col)) {
+    optional_columns.set(col);
+    optional_column_list.push_back(col);
+  }
+}
+
+template <typename BitsetType>
+void SimdExactCover<BitsetType>::initContext(SearchContext &ctx, const ProgressCallback &progress, unsigned int base_depth) const {
+  ctx.scratch_active_rows.resize(num_pieces + 4);
+  ctx.current_solution.resize(num_pieces);
+  ctx.col_counts.resize(num_columns, 0);
+  ctx.progress = progress ? &progress : nullptr;
+  ctx.base_depth = base_depth;
+
+  ctx.scratch_active_rows[0].resize(rows.size());
+  for (size_t i = 0; i < rows.size(); i++) {
+    ctx.scratch_active_rows[0][i] = static_cast<uint32_t>(i);
+  }
+}
+
+template <typename BitsetType>
 uint32_t SimdExactCover<BitsetType>::addRow(unsigned int node_id, unsigned int piece_id, const std::vector<unsigned int> &cols) {
   Row r;
   r.node_id = node_id;
@@ -221,28 +246,19 @@ template <typename BitsetType>
 void SimdExactCover<BitsetType>::solve(
   SolutionCallback callback,
   const std::atomic<bool> &abort_flag,
-  std::atomic<uint64_t> &iterations
+  std::atomic<uint64_t> &iterations,
+  ProgressCallback progress
 ) const {
   if (rows.empty() || active_column_list.empty())
     return;
 
   SearchContext ctx;
-  ctx.scratch_active_rows.resize(num_pieces + 4);
-  ctx.current_solution.resize(num_pieces);
-  ctx.col_counts.resize(num_columns, 0);
-
-  ctx.scratch_active_rows[0].resize(rows.size());
-  for (size_t i = 0; i < rows.size(); i++) {
-    ctx.scratch_active_rows[0][i] = static_cast<uint32_t>(i);
-  }
+  initContext(ctx, progress, 0);
 
   BitsetType occupied;
   search(0, occupied, ctx, callback, abort_flag, iterations);
 
-  uint64_t rem = ctx.local_iterations & 255;
-  if (rem > 0) {
-    iterations.fetch_add(rem, std::memory_order_relaxed);
-  }
+  flushIterations(ctx, iterations);
 }
 
 template <typename BitsetType>
@@ -250,20 +266,17 @@ void SimdExactCover<BitsetType>::solveSubtree(
   const std::vector<unsigned int> &prefix_node_ids,
   SolutionCallback callback,
   const std::atomic<bool> &abort_flag,
-  std::atomic<uint64_t> &iterations
+  std::atomic<uint64_t> &iterations,
+  ProgressCallback progress
 ) const {
   if (rows.empty() || active_column_list.empty())
     return;
 
   SearchContext ctx;
-  ctx.scratch_active_rows.resize(num_pieces + 4);
-  ctx.current_solution.resize(num_pieces);
-  ctx.col_counts.resize(num_columns, 0);
-
-  ctx.scratch_active_rows[0].resize(rows.size());
-  for (size_t i = 0; i < rows.size(); i++) {
-    ctx.scratch_active_rows[0][i] = static_cast<uint32_t>(i);
-  }
+  initContext(ctx, progress, static_cast<unsigned int>(prefix_node_ids.size()));
+  /* the prefix may be longer than a search from the root ever gets */
+  if (ctx.scratch_active_rows.size() < prefix_node_ids.size() + 4)
+    ctx.scratch_active_rows.resize(prefix_node_ids.size() + 4);
 
   BitsetType occupied;
   bool conflict = false;
@@ -294,10 +307,7 @@ void SimdExactCover<BitsetType>::solveSubtree(
     search(prefix_node_ids.size(), occupied, ctx, callback, abort_flag, iterations);
   }
 
-  uint64_t rem = ctx.local_iterations & 255;
-  if (rem > 0) {
-    iterations.fetch_add(rem, std::memory_order_relaxed);
-  }
+  flushIterations(ctx, iterations);
 }
 
 template <typename BitsetType>
@@ -313,13 +323,24 @@ void SimdExactCover<BitsetType>::search(
     return;
 
   ctx.local_iterations++;
-  if ((ctx.local_iterations & 255) == 0) {
+  if (ctx.local_iterations - ctx.flushed_iterations >= 256) {
     iterations.fetch_add(256, std::memory_order_relaxed);
+    ctx.flushed_iterations += 256;
   }
+  /* on a count of its own: where solutions come thick, each of them flushes
+   * and the batch above is never full */
+  if (ctx.progress && (ctx.local_iterations & 4095) == 0)
+    (*ctx.progress)(ctx.fraction());
 
   // Check goal: are all required columns covered?
   if (occupied.containsAll(required_columns)) {
     ctx.current_solution.resize(depth);
+    flushIterations(ctx, iterations);
+    /* told here as well: a search with few nodes between its solutions
+     * (or one that waits a long time in the callback) would otherwise
+     * never say how far it is */
+    if (ctx.progress)
+      (*ctx.progress)(ctx.fraction());
     if (!callback(ctx.current_solution))
       return;
     return;
@@ -329,11 +350,24 @@ void SimdExactCover<BitsetType>::search(
   if (curr_active.empty())
     return;
 
-  // Count options per uncovered column
+  // Count options per column over the rows still possible
   std::fill(ctx.col_counts.begin(), ctx.col_counts.end(), 0);
   for (uint32_t r_idx : curr_active) {
     for (unsigned int c : rows[r_idx].columns) {
       ctx.col_counts[c]++;
+    }
+  }
+
+  // Holes: an optional column that is open and has no row left stays open
+  // in all of the subtree below. Their number never goes down along a path,
+  // so more of them than the budget allows ends the path here.
+  if (!optional_column_list.empty()) {
+    unsigned int hole_count = 0;
+    for (unsigned int c : optional_column_list) {
+      if (ctx.col_counts[c] == 0 && !occupied.test(c)) {
+        if (++hole_count > holes)
+          return;
+      }
     }
   }
 
@@ -360,11 +394,31 @@ void SimdExactCover<BitsetType>::search(
   if (best_col == UINT32_MAX)
     return;
 
+  // which choice of how many, for the progress report
+  const unsigned int level = depth - ctx.base_depth;
+  const bool track = level < PROGRESS_LEVELS;
+  if (track) {
+    ctx.branch_cnt[level] = min_count;
+    ctx.branch_idx[level] = 0;
+    if (level + 1 < PROGRESS_LEVELS)
+      ctx.branch_cnt[level + 1] = 0;
+  }
+  bool first = true;
+
   // Branch on all candidate rows covering best_col
   for (uint32_t r_idx : curr_active) {
     const auto &candidate_row = rows[r_idx];
     if (!candidate_row.mask.test(best_col))
       continue;
+
+    if (track) {
+      if (!first) {
+        ctx.branch_idx[level]++;
+        if (level + 1 < PROGRESS_LEVELS)
+          ctx.branch_cnt[level + 1] = 0;
+      }
+      first = false;
+    }
 
     if (depth >= ctx.current_solution.size())
       ctx.current_solution.resize(depth + 1);

@@ -109,6 +109,10 @@ private:
   void generateTasksAtDepth(unsigned int cutoff_depth, std::vector<SubtreeTask_1> & tasks);
   void generateSubtreeTasks(std::vector<SubtreeTask_1> & tasks, unsigned int targetTasks, unsigned int maxDepth);
   void parallelMultiSearch(unsigned int workers);
+  void reportParallelSolution(const std::vector<unsigned int> & solutionRows);
+  /* the matrix can go to the vector search; and it can from where the
+   * search is now (only from the start) */
+  bool simdFits(void) const;
   bool canUseSimd(void) const;
   void simdSearch(void);
   std::unique_ptr<ISimdHuangCover> createSimdSolver(void) const;
@@ -126,6 +130,12 @@ private:
   bool parallelInterrupted = false;
   /* set when simdSearch() ran to completion. */
   bool simdCompleted = false;
+  /* the search is through (next_row_stack is empty), for getFinished(),
+   * which is asked from other threads and must not read the stack */
+  std::atomic<bool> searchDone{false};
+  /* a stopped parallel search loaded from a file of an older version: its
+   * signatures are of the older kind, see reportParallelSolution() */
+  bool rowOrderSignatures = false;
   /* A stopped SIMD search runs again from the start, passing over the first
    * simdSkip solutions it already reported; see assembler_0_c. */
   uint64_t simdDone = 0;
@@ -325,6 +335,8 @@ public:
   int getErrorsParam(void) override { return errorsParam; }
   float getFinished(void) const override;
   void stop(void) override { abbort.store(true, std::memory_order_relaxed); }
+  void clearStop(void) override { abbort.store(false, std::memory_order_relaxed); }
+  bool stopRequested(void) const override { return abbort.load(std::memory_order_relaxed); }
   bool stopped(void) const override { return !running.load(std::memory_order_relaxed); }
   errState setPosition(const char * string, const char * version) override;
   void save(xmlWriter_c & xml) const override;
@@ -347,5 +359,11 @@ private:
   assembler_1_c(const assembler_1_c&) = delete;
   void operator=(const assembler_1_c&) = delete;
 };
+
+/* What the vector search (SimdHuangCover) would need for a matrix of this
+ * size, and whether that is within the budget; see assembler_1_c::canUseSimd.
+ */
+uint64_t simdHuangMemoryEstimate(unsigned int numCols, uint64_t numRows, uint64_t numNodes);
+bool simdHuangFitsMemory(unsigned int numCols, uint64_t numRows, uint64_t numNodes);
 
 #endif

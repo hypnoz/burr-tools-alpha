@@ -40,6 +40,7 @@
 #include "Images.h"
 
 #include "../lib/sliding.h"
+#include "../lib/helperpool.h"
 #include "../lib/stacking.h"
 #include "../lib/panex.h"
 #include "../lib/sysmemory.h"
@@ -1441,6 +1442,10 @@ void mainWindow_c::updateDebugStats(void) {
 }
 
 void mainWindow_c::activateConfigOptions(void) {
+
+  /* for every solve started from now on; one that is running keeps the
+   * threads it has */
+  setSolveThreadLimit((unsigned int)config.solverThreads());
 
   if (config.useTooltips())
     Fl_Tooltip::enable();

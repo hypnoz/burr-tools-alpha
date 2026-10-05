@@ -233,8 +233,11 @@ bool voxel_2_c::transform(unsigned int nr) {
 
 void voxel_2_c::transformPoint(int * x, int * y, int * z, unsigned int trans) const {
 
-  bt_assert(trans < NUM_TRANSFORMATIONS_MIRROR);
-  bt_assert(((*x+*y+*z) & 1) == 0);
+  /* refused in a build without assertions too, see voxel_0_c::transformPoint */
+  if (trans >= NUM_TRANSFORMATIONS_MIRROR)
+    bt_te("trans < NUM_TRANSFORMATIONS_MIRROR");
+  if (((*x+*y+*z) & 1) != 0)
+    bt_te("((*x+*y+*z) & 1) == 0");
 
   double xp = *x * sqrt(0.5);
   double yp = *y * sqrt(0.5);

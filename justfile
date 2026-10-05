@@ -139,6 +139,21 @@ build-werror:
     @if [ ! -d "build-werror" ]; then meson setup build-werror --werror; fi
     ninja -C build-werror
 
+# bt_assert does nothing in this build, so it shows code that only works
+# because an assertion ran (a call with a side effect inside bt_assert, a
+# variable used by an assertion only), and it is the build to time solvers
+# with when comparing against upstream's release numbers. The binaries that
+# ship keep their assertions.
+#
+# Optimised build without assertions (NDEBUG), warnings as errors, in build-rel
+build-release:
+    @if [ ! -d "build-rel" ]; then meson setup build-rel --buildtype=release -Db_ndebug=true --werror; fi
+    ninja -C build-rel
+
+# Run the C++ test suite against the build without assertions
+test-release: build-release
+    ./build-rel/test_burrtools
+
 # Headless GUI invariant check (menu table consistency)
 check-gui: build
     ./build/burrtools --self-check

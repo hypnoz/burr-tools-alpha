@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <memory>
 #include <ranges>
+#include <thread>
 
 #include "../lib/bt_assert.h"
 
@@ -83,6 +84,11 @@ void configuration_c::parse() {
           break;
         case CT_INT:
           *(int *)t.cnf_var = (int)L.getNumber(t.cnf_name);
+          /* a number with a slider keeps to its range, whatever the file says */
+          if (t.dialog) {
+            if (*(int *)t.cnf_var < t.minVal) *(int *)t.cnf_var = t.minVal;
+            if (*(int *)t.cnf_var > t.maxVal) *(int *)t.cnf_var = t.maxVal;
+          }
           break;
         default: bt_assert(0);
       }
@@ -92,8 +98,9 @@ void configuration_c::parse() {
   }
 }
 
-void configuration_c::register_entry(const char *cnf_name, cnf_type cnf_typ, void *cnf_var, long maxlen, bool dialog, const char * dtext, const char * dhelp, const char * def) {
-  data.push_back({cnf_name, cnf_typ, cnf_var, maxlen, dialog, dtext, dhelp, nullptr, def});
+void configuration_c::register_entry(const char *cnf_name, cnf_type cnf_typ, void *cnf_var, long maxlen, bool dialog, const char * dtext, const char * dhelp, const char * def,
+                                     int minVal, int maxVal) {
+  data.push_back({cnf_name, cnf_typ, cnf_var, maxlen, dialog, dtext, dhelp, nullptr, def, minVal, maxVal});
 }
 
 #define CNF_BOOL(a,b, def) register_entry(a, CT_BOOL, b, 0, false, 0, 0, def)
@@ -102,7 +109,7 @@ void configuration_c::register_entry(const char *cnf_name, cnf_type cnf_typ, voi
 
 #define CNF_BOOL_D(a,b,text, help, def) register_entry(a, CT_BOOL, b, 0, true, text, help, def)
 #define CNF_CHAR_D(a,b,c,text, help, def) register_entry(a, CT_STRING, b, c, true, text, help, def)
-#define CNF_INT_D(a,b,text, help, def) register_entry(a, CT_INT, b, 0, true, text, help, def)
+#define CNF_INT_D(a,b,text, help, def, minVal, maxVal) register_entry(a, CT_INT, b, 0, true, text, help, def, minVal, maxVal)
 
 configuration_c::configuration_c(void) {
 
@@ -113,6 +120,15 @@ configuration_c::configuration_c(void) {
   CNF_BOOL_D("debugrotations",    &i_debugRotations, "Debug Rotations",
              "When Check Rotations is enabled on the Solver tab, and viewing the disassembly animation if there is a rotation move then show all the voxels which would be considered a collision to block that rotation. Only really useful for debugging rotation rules to update the code, isn't useful to help design puzzles.",
              "false");
+  {
+    /* the slider ends at the number of cores this machine has */
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw < 1) hw = 1;
+    if (hw > 256) hw = 256;
+    CNF_INT_D("solverthreads",    &i_solver_threads, "Solver Threads (0 = every core)",
+              "How many processor threads a solve may use: for finding assemblies, for taking them apart and for the sliding and stacking searches. 0 uses every core, which is fastest. Choose a smaller number to keep the computer free for other work during a long solve. It applies from the next time Start or Continue is pressed.",
+              "0", 0, (int)hw);
+  }
   CNF_BOOL_D("tooltips",          &i_use_tooltips, "Use Tooltips",
              "Show short help text when the mouse rests on buttons and other controls.",
              "true");
@@ -206,6 +222,8 @@ void configuration_c::restoreDialogDefaults(void) {
     if (t.dialog && t.cnf_typ == CT_BOOL && t.widget) {
       bool enable = (strcmp(t.defaultValue, "true") == 0);
       ((Fl_Check_Button*)t.widget)->value(enable ? 1 : 0);
+    } else if (t.dialog && t.cnf_typ == CT_INT && t.widget) {
+      ((Fl_Value_Slider*)t.widget)->value(atoi(t.defaultValue));
     }
   }
 }
@@ -262,6 +280,39 @@ void configuration_c::dialog(void) {
       case CT_STRING:
         break;
       case CT_INT:
+        {
+          /* a number: its name, a slider over its range, the help text */
+          LFl_Box * label = new LFl_Box(t.dialogText, 0, y, 1, 1);
+          label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+          label->weight(1, 0);
+          y++;
+
+          LFl_Value_Slider * w = new LFl_Value_Slider(0, y, 1, 1);
+          w->type(FL_HOR_NICE_SLIDER);
+          w->bounds(t.minVal, t.maxVal);
+          w->step(1);
+          w->value(*((int*)t.cnf_var));
+          w->weight(1, 0);
+          t.widget = w;
+          y++;
+
+          if (t.dialogHelp && t.dialogHelp[0]) {
+            (new LFl_Box(0, y, 1, 1))->setMinimumSize(0, TEXT_PAD_TOP);
+            y++;
+
+            layouter_c * helpRow = new layouter_c(0, y, 1, 1);
+            helpRow->weight(1, 0);
+            (new LFl_Box(0, 0))->setMinimumSize(TEXT_PAD, 0);
+            new SettingsWrapBox(t.dialogHelp, 1, 0, wrapW);
+            (new LFl_Box(2, 0))->setMinimumSize(TEXT_PAD, 0);
+            helpRow->end();
+            y++;
+          }
+
+          LFl_Box * spacer = new LFl_Box(0, y, 1, 1);
+          spacer->setMinimumSize(wrapW, 8);
+          y++;
+        }
         break;
       default: bt_assert(0);
       }
@@ -317,6 +368,7 @@ void configuration_c::dialog(void) {
       case CT_STRING:
         break;
       case CT_INT:
+        *((int*)t.cnf_var) = (int)((Fl_Value_Slider*)t.widget)->value();
         break;
       default: bt_assert(0);
       }

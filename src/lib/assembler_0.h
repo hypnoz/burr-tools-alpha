@@ -260,6 +260,10 @@ private:
 
   void generateSubtreeTasks(std::vector<SubtreeTask> & tasks, unsigned int targetTasks, unsigned int maxDepth);
   void parallelMultiSearch(unsigned int workers);
+  void reportParallelSolution(const unsigned int * solutionRows, unsigned int count);
+  /* the matrix can go to the vector search; and it can from where the
+   * search is now (only from the start) */
+  bool simdFits(void) const;
   bool canUseSimd(void) const;
   void simdSearch(void);
   std::unique_ptr<ISimdExactCover> createSimdSolver(void) const;
@@ -339,6 +343,8 @@ public:
   int getErrorsParam(void) override { return errorsParam; }
   float getFinished(void) const override;
   void stop(void) override { abbort.store(true, std::memory_order_relaxed); }
+  void clearStop(void) override { abbort.store(false, std::memory_order_relaxed); }
+  bool stopRequested(void) const override { return abbort.load(std::memory_order_relaxed); }
   bool stopped(void) const override { return !running.load(std::memory_order_relaxed); }
   errState setPosition(const char * string, const char * version) override;
   void save(xmlWriter_c & xml) const override;

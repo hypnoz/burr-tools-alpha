@@ -6,6 +6,7 @@
 #include "bt2_assemble.h"
 
 #include "assembler.h"
+#include "helperpool.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -25,7 +26,11 @@ unsigned int bt2ChooseAssemblerWorkers(const assembler_c * assm) {
   if (assm && assm->getNumThreads() > 0)
     return assm->getEffectiveThreads();
 
-  unsigned int hw = std::thread::hardware_concurrency();
+  /* a limit set by the application is taken as it is */
+  if (const unsigned int limit = solveThreadLimit())
+    return limit;
+
+  unsigned int hw = solveThreadBudget();
   if (hw < 1)
     hw = 1;
   if (hw <= 2)
@@ -75,7 +80,7 @@ unsigned int bt2Assemble(assembler_c * assm, assembler_cb * callback,
     return 1;
   }
 
-  assm->clearStop();
+  assm->beginRun();
   assm->prepareForWorkers();
 
   bt2Pool_c pool;

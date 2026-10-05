@@ -212,18 +212,25 @@ int assembler_1_c::AddPieceNode(unsigned int piece, unsigned int rot, unsigned i
 
 void assembler_1_c::getPieceInformation(unsigned int node, unsigned int * piece, unsigned char *tran, int *x, int *y, int *z) const {
 
-  for (int i = piecePositions.size()-1; i >= 0; i--)
-    if (piecePositions[i].row <= node) {
-      *tran = piecePositions[i].transformation;
-      *x = piecePositions[i].x;
-      *y = piecePositions[i].y;
-      *z = piecePositions[i].z;
-      *piece = piecePositions[i].piece;
+  /* by halving, as in assembler_0_c::getPieceInformation */
+  size_t lo = 0, hi = piecePositions.size();
+  while (lo < hi) {
+    const size_t mid = lo + (hi - lo) / 2;
+    if (piecePositions[mid].row <= node)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
 
-      return;
-    }
+  if (lo == 0)
+    bt_te("getPieceInformation: no piece position for the node");
 
-  bt_assert(0);
+  const piecePosition & pp = piecePositions[lo - 1];
+  *tran = pp.transformation;
+  *x = pp.x;
+  *y = pp.y;
+  *z = pp.z;
+  *piece = pp.piece;
 }
 
 void assembler_1_c::AddVoxelNode(unsigned int col, unsigned int piecenode) {
@@ -2000,58 +2007,7 @@ class assemblerWorker_1 {
   }
 
   void worker_solution(void) {
-    if (parent.getCallback()) {
-      auto assembly = std::make_unique<assembly_c>(parent.problem.getPuzzle().getGridType());
-
-      std::vector<unsigned int> piece(rows.size());
-      std::vector<unsigned char> tran(rows.size());
-      std::vector<int> x(rows.size());
-      std::vector<int> y(rows.size());
-      std::vector<int> z(rows.size());
-
-      for (unsigned int i = 0; i < rows.size(); i++)
-        parent.getPieceInformation(rows[i], &piece[i], &tran[i], &x[i], &y[i], &z[i]);
-
-      for (unsigned int pc = 0; pc < parent.problem.getNumberOfParts(); pc++) {
-        unsigned int placed = 0;
-        for (unsigned int i = 0; i < rows.size(); i++) {
-          if (piece[i] == pc) {
-            assembly->addPlacement(tran[i], x[i], y[i], z[i]);
-            placed++;
-          }
-        }
-        while (placed < parent.problem.getPartMaximum(pc)) {
-          assembly->addNonPlacement();
-          placed++;
-        }
-      }
-
-      assembly->sort(parent.problem);
-
-      if (parent.avoidTransformedAssemblies &&
-          assembly->smallerRotationExists(parent.problem, parent.avoidTransformedPivot,
-                                          parent.avoidTransformedMirror.get(), parent.complete, parent.strictColorRestrictions))
-        return;
-
-      uint64_t sig = 14695981039346656037ULL;
-      for (unsigned int i = 0; i < rows.size(); i++) {
-        sig ^= piece[i]; sig *= 1099511628211ULL;
-        sig ^= tran[i]; sig *= 1099511628211ULL;
-        sig ^= static_cast<uint32_t>(x[i]); sig *= 1099511628211ULL;
-        sig ^= static_cast<uint32_t>(y[i]); sig *= 1099511628211ULL;
-        sig ^= static_cast<uint32_t>(z[i]); sig *= 1099511628211ULL;
-      }
-
-      {
-        std::lock_guard<std::mutex> lock(parent.callbackMutex);
-        if (parent.abbort.load(std::memory_order_relaxed))
-          return;
-        if (!parent.emittedSignatures.insert(sig).second)
-          return;
-        if (!parent.getCallback()->assembly(std::move(assembly)))
-          parent.stop();
-      }
-    }
+    parent.reportParallelSolution(rows);
   }
 
   void restoreMatrix(const assembler_1_c::SubtreeTask_1 & task) {
@@ -2316,6 +2272,89 @@ public:
   }
 };
 
+/* An assembly found by a search split over threads: built from the rows
+ * placed (their node numbers, in any order), checked against the rotated
+ * copies and against what was reported before, and handed to the callback.
+ * Called by the worker threads, the plain ones and the vector ones alike.
+ */
+void assembler_1_c::reportParallelSolution(const std::vector<unsigned int> & solutionRows) {
+  if (!getCallback())
+    return;
+
+  auto assembly = std::make_unique<assembly_c>(problem.getPuzzle().getGridType());
+
+  const size_t n = solutionRows.size();
+  std::vector<unsigned int> piece(n);
+  std::vector<unsigned char> tran(n);
+  std::vector<int> x(n);
+  std::vector<int> y(n);
+  std::vector<int> z(n);
+
+  for (size_t i = 0; i < n; i++)
+    getPieceInformation(solutionRows[i], &piece[i], &tran[i], &x[i], &y[i], &z[i]);
+
+  for (unsigned int pc = 0; pc < problem.getNumberOfParts(); pc++) {
+    unsigned int placed = 0;
+    for (size_t i = 0; i < n; i++) {
+      if (piece[i] == pc) {
+        assembly->addPlacement(tran[i], x[i], y[i], z[i]);
+        placed++;
+      }
+    }
+    while (placed < problem.getPartMaximum(pc)) {
+      assembly->addNonPlacement();
+      placed++;
+    }
+  }
+
+  assembly->sort(problem);
+
+  if (avoidTransformedAssemblies &&
+      assembly->smallerRotationExists(problem, avoidTransformedPivot,
+                                      avoidTransformedMirror.get(), complete, strictColorRestrictions))
+    return;
+
+  /* What tells this assembly from the others, to report it once only. It
+   * is taken from the sorted assembly, so that it is the same whatever
+   * order the rows were found in: the plain and the vector search place
+   * them in different orders, and so may two tasks that both hold it. A
+   * search loaded from a file written before this (rowOrderSignatures) has
+   * signatures taken from the rows in the order of the plain search, and
+   * goes on with those.
+   */
+  uint64_t sig = 14695981039346656037ULL;
+  if (rowOrderSignatures) {
+    for (size_t i = 0; i < n; i++) {
+      sig ^= piece[i]; sig *= 1099511628211ULL;
+      sig ^= tran[i]; sig *= 1099511628211ULL;
+      sig ^= static_cast<uint32_t>(x[i]); sig *= 1099511628211ULL;
+      sig ^= static_cast<uint32_t>(y[i]); sig *= 1099511628211ULL;
+      sig ^= static_cast<uint32_t>(z[i]); sig *= 1099511628211ULL;
+    }
+  } else {
+    for (unsigned int i = 0; i < assembly->placementCount(); i++) {
+      if (assembly->isPlaced(i)) {
+        sig ^= assembly->getTransformation(i); sig *= 1099511628211ULL;
+        sig ^= static_cast<uint32_t>(assembly->getX(i)); sig *= 1099511628211ULL;
+        sig ^= static_cast<uint32_t>(assembly->getY(i)); sig *= 1099511628211ULL;
+        sig ^= static_cast<uint32_t>(assembly->getZ(i)); sig *= 1099511628211ULL;
+      } else {
+        sig ^= 0xFF; sig *= 1099511628211ULL;
+      }
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(callbackMutex);
+    if (abbort.load(std::memory_order_relaxed))
+      return;
+    if (!emittedSignatures.insert(sig).second)
+      return;
+    if (!getCallback()->assembly(std::move(assembly)))
+      stop();
+  }
+}
+
 void assembler_1_c::generateTasksAtDepth(unsigned int cutoff_depth, std::vector<SubtreeTask_1> & tasks) {
   tasks.clear();
 
@@ -2565,7 +2604,6 @@ void assembler_1_c::generateSubtreeTasks(
 }
 
 void assembler_1_c::parallelMultiSearch(unsigned int workers) {
-  abbort.store(false, std::memory_order_relaxed);
   running.store(true, std::memory_order_relaxed);
 
   /* Workers call smallerRotationExists() outside callbackMutex, which reaches
@@ -2615,9 +2653,26 @@ void assembler_1_c::parallelMultiSearch(unsigned int workers) {
   std::exception_ptr workerException = nullptr;
   std::mutex exceptionMutex;
 
-  auto workerFunc = [this, &remainingIndices, &nextIndexPtr, &workerException, &exceptionMutex]() {
+  /* When the matrix fits, every thread searches its tasks with the vector
+   * search: one solver, read only, shared by all of them. A task hands it
+   * the rows placed and the rows hidden so far. What it then finds is every
+   * assembly the plain search would find below the task, and now and then
+   * one more that belongs to a sister task (the plain search can also close
+   * a column early, which the two lists do not say); the signatures see to
+   * it that such a one is reported once. The tasks, the list of the
+   * finished ones and the signatures stay what they are, and with them
+   * stopping, continuing and saving.
+   */
+  std::unique_ptr<ISimdHuangCover> simdSolver;
+  if (simdFits() && !rowOrderSignatures)
+    simdSolver = createSimdSolver();
+  const ISimdHuangCover * simd = simdSolver.get();
+
+  auto workerFunc = [this, simd, &remainingIndices, &nextIndexPtr, &workerException, &exceptionMutex](unsigned int slot) {
     try {
-      assemblerWorker_1 worker(*this);
+      std::unique_ptr<assemblerWorker_1> worker;
+      if (!simd)
+        worker = std::make_unique<assemblerWorker_1>(*this);
 
       while (!abbort.load(std::memory_order_relaxed)) {
         size_t idx = nextIndexPtr.fetch_add(1, std::memory_order_relaxed);
@@ -2625,14 +2680,37 @@ void assembler_1_c::parallelMultiSearch(unsigned int workers) {
           break;
 
         size_t taskIdx = remainingIndices[idx];
-        worker.searchSubtree(parallelTasks[taskIdx]);
+
+        if (simd) {
+          const SubtreeTask_1 & task = parallelTasks[taskIdx];
+          std::atomic<uint64_t> taskIter{0};
+          auto drain = [this, &taskIter](void) {
+            iterations.fetch_add(taskIter.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
+          };
+          simd->solveSubtree(task.rows, task.hidden_rows,
+            [this, &drain](const std::vector<unsigned int> & nodes) -> bool {
+              drain();
+              reportParallelSolution(nodes);
+              return !abbort.load(std::memory_order_relaxed);
+            },
+            abbort, taskIter,
+            [this, &drain, slot, taskIdx](float fraction) {
+              drain();
+              reportTaskProgress(slot, taskIdx, fraction);
+            });
+          drain();
+        } else {
+          worker->searchSubtree(parallelTasks[taskIdx]);
+        }
+
         if (!abbort.load(std::memory_order_relaxed)) {
           taskCompleted[taskIdx] = 1;
-          finishTaskProgress(0, taskIdx);
+          finishTaskProgress(slot, taskIdx);
         }
       }
 
-      worker.flushIterations();
+      if (worker)
+        worker->flushIterations();
     } catch (...) {
       std::lock_guard<std::mutex> lock(exceptionMutex);
       if (!workerException)
@@ -2645,10 +2723,10 @@ void assembler_1_c::parallelMultiSearch(unsigned int workers) {
   threads.reserve(workers - 1);
 
   for (unsigned int i = 1; i < workers; i++) {
-    threads.emplace_back(workerFunc);
+    threads.emplace_back(workerFunc, i);
   }
 
-  workerFunc();
+  workerFunc(0);
 
   for (auto & t : threads) {
     if (t.joinable())
@@ -2667,6 +2745,7 @@ void assembler_1_c::parallelMultiSearch(unsigned int workers) {
     taskCompleted.clear();
     emittedSignatures.clear();
     parallelInterrupted = false;
+    rowOrderSignatures = false;
   } else {
     /* Stopped part way. Continuing in this session is fine -- parallelTasks,
      * taskCompleted and emittedSignatures are all still here. But
@@ -2681,9 +2760,43 @@ void assembler_1_c::parallelMultiSearch(unsigned int workers) {
   running.store(false, std::memory_order_relaxed);
 }
 
+/* The bytes the vector search needs for a matrix: for each row its mask (as
+ * wide as the size class createSimdSolver() picks, so keep the two ladders
+ * the same) and the row's fixed part, and for each node its column and
+ * weight in the row's lists and its entry in the table of node numbers.
+ */
+uint64_t simdHuangMemoryEstimate(unsigned int numCols, uint64_t numRows, uint64_t numNodes) {
+  uint64_t maskBytes = 32;
+  while (maskBytes * 8 < numCols && maskBytes < 4096)
+    maskBytes *= 2;
+  const uint64_t rowFixed = 6 * sizeof(unsigned int) + 2 * sizeof(std::vector<unsigned int>);
+  const uint64_t perNode = 2 * sizeof(unsigned int) + 40;
+  return numRows * (maskBytes + rowFixed) + numNodes * perNode;
+}
+
+/* BURRTOOLS_HUANG_MEM_MB=n sets the budget (256 MB when not given), so both
+ * sides of the limit can be timed from one build; 0 turns the vector search
+ * off through the budget.
+ */
+bool simdHuangFitsMemory(unsigned int numCols, uint64_t numRows, uint64_t numNodes) {
+  uint64_t budget = (uint64_t)256 << 20;
+  if (const char * env = std::getenv("BURRTOOLS_HUANG_MEM_MB")) {
+    char * end = nullptr;
+    unsigned long long mb = std::strtoull(env, &end, 10);
+    if (end != env && *end == '\0')
+      budget = (uint64_t)mb << 20;
+  }
+  return simdHuangMemoryEstimate(numCols, numRows, numNodes) <= budget;
+}
+
 bool assembler_1_c::canUseSimd(void) const {
   if (task_stack.size() != 1 || !rows.empty() || next_row_stack.size() != 1)
     return false;
+  return simdFits();
+}
+
+/* whether the matrix can go to the vector search at all */
+bool assembler_1_c::simdFits(void) const {
   if (std::getenv("BURRTOOLS_NO_SIMD"))
     return false;
   if (debug)
@@ -2692,14 +2805,34 @@ bool assembler_1_c::canUseSimd(void) const {
   if (headerNodes - 1 > 32768)
     return false;
 
+  /* Memory. Each row of the vector search holds a mask as wide as the
+   * solver's size class (4 KB at 32768 columns), so a puzzle with many
+   * columns and many placements would take hundreds of megabytes where the
+   * plain search gets by on tens. The vector search only ever buys speed,
+   * so past the budget the plain one is used.
+   */
+  {
+    uint64_t estRows = 0, estNodes = 0;
+    const unsigned int nShapes = problem.getNumberOfParts();
+    for (unsigned int s = 1; s <= nShapes; s++)
+      for (unsigned int r = down[s]; r != s; r = down[r]) {
+        estRows++;
+        estNodes++;
+        for (unsigned int c = right[r]; c != r; c = right[c])
+          estNodes++;
+      }
+    if (!simdHuangFitsMemory(headerNodes - 1, estRows, estNodes))
+      return false;
+  }
+
+  /* Puzzles with a piece-count range (one more column than shapes and
+   * voxels) are not kept out: the vector search has the range column (its
+   * bounds, each row's range weight, the maximum in every row filter, both
+   * bounds at the goal), and the test that compares it with the plain search
+   * has range puzzles in it. SolidSixPieceBurrs: 7.4 s -> 0.5 s on one thread.
+   */
   const voxel_c * result = getResultShape(problem);
-  unsigned int num_cols = headerNodes - 1;
-  unsigned int num_shapes = problem.getNumberOfParts();
-  unsigned int res_filled = result ? result->countState(voxel_c::VX_FILLED) : 0;
   unsigned int res_vari = result ? result->countState(voxel_c::VX_VARIABLE) : 0;
-  bool hasRange = (num_cols == (num_shapes + res_filled + res_vari + 1));
-  if (hasRange)
-    return false;
 
   if (res_vari > 0) {
     for (unsigned int s = 0; s < problem.getNumberOfParts(); s++) {
@@ -2740,7 +2873,14 @@ std::unique_ptr<ISimdHuangCover> assembler_1_c::createSimdSolver(void) const {
   }
   solver->setHoles(holes);
 
-  for (unsigned int c = 1; c <= num_cols; c++) {
+  /* Only the columns still in the header list, not 1..num_cols. reduce()
+   * ends in clumpify(), which drops every column covered by the same rows
+   * with the same weights as an earlier one, and remove_column() takes
+   * those columns' nodes out of the rows with it. The solver has to see the
+   * matrix the rows describe: a column no row reaches is a condition that
+   * cannot be met, and the search ended at the root with no assembly.
+   */
+  for (unsigned int c = right[0]; c != 0; c = right[c]) {
     bool is_shape = (c <= num_shapes);
     bool is_range = (hasRange && c == rangeColumn);
     bool is_voxel = (!is_shape && !is_range);
@@ -2787,25 +2927,37 @@ std::unique_ptr<ISimdHuangCover> assembler_1_c::createSimdSolver(void) const {
 
 void assembler_1_c::simdSearch(void) {
   running.store(true, std::memory_order_relaxed);
-  abbort.store(false, std::memory_order_relaxed);
 
   auto solver = createSimdSolver();
   std::atomic<uint64_t> simd_iter{0};
 
+  /* The search is reported as one task, so that getFinished() has something
+   * to say while it runs; and what it counts goes over to iterations as it
+   * goes, not only at the end.
+   */
+  taskWeights.assign(1, 1.0);
+  beginTaskProgress(std::vector<uint8_t>(1, 0));
+
   simdDone = 0;
-  solver->solve([this](const std::vector<unsigned int> &solution_nodes) -> bool {
+  solver->solve([this, &simd_iter](const std::vector<unsigned int> &solution_nodes) -> bool {
+    iterations.fetch_add(simd_iter.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
     /* Already reported before the search was stopped. */
     if (simdDone++ < simdSkip)
       return !abbort.load(std::memory_order_relaxed);
     rows = solution_nodes;
     solution();
     return !abbort.load(std::memory_order_relaxed);
-  }, abbort, simd_iter);
+  }, abbort, simd_iter, [this, &simd_iter](float fraction) {
+    iterations.fetch_add(simd_iter.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
+    reportTaskProgress(0, 0, fraction);
+  });
 
-  iterations.fetch_add(simd_iter.load(std::memory_order_relaxed), std::memory_order_relaxed);
+  iterations.fetch_add(simd_iter.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
 
   parallelInterrupted = abbort.load(std::memory_order_relaxed);
   simdCompleted = !parallelInterrupted;
+  if (!parallelInterrupted)
+    finishTaskProgress(0, 0);
   if (parallelInterrupted) {
     /* rows held the last solution, not a place in the matrix: back to the
      * root, and pass over what was reported on the next run. */
@@ -2825,7 +2977,9 @@ void assembler_1_c::simdSearch(void) {
 void assembler_1_c::assemble(assembler_cb * callback) {
 
   running.store(true, std::memory_order_relaxed);
-  abbort.store(false, std::memory_order_relaxed);
+  /* an earlier stop no longer holds; one armed for this run does (armStop) */
+  beginRun();
+  searchDone.store(next_row_stack.empty(), std::memory_order_relaxed);
   debug = false;
 
   /* a previous parallel run leaves totalTasks == completedTasks, which would
@@ -2864,6 +3018,7 @@ void assembler_1_c::assemble(assembler_cb * callback) {
     }
   }
 
+  searchDone.store(next_row_stack.empty(), std::memory_order_relaxed);
   running.store(false, std::memory_order_relaxed);
 }
 
@@ -2884,7 +3039,12 @@ float assembler_1_c::getFinished(void) const {
   if (totalTasks.load(std::memory_order_relaxed) > 0)
     return taskProgress();
 
-  if (next_row_stack.size() == 0) return 1;
+  /* not next_row_stack itself: the search thread pushes to it and pops
+   * from it while this is asked from another thread (the progress display),
+   * most of all while the tasks of a parallel search are being made, when
+   * totalTasks is still 0 (found by ThreadSanitizer upstream, Tom Burns, #93)
+   */
+  if (searchDone.load(std::memory_order_relaxed)) return 1;
 
   float erg = 0;
 
@@ -2943,21 +3103,26 @@ assembler_c::errState assembler_1_c::setPosition(const char * string, const char
   taskCompleted.clear();
   emittedSignatures.clear();
   simdSkip = 0;
+  rowOrderSignatures = false;
 
   unsigned int pos = 0;
 
-  /* leading flag written by save(): 0 a serial position, 2 a stopped
+  /* leading flag written by save(): 0 a serial position, 4 a stopped
    * parallel search with its tasks and the assemblies it reported, 3 a
-   * stopped SIMD search with how many it reported. 1, from older versions,
-   * is a stopped parallel search saved without those, which cannot resume.
+   * stopped SIMD search with how many it reported. 2, from older versions,
+   * is 4 with the signatures of the assemblies taken from the rows in the
+   * order the plain search placed them (see reportParallelSolution). 1,
+   * older still, is a stopped parallel search saved without tasks and
+   * signatures, which cannot resume.
    */
   unsigned int interrupted = 0;
   {
     pos += getInt(string+pos, &interrupted);
     if (pos >= len) return ERR_CAN_NOT_RESTORE_SYNTAX;
     if (interrupted == 1) return ERR_CAN_NOT_RESTORE_INTERRUPTED;
-    if (interrupted > 3) return ERR_CAN_NOT_RESTORE_SYNTAX;
+    if (interrupted > 4) return ERR_CAN_NOT_RESTORE_SYNTAX;
   }
+  rowOrderSignatures = (interrupted == 2);
 
   pos += stringToVector(string+pos, rows);           if (pos >= len) return ERR_CAN_NOT_RESTORE_SYNTAX;
   pos += stringToVector(string+pos, task_stack);     if (pos >= len) return ERR_CAN_NOT_RESTORE_SYNTAX;
@@ -3043,6 +3208,8 @@ assembler_c::errState assembler_1_c::setPosition(const char * string, const char
     }
   }
 
+  searchDone.store(next_row_stack.empty(), std::memory_order_relaxed);
+
   return ERR_NONE;
 }
 
@@ -3061,9 +3228,10 @@ void assembler_1_c::save(xmlWriter_c & xml) const
 
   std::ostream & str = xml.addContent();
 
-  /* leading flag, see setPosition: 2 a stopped parallel search, saved with
-   * its tasks and the assemblies it reported, 3 a stopped SIMD search */
-  const unsigned int flag = !parallelInterrupted ? 0 : parallelTasks.empty() ? 3 : 2;
+  /* leading flag, see setPosition: 4 (or 2) a stopped parallel search, saved
+   * with its tasks and the assemblies it reported, 3 a stopped SIMD search */
+  const unsigned int flag = !parallelInterrupted ? 0 : parallelTasks.empty() ? 3
+                          : rowOrderSignatures ? 2 : 4;
   str << flag << " ";
 
   vectorToStream(rows, str);

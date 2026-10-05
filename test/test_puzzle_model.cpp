@@ -2,6 +2,7 @@
 
 #include "test_helpers.h"
 
+#include "gui/shapehistory.h"
 #include "lib/assembly.h"
 #include "lib/disassembly.h"
 #include "lib/gridtype.h"
@@ -1402,4 +1403,109 @@ TEST_CASE("scad loader: reads a plate, and refuses deep nesting without crashing
     /* The named argument cannot be skipped, so the plate is not read. */
     CHECK_FALSE(loadOpenScadPuzzle(&in));
   }
+}
+
+/* Undo keeps a snapshot for every step. A snapshot shares the shapes that
+ * did not change with the one before it, so what it must still do is give
+ * back every shape exactly, however the steps were made: edits of different
+ * shapes, of a shape's cells, name and weight, and steps that follow closely
+ * on one another.
+ */
+TEST_CASE("undo: every step gives back all shapes as they were", "[undo]") {
+  auto p = puzzle_c::load("examples/PelikanBurr.xmpuzzle");
+  REQUIRE(p != nullptr);
+  REQUIRE(p->getNumberOfShapes() >= 3);
+
+  /* what the snapshots have to give back */
+  auto picture = [&p]() {
+    std::vector<std::unique_ptr<voxel_c>> shapes;
+    for (unsigned int i = 0; i < p->getNumberOfShapes(); i++) {
+      std::unique_ptr<voxel_c> v(p->getGridType()->getVoxel(p->getShape(i)));
+      shapes.push_back(std::move(v));
+    }
+    return shapes;
+  };
+  auto same = [&p](const std::vector<std::unique_ptr<voxel_c>> & shapes) {
+    if (shapes.size() != p->getNumberOfShapes())
+      return false;
+    for (unsigned int i = 0; i < shapes.size(); i++) {
+      const voxel_c * live = p->getShape(i);
+      if (!(*shapes[i] == *live) || shapes[i]->getName() != live->getName() ||
+          shapes[i]->getWeight() != live->getWeight())
+        return false;
+    }
+    return true;
+  };
+
+  shapeHistory_c history;
+  history.reset(p.get());
+  std::vector<std::vector<std::unique_ptr<voxel_c>>> steps;
+  steps.push_back(picture());
+
+  /* a cell of shape 0 */
+  p->getShape(0)->setState(0, 0, 0,
+      p->getShape(0)->getState(0, 0, 0) == voxel_c::VX_EMPTY ? voxel_c::VX_FILLED : voxel_c::VX_EMPTY);
+  history.record(p.get(), shapeHistory_c::AK_STRUCTURAL, 0);
+  steps.push_back(picture());
+
+  /* the name of shape 1: no cell changes */
+  p->getShape(1)->setName("renamed");
+  history.record(p.get(), shapeHistory_c::AK_STRUCTURAL, 1);
+  steps.push_back(picture());
+
+  /* the weight of shape 2 */
+  p->getShape(2)->setWeight(p->getShape(2)->getWeight() + 3);
+  history.record(p.get(), shapeHistory_c::AK_STRUCTURAL, 2);
+  steps.push_back(picture());
+
+  /* shape 0 again, on top of the shared ones */
+  p->getShape(0)->setState(1, 0, 0,
+      p->getShape(0)->getState(1, 0, 0) == voxel_c::VX_EMPTY ? voxel_c::VX_FILLED : voxel_c::VX_EMPTY);
+  history.record(p.get(), shapeHistory_c::AK_STRUCTURAL, 0);
+  steps.push_back(picture());
+
+  REQUIRE(same(steps.back()));
+  for (size_t at = steps.size() - 1; at-- > 0;) {
+    INFO("undo to step " << at);
+    REQUIRE(history.canUndo());
+    history.undo(p.get());
+    CHECK(same(steps[at]));
+  }
+  CHECK_FALSE(history.canUndo());
+  for (size_t at = 1; at < steps.size(); at++) {
+    INFO("redo to step " << at);
+    REQUIRE(history.canRedo());
+    history.redo(p.get());
+    CHECK(same(steps[at]));
+  }
+  CHECK_FALSE(history.canRedo());
+}
+
+/* Transforms that follow closely on one another are one step, so that
+ * holding a rotate button down does not fill the history. That is for one
+ * shape: turning one shape and then another must stay two steps.
+ */
+TEST_CASE("undo: transforms of different shapes stay separate steps", "[undo]") {
+  auto p = puzzle_c::load("examples/PelikanBurr.xmpuzzle");
+  REQUIRE(p != nullptr);
+
+  shapeHistory_c history;
+  history.reset(p.get());
+
+  /* two transforms of shape 0, one right after the other: one step */
+  p->getShape(0)->setWeight(11);
+  history.record(p.get(), shapeHistory_c::AK_TRANSFORM, 0);
+  p->getShape(0)->setWeight(12);
+  history.record(p.get(), shapeHistory_c::AK_TRANSFORM, 0);
+  /* and one of shape 1 at once after: a step of its own */
+  p->getShape(1)->setWeight(21);
+  history.record(p.get(), shapeHistory_c::AK_TRANSFORM, 1);
+
+  history.undo(p.get());
+  CHECK(p->getShape(0)->getWeight() == 12);
+  CHECK(p->getShape(1)->getWeight() != 21);
+  history.undo(p.get());
+  CHECK(p->getShape(0)->getWeight() != 12);
+  CHECK(p->getShape(0)->getWeight() != 11);
+  CHECK_FALSE(history.canUndo());
 }

@@ -352,16 +352,15 @@ template <typename BitsetType>
 void SimdHuangCover<BitsetType>::solve(
   SolutionCallback callback,
   const std::atomic<bool> &abort_flag,
-  std::atomic<uint64_t> &iterations
+  std::atomic<uint64_t> &iterations,
+  ProgressCallback progress
 ) const {
   if (rows.empty() || active_column_list.empty())
     return;
 
   SearchContext ctx;
-  ctx.scratch_active_rows.resize(num_columns + 16);
-  ctx.current_solution.reserve(num_columns);
-  ctx.col_weights.assign(num_columns + 1, 0);
-  ctx.col_counts.assign(num_columns + 1, 0);
+  initContext(ctx);
+  ctx.progress = progress ? &progress : nullptr;
 
   ctx.scratch_active_rows[0].resize(rows.size());
   for (size_t i = 0; i < rows.size(); i++) {
@@ -370,10 +369,7 @@ void SimdHuangCover<BitsetType>::solve(
 
   search(0, ctx, callback, abort_flag, iterations);
 
-  uint64_t rem = ctx.local_iterations & 255;
-  if (rem > 0) {
-    iterations.fetch_add(rem, std::memory_order_relaxed);
-  }
+  flushIterations(ctx, iterations);
 }
 
 template <typename BitsetType>
@@ -382,16 +378,20 @@ void SimdHuangCover<BitsetType>::solveSubtree(
   const std::vector<unsigned int> &hidden_node_ids,
   SolutionCallback callback,
   const std::atomic<bool> &abort_flag,
-  std::atomic<uint64_t> &iterations
+  std::atomic<uint64_t> &iterations,
+  ProgressCallback progress
 ) const {
   if (rows.empty() || active_column_list.empty())
     return;
 
   SearchContext ctx;
-  ctx.scratch_active_rows.resize(num_columns + 16);
-  ctx.current_solution.reserve(num_columns);
-  ctx.col_weights.assign(num_columns + 1, 0);
-  ctx.col_counts.assign(num_columns + 1, 0);
+  initContext(ctx);
+  ctx.progress = progress ? &progress : nullptr;
+  ctx.base_depth = static_cast<unsigned int>(prefix_node_ids.size());
+  /* the prefix comes from the plain search, which may have placed more rows
+   * than this search would ever have on its own */
+  if (ctx.scratch_active_rows.size() < prefix_node_ids.size() + 16)
+    ctx.scratch_active_rows.resize(prefix_node_ids.size() + 16);
 
   std::vector<bool> is_hidden(rows.size(), false);
   for (unsigned int h : hidden_node_ids) {
@@ -456,238 +456,7 @@ void SimdHuangCover<BitsetType>::solveSubtree(
     search(prefix_node_ids.size(), ctx, callback, abort_flag, iterations);
   }
 
-  uint64_t rem = ctx.local_iterations & 255;
-  if (rem > 0) {
-    iterations.fetch_add(rem, std::memory_order_relaxed);
-  }
-}
-
-template <typename BitsetType>
-void SimdHuangCover<BitsetType>::generateTasks(
-  unsigned int target_tasks,
-  std::vector<SubtreeTask> &tasks
-) const {
-  tasks.clear();
-  if (rows.empty() || active_column_list.empty())
-    return;
-
-  SearchContext root_ctx;
-  root_ctx.scratch_active_rows.resize(num_columns + 16);
-  root_ctx.current_solution.reserve(num_columns);
-  root_ctx.col_weights.assign(num_columns + 1, 0);
-  root_ctx.col_counts.assign(num_columns + 1, 0);
-
-  root_ctx.scratch_active_rows[0].resize(rows.size());
-  for (size_t i = 0; i < rows.size(); i++) {
-    root_ctx.scratch_active_rows[0][i] = static_cast<uint32_t>(i);
-  }
-
-  /* A node that expand() cannot refine any further still has to be handed to a
-   * worker: it may itself be a complete cover. Dropping it here (as the plain
-   * `return`s used to) loses that solution, because in this round the node is
-   * replaced by its set of children rather than being a task in its own right.
-   */
-  auto emitAsTask = [&](unsigned int depth, SearchContext &ctx) {
-    SubtreeTask t;
-    t.depth = depth;
-    t.ctx = ctx;
-    tasks.push_back(std::move(t));
-  };
-
-  std::function<void(unsigned int, SearchContext&, unsigned int)> expand;
-  expand = [&](unsigned int depth, SearchContext &ctx, unsigned int max_depth) {
-    if (depth == max_depth) {
-      SubtreeTask t;
-      t.depth = depth;
-      t.ctx = ctx;
-      tasks.push_back(std::move(t));
-      return;
-    }
-
-    const auto &curr_active = ctx.scratch_active_rows[depth];
-    if (curr_active.empty()) {
-      emitAsTask(depth, ctx);
-      return;
-    }
-
-    std::fill(ctx.col_counts.begin(), ctx.col_counts.end(), 0);
-    for (uint32_t r_idx : curr_active) {
-      const auto &r = rows[r_idx];
-      for (size_t i = 0; i < r.columns.size(); i++) {
-        ctx.col_counts[r.columns[i]] += r.weights[i];
-      }
-    }
-
-    for (unsigned int c : active_column_list) {
-      if (columns[c].min_weight > ctx.col_weights[c]) {
-        if (ctx.col_weights[c] + ctx.col_counts[c] < columns[c].min_weight)
-          return;
-      }
-      if (columns[c].is_voxel && columns[c].min_weight > 0 && !ctx.placed_voxels.test(c - 1)) {
-        if (ctx.col_counts[c] == 0)
-          return;
-      }
-    }
-
-    unsigned int min_metric = UINT32_MAX;
-    unsigned int best_col = UINT32_MAX;
-
-    for (unsigned int c : active_column_list) {
-      if (columns[c].is_hole)
-        continue;
-      if (ctx.col_weights[c] >= columns[c].min_weight)
-        continue;
-      if (columns[c].is_voxel && ctx.placed_voxels.test(c - 1))
-        continue;
-
-      unsigned int remaining_need = columns[c].min_weight - ctx.col_weights[c];
-      unsigned int count = ctx.col_counts[c];
-
-      if (count == 0)
-        return;
-
-      unsigned int metric = count * remaining_need;
-      if (metric < min_metric) {
-        min_metric = metric;
-        best_col = c;
-        if (metric <= 1)
-          break;
-      }
-    }
-
-    if (best_col == UINT32_MAX) {
-      /* no pivot left to branch on: this node is already as deep as it goes,
-       * and may be a complete cover
-       */
-      emitAsTask(depth, ctx);
-      return;
-    }
-
-    /* DELIBERATELY no resize of ctx.scratch_active_rows here.
-     *
-     * curr_active is a reference into that vector, and a resize would
-     * reallocate the outer buffer and leave it dangling before the loop below
-     * walks it. The guard it replaces was dead anyway: every placed row
-     * consumes at least one voxel column, so depth < num_columns always, and
-     * the vector is created with num_columns + 16 entries.
-     */
-    bt_assert(depth + 1 < ctx.scratch_active_rows.size());
-
-    for (uint32_t r_idx : curr_active) {
-      const auto &cand = rows[r_idx];
-
-      bool covers_best = columns[best_col].is_shape ? (cand.shape_col == best_col)
-                       : columns[best_col].is_voxel ? cand.voxel_mask.test(best_col - 1)
-                       : (cand.range_weight > 0);
-      if (!covers_best)
-        continue;
-
-      if (ctx.col_weights[cand.shape_col] + 1 > columns[cand.shape_col].max_weight)
-        continue;
-      if (has_range && ctx.col_weights[range_column] + cand.range_weight > columns[range_column].max_weight)
-        continue;
-
-      ctx.placed_voxels = ctx.placed_voxels | cand.voxel_mask;
-      for (size_t i = 0; i < cand.columns.size(); i++) {
-        ctx.col_weights[cand.columns[i]] += cand.weights[i];
-      }
-      ctx.current_solution.push_back(cand.node_id);
-
-      bool shape_full = (ctx.col_weights[cand.shape_col] >= columns[cand.shape_col].max_weight);
-      bool filter_monotonic = (!shape_full && columns[best_col].is_shape);
-      unsigned int max_allowed_range = has_range ? (columns[range_column].max_weight - ctx.col_weights[range_column]) : 0;
-
-      auto &next_active = ctx.scratch_active_rows[depth + 1];
-      next_active.clear();
-
-      filterRows(curr_active, r_idx, cand.voxel_mask, cand.shape_id, shape_full,
-                 filter_monotonic, cand.shape_row_idx, has_range, max_allowed_range, next_active);
-
-      expand(depth + 1, ctx, max_depth);
-
-      ctx.current_solution.pop_back();
-      for (size_t i = 0; i < cand.columns.size(); i++) {
-        ctx.col_weights[cand.columns[i]] -= cand.weights[i];
-      }
-      ctx.placed_voxels = ctx.placed_voxels ^ cand.voxel_mask;
-    }
-  };
-
-  expand(0, root_ctx, 1);
-  if (tasks.size() < target_tasks && !tasks.empty()) {
-    std::vector<SubtreeTask> d1_tasks = std::move(tasks);
-    tasks.clear();
-    for (auto &t : d1_tasks) {
-      expand(t.depth, t.ctx, 2);
-    }
-  }
-}
-
-template <typename BitsetType>
-void SimdHuangCover<BitsetType>::parallelSolve(
-  unsigned int num_workers,
-  SolutionCallback callback,
-  const std::atomic<bool> &abort_flag,
-  std::atomic<unsigned long> &iterations,
-  std::atomic<size_t> &total_tasks,
-  std::atomic<size_t> &completed_tasks
-) const {
-  unsigned int target_tasks = std::max(16u, num_workers * 4);
-  std::vector<SubtreeTask> tasks;
-  generateTasks(target_tasks, tasks);
-
-  total_tasks.store(tasks.size(), std::memory_order_relaxed);
-  completed_tasks.store(0, std::memory_order_relaxed);
-
-  if (tasks.empty() || abort_flag.load(std::memory_order_relaxed))
-    return;
-
-  std::atomic<size_t> next_task_idx{0};
-  std::exception_ptr worker_exception = nullptr;
-  std::mutex exception_mutex;
-
-  auto worker_fn = [&]() {
-    try {
-      while (!abort_flag.load(std::memory_order_relaxed)) {
-        size_t idx = next_task_idx.fetch_add(1, std::memory_order_relaxed);
-        if (idx >= tasks.size())
-          break;
-
-        auto &t = tasks[idx];
-        std::atomic<uint64_t> task_iter{0};
-        search(t.depth, t.ctx, callback, abort_flag, task_iter);
-
-        uint64_t rem = t.ctx.local_iterations & 255;
-        if (rem > 0) {
-          task_iter.fetch_add(rem, std::memory_order_relaxed);
-        }
-        iterations.fetch_add(task_iter.load(std::memory_order_relaxed), std::memory_order_relaxed);
-        completed_tasks.fetch_add(1, std::memory_order_relaxed);
-      }
-    } catch (...) {
-      std::lock_guard<std::mutex> lock(exception_mutex);
-      if (!worker_exception)
-        worker_exception = std::current_exception();
-      const_cast<std::atomic<bool>&>(abort_flag).store(true, std::memory_order_relaxed);
-    }
-  };
-
-  std::vector<std::thread> threads;
-  threads.reserve(num_workers - 1);
-  for (unsigned int i = 1; i < num_workers; i++) {
-    threads.emplace_back(worker_fn);
-  }
-
-  worker_fn();
-
-  for (auto &th : threads) {
-    if (th.joinable())
-      th.join();
-  }
-
-  if (worker_exception) {
-    std::rethrow_exception(worker_exception);
-  }
+  flushIterations(ctx, iterations);
 }
 
 template <typename BitsetType>
@@ -702,9 +471,14 @@ void SimdHuangCover<BitsetType>::search(
     return;
 
   ctx.local_iterations++;
-  if ((ctx.local_iterations & 255) == 0) {
+  if (ctx.local_iterations - ctx.flushed_iterations >= 256) {
     iterations.fetch_add(256, std::memory_order_relaxed);
+    ctx.flushed_iterations += 256;
   }
+  /* on a count of its own: where solutions come thick, each of them flushes
+   * and the batch above is never full */
+  if (ctx.progress && (ctx.local_iterations & 4095) == 0)
+    (*ctx.progress)(ctx.fraction());
 
   // Goal check: are all conditions fulfilled?
   if (ctx.current_solution.size() >= total_min_pieces) {
@@ -723,6 +497,10 @@ void SimdHuangCover<BitsetType>::search(
         }
       }
       if (all_fulfilled) {
+        flushIterations(ctx, iterations);
+        /* told here as well, see SimdExactCover::search */
+        if (ctx.progress)
+          (*ctx.progress)(ctx.fraction());
         if (!callback(ctx.current_solution))
           return;
         return;
@@ -777,16 +555,25 @@ void SimdHuangCover<BitsetType>::search(
     }
   }
 
-  // 2. Check range column if present
+  // 2. Check range column if present: to prune, and without variable voxels
+  // never to branch on. When every voxel is covered exactly once the range
+  // weight of a complete cover is forced, so the column only has to be
+  // checked (rows over the maximum are filtered out, under the minimum is
+  // pruned here, and the goal test looks at both). Branching on it would
+  // report two range rows that go together once for each order, as nothing
+  // keeps its rows in order the way a shape column's are. With variable
+  // voxels it stays a pivot: filling holes may be the only way to the minimum.
   if (has_range && ctx.col_weights[range_column] < columns[range_column].min_weight) {
     unsigned int count = ctx.col_counts[range_column];
     if (ctx.col_weights[range_column] + count < columns[range_column].min_weight)
       return; // Dead end: cannot satisfy range minimum
-    unsigned int remaining_need = columns[range_column].min_weight - ctx.col_weights[range_column];
-    unsigned int metric = count * remaining_need;
-    if (metric < min_metric) {
-      min_metric = metric;
-      best_col = range_column;
+    if (!hole_columns.empty()) {
+      unsigned int remaining_need = columns[range_column].min_weight - ctx.col_weights[range_column];
+      unsigned int metric = count * remaining_need;
+      if (metric < min_metric) {
+        min_metric = metric;
+        best_col = range_column;
+      }
     }
   }
 
@@ -816,26 +603,54 @@ void SimdHuangCover<BitsetType>::search(
    *
    * DELIBERATELY no resize of ctx.scratch_active_rows here: curr_active is a
    * reference into that vector, and a resize would reallocate the outer buffer
-   * and leave it dangling before the loop below walks it. The guard this
-   * replaces was dead anyway -- every placed row consumes at least one voxel
-   * column, so depth < num_columns always, and the vector is created with
-   * num_columns + 16 entries.
+   * and leave it dangling before the loop below walks it. The depth stays
+   * within the list: see searchDepthBound() and initContext().
    */
   bt_assert(depth + 1 < ctx.scratch_active_rows.size());
 
-  for (uint32_t r_idx : curr_active) {
-    const auto &cand = rows[r_idx];
-
+  auto isCandidate = [&](const Row &cand) -> bool {
     bool covers_best = columns[best_col].is_shape ? (cand.shape_col == best_col)
                      : columns[best_col].is_voxel ? cand.voxel_mask.test(best_col - 1)
                      : (cand.range_weight > 0);
     if (!covers_best)
+      return false;
+    if (ctx.col_weights[cand.shape_col] + 1 > columns[cand.shape_col].max_weight)
+      return false;
+    if (has_range && ctx.col_weights[range_column] + cand.range_weight > columns[range_column].max_weight)
+      return false;
+    return true;
+  };
+
+  // which choice of how many, for the progress report (near the top only,
+  // where counting the choices first costs nothing that matters)
+  const unsigned int level = depth - ctx.base_depth;
+  const bool track = ctx.progress && level < PROGRESS_LEVELS;
+  if (track) {
+    uint32_t n = 0;
+    for (uint32_t r_idx : curr_active)
+      if (isCandidate(rows[r_idx]))
+        n++;
+    ctx.branch_cnt[level] = n;
+    ctx.branch_idx[level] = 0;
+    if (level + 1 < PROGRESS_LEVELS)
+      ctx.branch_cnt[level + 1] = 0;
+  }
+  bool first = true;
+
+  for (uint32_t r_idx : curr_active) {
+    const auto &cand = rows[r_idx];
+
+    if (!isCandidate(cand))
       continue;
 
-    if (ctx.col_weights[cand.shape_col] + 1 > columns[cand.shape_col].max_weight)
-      continue;
-    if (has_range && ctx.col_weights[range_column] + cand.range_weight > columns[range_column].max_weight)
-      continue;
+    if (track) {
+      if (!first) {
+        ctx.branch_idx[level]++;
+        if (level + 1 < PROGRESS_LEVELS)
+          ctx.branch_cnt[level + 1] = 0;
+      }
+      first = false;
+    }
 
     // Place candidate row
     ctx.placed_voxels = ctx.placed_voxels | cand.voxel_mask;

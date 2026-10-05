@@ -327,9 +327,12 @@ TEST_CASE("SimdExactCover extended solve up to 32768", "[simd][exact_cover]") {
     unsigned int offset = capacity - 7;
     auto solver = tier.make(capacity, 3);
 
+#ifndef NDEBUG
     // Boundary check: col == capacity is out of bounds and must throw assert_exception
+    // (bt_assert only throws in a build with assertions)
     CHECK_THROWS_AS(solver->setRequiredColumn(capacity), assert_exception);
     CHECK_THROWS_AS(solver->addRow(99, 0, {capacity}), assert_exception);
+#endif
 
     for (unsigned int i = 0; i < 7; i++) {
       solver->setRequiredColumn(offset + i);
@@ -569,6 +572,8 @@ TEST_CASE("SimdExactCover256 concurrent solveSubtree", "[simd][exact_cover][thre
   REQUIRE(iterations.load() > 0);
 }
 
+/* bt_assert only throws in a build with assertions */
+#ifndef NDEBUG
 TEST_CASE("SimdExactCover256 bounds check assertions", "[simd][exact_cover]") {
   CHECK_THROWS_AS(SimdExactCover256(257, 1), assert_exception);
 
@@ -581,6 +586,7 @@ TEST_CASE("SimdExactCover256 bounds check assertions", "[simd][exact_cover]") {
   CHECK_THROWS_AS(bitset.reset(256), assert_exception);
   CHECK_THROWS_AS(bitset.test(256), assert_exception);
 }
+#endif
 
 #include "lib/simd_huang_cover.h"
 
@@ -671,31 +677,38 @@ TEMPLATE_TEST_CASE("SimdHuangCover extended sizes duplicate pieces exact cover",
   REQUIRE(solutions[1] == std::vector<unsigned int>{1, 3, 5});
   REQUIRE(iterations.load() > 0);
 
-  // Also test parallelSolve
-  std::atomic<unsigned long> p_iterations{0};
-  std::atomic<size_t> total_tasks{0};
-  std::atomic<size_t> completed_tasks{0};
-  std::vector<std::vector<unsigned int>> p_solutions;
-  std::mutex sol_mutex;
-
-  solver.parallelSolve(
-    4,
-    [&](const std::vector<unsigned int> &sol) {
-      std::lock_guard<std::mutex> lock(sol_mutex);
+  /* solveSubtree: what the threads of a parallel search call for a task of
+   * the plain search, with the rows the task has placed and the rows it has
+   * hidden. It must find the covers that hold the first and none of the
+   * second, each once.
+   */
+  auto subtree = [&](const std::vector<unsigned int> & placed, const std::vector<unsigned int> & hidden) {
+    std::vector<std::vector<unsigned int>> found;
+    std::atomic<uint64_t> it{0};
+    solver.solveSubtree(placed, hidden, [&](const std::vector<unsigned int> & sol) {
       std::vector<unsigned int> sorted = sol;
       std::sort(sorted.begin(), sorted.end());
-      p_solutions.push_back(sorted);
+      found.push_back(sorted);
       return true;
-    },
-    abort_flag,
-    p_iterations,
-    total_tasks,
-    completed_tasks
-  );
-  std::sort(p_solutions.begin(), p_solutions.end());
-  REQUIRE(p_solutions.size() == 2);
-  REQUIRE(p_solutions[0] == std::vector<unsigned int>{1, 2, 4});
-  REQUIRE(p_solutions[1] == std::vector<unsigned int>{1, 3, 5});
+    }, abort_flag, it);
+    std::sort(found.begin(), found.end());
+    return found;
+  };
+  typedef std::vector<std::vector<unsigned int>> covers_t;
+
+  /* nothing placed, nothing hidden: the whole search */
+  CHECK(subtree({}, {}) == covers_t{{1, 2, 4}, {1, 3, 5}});
+  /* a row placed (in any order with the rows the search adds) */
+  CHECK(subtree({2}, {}) == covers_t{{1, 2, 4}});
+  CHECK(subtree({5}, {}) == covers_t{{1, 3, 5}});
+  CHECK(subtree({1}, {}) == covers_t{{1, 2, 4}, {1, 3, 5}});
+  CHECK(subtree({4, 1}, {}) == covers_t{{1, 2, 4}});
+  /* a row hidden; 0 is the mark between groups of hidden rows, not a row */
+  CHECK(subtree({}, {0, 2, 0}) == covers_t{{1, 3, 5}});
+  CHECK(subtree({1}, {3}) == covers_t{{1, 2, 4}});
+  /* rows that do not go together: no cover, and no crash */
+  CHECK(subtree({2, 3}, {}).empty());
+  CHECK(subtree({1}, {2, 3}).empty());
 }
 
 
@@ -762,4 +775,148 @@ TEMPLATE_TEST_CASE("SimdHuangCover: the SIMD kill switches disable every kernel"
     TestType solver(7, 2);
     CHECK(std::string(solver.activeKernel()) != "avx512");
   }
+}
+
+/* A range column must not be branched on when there are no variable voxels.
+ * Nothing keeps the rows of a range column in order the way a shape column's
+ * are, so two range rows that go together were reported once for each order
+ * ({1,2} and {2,1}). The columns here are laid out so that the range column
+ * is the one with the fewest choices and would be picked. From upstream
+ * burr-tools (Arne Köhn, #114).
+ */
+TEMPLATE_TEST_CASE("SimdHuangCover: a range column reports each assembly once", "[simd][huang][range]",
+                   SimdHuangCover256, SimdHuangCover512) {
+  // column 1: the shape, exactly 2 pieces. columns 2-5: voxels. column 6: range.
+  TestType solver(6, 1);
+  solver.setColumnBounds(1, 2, 2, false, true, false, false);
+  for (unsigned int v = 2; v <= 5; v++)
+    solver.setColumnBounds(v, 1, 1, true, false, false, false);
+  solver.setColumnBounds(6, 1, 100, false, false, true, false);
+
+  // rows 1 and 2 each cover half the voxels and carry range weight; rows 3-6
+  // carry none and are laid out so that every voxel has 3 rows while the
+  // range column has 2. The only assembly is {1, 2}.
+  solver.addRow(1, 0, 1, 0, 1, {1, 2, 3, 6}, {1, 1, 1, 1});
+  solver.addRow(2, 0, 1, 1, 1, {1, 4, 5, 6}, {1, 1, 1, 1});
+  solver.addRow(3, 0, 1, 2, 0, {1, 2, 4}, {1, 1, 1});
+  solver.addRow(4, 0, 1, 3, 0, {1, 3, 5}, {1, 1, 1});
+  solver.addRow(5, 0, 1, 4, 0, {1, 2, 5}, {1, 1, 1});
+  solver.addRow(6, 0, 1, 5, 0, {1, 3, 4}, {1, 1, 1});
+
+  std::vector<std::vector<unsigned int>> sols;
+  std::atomic<bool> abort_flag{false};
+  std::atomic<uint64_t> iterations{0};
+  solver.solve([&](const std::vector<unsigned int> & s) {
+    std::vector<unsigned int> sorted = s;
+    std::sort(sorted.begin(), sorted.end());
+    sols.push_back(sorted);
+    return true;
+  }, abort_flag, iterations);
+
+  REQUIRE(sols.size() == 1);
+  CHECK(sols[0] == std::vector<unsigned int>{1, 2});
+}
+
+/* Optional columns (assembler 0's variable voxels) and the hole budget.
+ * From upstream burr-tools (Arne Köhn, #115).
+ */
+TEMPLATE_TEST_CASE("SimdExactCover: optional columns and the hole budget", "[simd][exact_cover][holes]",
+                   SimdExactCover256, SimdExactCover512) {
+
+  // column 0: the piece. columns 1, 2: voxels that must be filled.
+  // column 3: a variable voxel, which may stay empty if the budget allows.
+  auto build = [](unsigned int budget, bool fillable) {
+    auto solver = std::make_unique<TestType>(4, 1);
+    solver->setHoleBudget(budget);
+    solver->setRequiredColumn(0);
+    solver->setRequiredColumn(1);
+    solver->setRequiredColumn(2);
+    solver->setOptionalColumn(3);
+    solver->addRow(1, 0, {0, 1, 2});         // leaves the variable voxel empty
+    if (fillable)
+      solver->addRow(2, 0, {0, 1, 2, 3});    // fills it
+    return solver;
+  };
+
+  auto run = [](TestType & solver) {
+    std::vector<std::vector<unsigned int>> sols;
+    std::atomic<bool> abort_flag{false};
+    std::atomic<uint64_t> iterations{0};
+    solver.solve([&](const std::vector<unsigned int> & s) {
+      std::vector<unsigned int> sorted = s;
+      std::sort(sorted.begin(), sorted.end());
+      sols.push_back(sorted);
+      return true;
+    }, abort_flag, iterations);
+    std::sort(sols.begin(), sols.end());
+    return sols;
+  };
+
+  SECTION("an optional column is never a dead end and is not asked for at the goal") {
+    auto sols = run(*build(1, true));
+    REQUIRE(sols.size() == 2);
+    CHECK(sols[0] == std::vector<unsigned int>{1});
+    CHECK(sols[1] == std::vector<unsigned int>{2});
+  }
+
+  SECTION("the budget is looked at when a column is chosen, not at the goal") {
+    // as in the plain search: with no hole allowed row 1 is still reported,
+    // because the variable voxel could have been filled where the choice was made
+    CHECK(run(*build(0, true)).size() == 2);
+  }
+
+  SECTION("an optional column no row can fill uses up the budget") {
+    CHECK(run(*build(0, false)).empty());
+    auto sols = run(*build(1, false));
+    REQUIRE(sols.size() == 1);
+    CHECK(sols[0] == std::vector<unsigned int>{1});
+  }
+
+  SECTION("two rows may not share an optional column") {
+    // two pieces, one voxel each must fill, and both want the variable voxel
+    TestType solver(5, 2);
+    solver.setHoleBudget(1);
+    for (unsigned int c = 0; c < 4; c++)
+      solver.setRequiredColumn(c);
+    solver.setOptionalColumn(4);
+    solver.addRow(1, 0, {0, 2, 4});
+    solver.addRow(2, 1, {1, 3, 4});
+    solver.addRow(3, 1, {1, 3});
+    auto sols = run(solver);
+    REQUIRE(sols.size() == 1);
+    CHECK(sols[0] == std::vector<unsigned int>{1, 3});
+  }
+}
+
+/* A search tells how far it is and counts its nodes while it runs, not only
+ * when it is through.
+ */
+TEST_CASE("SimdExactCover: progress and iterations are reported during the search", "[simd][exact_cover][progress]") {
+  // n pieces, each of which can go to any of n places: n! covers
+  const unsigned int n = 8;
+  SimdExactCover256 solver(2 * n, n);
+  for (unsigned int c = 0; c < 2 * n; c++)
+    solver.setRequiredColumn(c);
+  unsigned int node = 1;
+  for (unsigned int p = 0; p < n; p++)
+    for (unsigned int place = 0; place < n; place++)
+      solver.addRow(node++, p, {p, n + place});
+
+  std::atomic<bool> abort_flag{false};
+  std::atomic<uint64_t> iterations{0};
+  uint64_t solutions = 0, seenAtFirstSolution = 0;
+  std::vector<float> fractions;
+  solver.solve([&](const std::vector<unsigned int> &) {
+    if (solutions++ == 0)
+      seenAtFirstSolution = iterations.load();
+    return true;
+  }, abort_flag, iterations, [&](float f) { fractions.push_back(f); });
+
+  CHECK(solutions == 40320);
+  CHECK(seenAtFirstSolution > 0);
+  REQUIRE(fractions.size() > 4);
+  CHECK(std::is_sorted(fractions.begin(), fractions.end()));
+  CHECK(fractions.front() >= 0.0f);
+  CHECK(fractions.back() <= 1.0f);
+  CHECK(fractions.back() > 0.5f);
 }

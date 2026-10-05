@@ -19,6 +19,7 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include "blockpack.h"
+#include "helperpool.h"
 
 #include <zlib.h>
 
@@ -44,8 +45,8 @@ enum { KIND_DEFLATE = 0, KIND_KEYS = 1 };
 unsigned int threadsFor(unsigned int asked) {
   if (asked)
     return asked;
-  unsigned int t = std::thread::hardware_concurrency();
-  return t ? t : 1;
+  /* the limit of the application, BURRTOOLS_THREADS, or every core */
+  return solveThreadBudget();
 }
 
 template <class T>

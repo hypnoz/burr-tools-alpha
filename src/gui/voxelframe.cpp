@@ -39,6 +39,7 @@
 #include "../lib/stacking.h"
 
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <cmath>
 
@@ -107,7 +108,135 @@ void voxelFrame_c::setRotaterMethod(int method)
 }
 
 voxelFrame_c::~voxelFrame_c(void) {
+  Fl::remove_timeout(cb_turn, this);
   clearSpaces();
+}
+
+namespace {
+
+const double TURN_SECONDS = 0.25;
+
+/* a rotation as the rotater hands it out (3x3, column after column) to a
+ * quaternion x, y, z, w and back */
+void matrixToQuat(const float m[9], float q[4]) {
+  const float r00 = m[0], r10 = m[1], r20 = m[2];
+  const float r01 = m[3], r11 = m[4], r21 = m[5];
+  const float r02 = m[6], r12 = m[7], r22 = m[8];
+  const float trace = r00 + r11 + r22;
+  if (trace > 0) {
+    const float s = 2 * sqrtf(trace + 1);
+    q[3] = s / 4;
+    q[0] = (r21 - r12) / s;
+    q[1] = (r02 - r20) / s;
+    q[2] = (r10 - r01) / s;
+  } else if (r00 > r11 && r00 > r22) {
+    const float s = 2 * sqrtf(1 + r00 - r11 - r22);
+    q[3] = (r21 - r12) / s;
+    q[0] = s / 4;
+    q[1] = (r01 + r10) / s;
+    q[2] = (r02 + r20) / s;
+  } else if (r11 > r22) {
+    const float s = 2 * sqrtf(1 + r11 - r00 - r22);
+    q[3] = (r02 - r20) / s;
+    q[0] = (r01 + r10) / s;
+    q[1] = s / 4;
+    q[2] = (r12 + r21) / s;
+  } else {
+    const float s = 2 * sqrtf(1 + r22 - r00 - r11);
+    q[3] = (r10 - r01) / s;
+    q[0] = (r02 + r20) / s;
+    q[1] = (r12 + r21) / s;
+    q[2] = s / 4;
+  }
+}
+
+void quatToMatrix(const float q[4], float m[9]) {
+  const float x = q[0], y = q[1], z = q[2], w = q[3];
+  m[0] = 1 - 2 * (y * y + z * z);  m[3] = 2 * (x * y - z * w);      m[6] = 2 * (x * z + y * w);
+  m[1] = 2 * (x * y + z * w);      m[4] = 1 - 2 * (x * x + z * z);  m[7] = 2 * (y * z - x * w);
+  m[2] = 2 * (x * z - y * w);      m[5] = 2 * (y * z + x * w);      m[8] = 1 - 2 * (x * x + y * y);
+}
+
+/* the rotation a part t (0..1) of the way from a to b, the short way round */
+void quatSlerp(const float a[4], const float b[4], float t, float out[4]) {
+  float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+  float sign = 1;
+  if (dot < 0) {
+    dot = -dot;
+    sign = -1;
+  }
+  float wa = 1 - t, wb = t;
+  if (dot < 0.9995f) {
+    const float angle = acosf(dot);
+    const float s = sinf(angle);
+    wa = sinf((1 - t) * angle) / s;
+    wb = sinf(t * angle) / s;
+  }
+  float len = 0;
+  for (int i = 0; i < 4; i++) {
+    out[i] = wa * a[i] + sign * wb * b[i];
+    len += out[i] * out[i];
+  }
+  len = sqrtf(len);
+  if (len > 0)
+    for (int i = 0; i < 4; i++)
+      out[i] /= len;
+}
+
+double turnClock(void) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+}
+
+void voxelFrame_c::startTurn(const float from[9], const float to[9]) {
+  matrixToQuat(from, turnFrom);
+  matrixToQuat(to, turnTo);
+
+  /* nothing to show for a turn too small to see */
+  const float dot = fabsf(turnFrom[0] * turnTo[0] + turnFrom[1] * turnTo[1] +
+                          turnFrom[2] * turnTo[2] + turnFrom[3] * turnTo[3]);
+  if (dot > 0.99999f)
+    return;
+
+  rotater->setRotation(from);
+  turnStarted = turnClock();
+  if (!turning) {
+    turning = true;
+    Fl::add_timeout(1.0 / 60, cb_turn, this);
+  }
+}
+
+void voxelFrame_c::finishTurn(void) {
+  if (!turning)
+    return;
+  turning = false;
+  Fl::remove_timeout(cb_turn, this);
+  float m[9];
+  quatToMatrix(turnTo, m);
+  rotater->setRotation(m);
+  redraw();
+}
+
+void voxelFrame_c::cb_turn(void * v) {
+  voxelFrame_c * self = static_cast<voxelFrame_c *>(v);
+  if (!self->turning)
+    return;
+
+  double t = (turnClock() - self->turnStarted) / TURN_SECONDS;
+  if (t >= 1) {
+    self->finishTurn();
+    return;
+  }
+  /* slow at both ends */
+  t = t * t * (3 - 2 * t);
+
+  float q[4], m[9];
+  quatSlerp(self->turnFrom, self->turnTo, (float)t, q);
+  quatToMatrix(q, m);
+  self->rotater->setRotation(m);
+  self->redraw();
+  Fl::repeat_timeout(1.0 / 60, cb_turn, v);
 }
 
 // this is used to shift one side of the cubes so that they slightly differ
@@ -1584,6 +1713,13 @@ void voxelFrame_c::showMesh(Polyhedron * poly)
   i.z = -0.5*(bbox[0][2]+bbox[1][2]);
   i.scale = 1;
 
+  /* the mesh has no voxel shape to take a size from, so keep its own: the
+   * clip planes must enclose it (see computeContentRadius) */
+  {
+    const double dx = bbox[1][0]-bbox[0][0], dy = bbox[1][1]-bbox[0][1], dz = bbox[1][2]-bbox[0][2];
+    i.meshRadius = (float)(0.5*sqrt(dx*dx + dy*dy + dz*dz));
+  }
+
   i.dim = false;
 
   i.list = 0;
@@ -2851,8 +2987,14 @@ double voxelFrame_c::computeContentRadius(void) const {
 
   for (const shapeInfo & s : shapes) {
 
-    if (!s.shape)
+    if (!s.shape) {
+      /* a mesh shown on its own (the STL export preview) is centred on the
+       * origin by its x, y, z. Leaving it out made the radius 1 and a large
+       * mesh was cut down to a thin slab by the clip planes. */
+      if (s.poly && s.meshRadius*s.scale > r)
+        r = s.meshRadius*s.scale;
       continue;
+    }
 
     double radius = 0.5*sqrt((double)s.shape->getDiagonal())*s.scale;
     double dist = sqrt((double)s.x*s.x + (double)s.y*s.y + (double)s.z*s.z) + radius;
@@ -2949,6 +3091,7 @@ void voxelFrame_c::draw() {
 
   glPushMatrix();
   glTranslatef(0, 0, -size*2);
+  glTranslatef(panX, panY, 0);
 
   if (colors == anaglyphColor) {
     glPushMatrix();
@@ -3014,9 +3157,27 @@ int voxelFrame_c::handle(int event) {
     if (event == FL_ENTER)
       return 1;
 
+    /* a turn still being shown ends where it was going before anything
+     * else happens to the view */
+    if (event == FL_PUSH || event == FL_DRAG)
+      finishTurn();
+
+    float before[9];
+    rotater->getRotation(before);
+
     viewCube_c::Action a = viewCube->handle(event, rotater.get(), w(), h());
+
+    /* a click on the cube, or letting go of it, may have snapped the view:
+     * turn there instead of jumping (dragging the cube turns it as it goes) */
+    if (a == viewCube_c::ACT_REDRAW && (event == FL_PUSH || event == FL_RELEASE)) {
+      float after[9];
+      rotater->getRotation(after);
+      startTurn(before, after);
+    }
+
     if (a == viewCube_c::ACT_HOME) {
       userRotated = false;
+      resetPan();
       if (homeCb)
         homeCb(this, homeUser);
       else
@@ -3039,6 +3200,19 @@ int voxelFrame_c::handle(int event) {
   switch(event) {
   case FL_PUSH:
 
+    /* the middle button moves the view; so does the left one with the
+     * Command (Windows) key held, for a mouse or trackpad without one */
+    if (Fl::event_button() == FL_MIDDLE_MOUSE ||
+        (Fl::event_button() == FL_LEFT_MOUSE && Fl::event_state(FL_META) &&
+         !Fl::event_state(FL_SHIFT | FL_ALT | FL_CTRL))) {
+      panning = true;
+      panStartMouseX = Fl::event_x();
+      panStartMouseY = Fl::event_y();
+      panStartX = panX;
+      panStartY = panY;
+      return 1;
+    }
+
     if (!Fl::event_state(FL_SHIFT | FL_ALT | FL_CTRL))
       rotater->click(Fl::event_x(), Fl::event_y());
 
@@ -3047,6 +3221,16 @@ int voxelFrame_c::handle(int event) {
     return 1;
 
   case FL_DRAG:
+
+    if (panning) {
+      /* what one pixel is in the scene at the distance of its middle:
+       * the camera is 2 * size away and sees 15 degrees from top to bottom */
+      const double perPixel = 2 * (2 * size) * tan(7.5 * 3.14159265358979 / 180.0) / (h() > 0 ? h() : 1);
+      panX = panStartX + (Fl::event_x() - panStartMouseX) * perPixel;
+      panY = panStartY - (Fl::event_y() - panStartMouseY) * perPixel;
+      redraw();
+      return 1;
+    }
 
     userRotated = true;
     rotater->drag(Fl::event_x(), Fl::event_y());
@@ -3057,6 +3241,12 @@ int voxelFrame_c::handle(int event) {
     return 1;
 
   case FL_RELEASE:
+
+    if (panning) {
+      panning = false;
+      redraw();
+      return 1;
+    }
 
     rotater->clack(Fl::event_x(), Fl::event_y());
     redraw();
@@ -3073,6 +3263,7 @@ int voxelFrame_c::handle(int event) {
 
 void voxelFrame_c::resetViewRotation(void) {
   applyDefaultRotation();
+  resetPan();
   redraw();
 }
 

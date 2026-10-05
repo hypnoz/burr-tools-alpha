@@ -22,6 +22,7 @@
 #include "lib/puzzle.h"
 #include "lib/problem.h"
 #include "lib/solvethread.h"
+#include "lib/helperpool.h"
 #include "lib/bt_assert.h"
 #include "lib/gridtype.h"
 #include "lib/voxel.h"
@@ -60,6 +61,7 @@ void usage(void) {
   cout << "  --rotations   try 90 degree piece rotations when disassembling\n";
   cout << "  --solver TYPE classic, crowell or bt2\n";
   cout << "  --progress    print what the solver is doing to stderr once a second\n";
+  cout << "  -t n          use n threads for the solve (0 or not given: every core)\n";
 }
 
 
@@ -118,6 +120,18 @@ static int solve(int argv, char* args[]) {
         cout << "unknown solver type \"" << args[i+1] << "\"\n";
         return 2;
       }
+      i++;
+    }
+    else if (strcmp(args[i], "-t") == 0) {
+      /* refused when it is not a number: atoi would make 0 of it, which
+       * stands for every core */
+      char * end = nullptr;
+      const long t = (i + 1 < argv) ? strtol(args[i+1], &end, 10) : -1;
+      if (i + 1 >= argv || end == args[i+1] || *end || t < 0) {
+        cout << "-t requires a non-negative number\n";
+        return 2;
+      }
+      setSolveThreadLimit((unsigned int)t);
       i++;
     }
     else if (strcmp(args[i], "-b") == 0) {

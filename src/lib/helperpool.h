@@ -80,9 +80,32 @@ private:
 };
 
 /**
- * The number of threads a solve may use: BURRTOOLS_THREADS when set, else
- * the hardware's count; at least 1.
+ * A limit on the threads a solve uses, set by the application (the Settings
+ * dialog, -t n); 0 for none. It holds for everything that picks its own
+ * number of threads: the assembly search, the take-apart workers and the
+ * threads lent to them, the Panex and stacking searches and the packing of
+ * a saved search.
+ */
+void setSolveThreadLimit(unsigned int n);
+unsigned int solveThreadLimit(void);
+
+/**
+ * The number of threads a solve may use: the limit above when one is set,
+ * else BURRTOOLS_THREADS when set, else the hardware's count; at least 1.
  */
 unsigned int solveThreadBudget(void);
+
+/**
+ * With a limit of n threads, how many search for assemblies and how many take
+ * them apart while both go on at once, so that together they keep to n (one
+ * each when n is 1). Once the assembly search is through, the take-aparts
+ * get the rest back as threads lent by the helper pool. Without a limit the
+ * two are sized on their own (chooseDisasmWorkerCount in solvethread.cpp).
+ */
+struct solveThreadSplit_s {
+  unsigned int assembly;
+  unsigned int disassembly;
+};
+solveThreadSplit_s solveThreadSplit(unsigned int n);
 
 #endif

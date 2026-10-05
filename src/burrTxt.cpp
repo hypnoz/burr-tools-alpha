@@ -702,6 +702,8 @@ int main(int argv, char* args[]) {
           return 2;
         }
         threads = (unsigned int)t;
+        /* also for what picks its own number of threads */
+        setSolveThreadLimit(threads);
         i++;
       } else if (strcmp(args[i], "-o") == 0) {
         if (i + 1 >= argv) {

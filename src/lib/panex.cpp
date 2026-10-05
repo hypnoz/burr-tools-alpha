@@ -43,6 +43,7 @@
  */
 
 #include "panex.h"
+#include "helperpool.h"
 
 #include "problem.h"
 #include "puzzle.h"
@@ -233,13 +234,8 @@ public:
 unsigned int threadCount(unsigned int asked) {
   if (asked > 0)
     return asked;
-  if (const char * e = std::getenv("BURRTOOLS_THREADS")) {
-    int t = std::atoi(e);
-    if (t > 0)
-      return (unsigned int)t;
-  }
-  unsigned int t = std::thread::hardware_concurrency();
-  return t > 0 ? t : 1;
+  /* the limit of the application, BURRTOOLS_THREADS, or every core */
+  return solveThreadBudget();
 }
 
 /* Runs f(t) on threads 0..n-1 and waits for all of them. */

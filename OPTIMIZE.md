@@ -770,15 +770,118 @@ corpus puzzles give the same JSON with Classic and with Crowell.
   Also not done: the "Add disassembly" dialogs still show nothing while one
   runs; saving a BurrTools 2 search that is split (it starts again).
 
+## Round 5 — ideas from upstream (2026-10-05)
+
+The commits made to burr-tools/burr-tools master since 2026-09-22 were read
+one by one, and what fits this fork was taken as an idea, not as a patch:
+the fork has its own task lists, pause and resume, progress picture and
+helper pool, and those stay. Numbers from this machine (10 cores), old and
+new binaries run one after the other; the assemblies found are the same
+sets (test "Vector and plain search find the same assemblies").
+
+- [x] R5.1 The vector search does the work on every thread (upstream #98
+  had it that way before; here a search split over threads fell back to the
+  plain one). A task of the plain search is the rows placed (assembler 1:
+  and the rows hidden); a thread hands those to
+  SimdExactCover / SimdHuangCover::solveSubtree and gets the covers below
+  the task. Tasks, the list of finished ones, signatures, stop, continue
+  and save are as they were. assembler_0_c / assembler_1_c
+  ::parallelMultiSearch, reportParallelSolution.
+  - Pentominoes 6x10, Classic: 4 threads 0.46 s -> 0.32 s, 8 threads
+    0.34 s -> 0.23 s. HexSticks, all threads: 0.20 s -> 0.02 s.
+  - assembler 1's signatures are now taken from the sorted assembly, so
+    they do not depend on the order the rows were found in. A stopped
+    parallel search saved by an older version (flag 2) goes on with the
+    plain search and its own kind of signature; new saves are flag 4.
+  - Switch: BURRTOOLS_NO_SIMD=1 (the plain search everywhere).
+- [x] R5.2 Range puzzles take the vector search (upstream #114): the range
+  column is never branched on unless there are variable voxels.
+  SolidSixPieceBurrs: 7.3 s -> 0.31 s on one thread, 1.47 s -> 0.09 s on
+  all; the whole solve in the GUI path (burrTxt2 -R -d) about 0.06 s.
+- [x] R5.3 Puzzles with holes or variable voxels take the vector search in
+  assembler 0 (upstream #115): the variable columns are optional ones, the
+  holes a budget. Burr-Glar (3.1 million assemblies): 123 s -> 76 s on one
+  thread, 24.8 s -> 17.3 s on all.
+- [x] R5.4 assembler 1 keeps to the plain search when the vector search
+  would need more than 256 MB for its matrix (upstream #131), and the
+  scratch lists are sized by the depth of the search, not by the columns.
+  Switch: BURRTOOLS_HUANG_MEM_MB=n (0: never the vector search).
+- [x] R5.5 getPieceInformation looks its row up by halving (upstream #113).
+- [x] R5.6 Bugs found on the way, all in code that was here before:
+  - assembler 1's vector search found nothing on a reduced matrix: it was
+    told about the columns reduce() had removed (upstream #94). It only
+    showed once range puzzles took that search.
+  - A stopped vector search on one thread saved the first row of its last
+    solution as a place in the search; loading that file hung
+    (assembler_0_c::setPosition covered the row, createSimdSolver never
+    came to the end of the column list).
+  - A stop that came between the solve thread saying "assembling" and
+    assemble() starting was thrown away, because assemble() clears the stop
+    flag as it starts: the search then ran to its end with Stop pressed,
+    and an autosave pause was not taken. assembler_c::armStop / beginRun.
+  - Lost wake-ups in the take-apart queue (solvethread.cpp): the stop flag
+    and the count of pending take-aparts were changed without the queue's
+    mutex and the waiters woken; one that had just looked and not yet gone
+    to sleep slept on for ever. About one solve in a hundred of a small
+    puzzle hung at its end. This was item 8.1 below.
+  - assembler_1_c::getFinished read next_row_stack while the search thread
+    changed it (upstream #93 found it with ThreadSanitizer): searchDone.
+  - Polyhedron::finalize could leave an edge without its twin with newer
+    libc++, and the 3D view then asserted (upstream 91268284).
+  - The STL export preview was cut to a thin slab by the clip planes: a
+    mesh without a shape did not count for the size of what is shown
+    (upstream #121).
+  - assembly_c::createSpace transformed its pieces inside bt_assert; a
+    build without assertions would have skipped it (upstream #113).
+- [x] R5.7 One limit on the threads of a solve: Settings "Solver Threads",
+  `-t n` of burrTxt and burrTxt2 (upstream #108). setSolveThreadLimit() in
+  helperpool.h; solveThreadBudget() is the one place every stage asks
+  (assembly, take-apart workers and lent threads, BurrTools 2, Panex,
+  packing a saved search). With a limit the assembly search and the
+  take-apart workers share it (solveThreadSplit), and while the search
+  waits at a full queue its cores are lent to the take-aparts.
+  CoverUp3 through burrTxt2: `-t 2` 2.9 s on 1.9 cores, `-t 4` 1.7 s on
+  3.3, no limit 1.3 s as before.
+- [x] R5.8 Progress. The vector search says how far it is (it said nothing,
+  so the assembly part of the bar stood at 0), and counts its nodes as it
+  goes. The bar weighs the assembly search and the take-aparts by what they
+  cost, measured, where it weighed them half and half (the model of
+  upstream #93, in solveThread_c::progressSnapshot). CornerCube, 2 threads:
+  the bar went 68 % -> 77 % in 7 s and then jumped; now 14, 25, 32, 55, 70,
+  80, 95 % with the seconds left to match.
+- [x] R5.9 GUI: the 3D view can be moved with the middle mouse button or
+  Command/Windows + drag (upstream #99); a snap of the view cube is a short
+  turn, not a jump (upstream #120); an undo step keeps only the shapes it
+  changed, and transforms of two different shapes are two steps (upstream
+  #126).
+- [x] R5.10 `just build-release` / `just test-release`: a build without
+  assertions, warnings as errors. On this Mac it is 0 to 4 % faster than the
+  same build with assertions, so the binaries that ship keep them: several
+  accessors are documented to throw when misused and the GUI reports an
+  assertion instead of going on with bad data. (Upstream measured 15 to
+  30 % on Linux, where its debug build also turns on the checks of the C++
+  library; worth measuring there before changing build_scripts.)
+- Looked at, not taken:
+  - The token budget, work stealing and jthread of upstream #98: the fork's
+    helper pool and task lists do the same job, and finer or stolen tasks
+    were tried in Round 4 and made the pentominoes slower.
+  - Upstream's save format for parallel searches (#132) and its resume of
+    the Huang parallel path (#130): the fork has both, with its own format.
+  - Upstream's undo (puzzleHistory_c) as it is: its restore removes and
+    adds problems, which would drop the goal map, the rod sets, the solver
+    options and a paused solve.
+  - The view cube's perspective labels, hover zones and the setting to
+    hide it; the transform preview overlay; fit to content. The fork's own
+    versions stay.
+
 ## Open items found while working
 
-- [ ] **8.1 One unexplained test-regression failure** — on 2026-10-03,
+- [x] **8.1 One unexplained test-regression failure** — on 2026-10-03,
   one run reported 17/18 right after `just check`; 15 later runs (one
-  under load) were all 18/18 and the failing puzzle was not captured. If
-  it happens again, rerun with
-  `python3 test/test_examples_regression.py 2>&1 | grep -A3 FAILED` and
-  note the puzzle here: a different solution count would mean a
-  nondeterministic solver, a timeout would mean load.
+  under load) were all 18/18 and the failing puzzle was not captured.
+  Done 2026-10-05: it came again (Prisgon, burrTxt2 with -d, timed out) and
+  was a lost wake-up in the take-apart queue, see R5.6. Before: 1 hang in
+  89 runs of `burrTxt2 -R -d` on Prisgon; after: none in 800.
 
 ## Known cppcheck findings (intentional)
 

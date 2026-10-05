@@ -261,6 +261,30 @@ public:
 
   /** Withdraw a stop request before a new run of split searches. */
   virtual void clearStop(void) {}
+
+  /**
+   * assemble() withdraws an earlier stop request as it starts, so that a
+   * search that was stopped can be continued. That also threw away a stop
+   * asked for just before it started: by another thread that had been told
+   * the search was running, in the moment before it really was. The search
+   * then ran to its end, however long, with Stop pressed.
+   *
+   * So the caller that makes the assembler known to other threads calls
+   * armStop() first, on the thread that will call assemble(). It withdraws
+   * what is left of an earlier stop; from then on a stop is kept, and the
+   * next assemble() returns at once when one has come.
+   */
+  void armStop(void) {
+    clearStop();
+    stopArmed.store(true, std::memory_order_release);
+  }
+
+  /** What assemble() starts with: withdraws an earlier stop request unless
+   * armStop() has done so already. */
+  void beginRun(void) {
+    if (!stopArmed.exchange(false, std::memory_order_acq_rel))
+      clearStop();
+  }
   /** True from stop() until clearStop() or the next assemble(). */
   virtual bool stopRequested(void) const { return false; }
   /** Called once, on the calling thread, before split searches run on others. */
@@ -361,7 +385,7 @@ public:
    * BURRTOOLS_THREADS and from Problem.solve(threads=...), none of which is
    * otherwise validated, and it is used directly to size a thread vector.
    */
-  static const unsigned int MAX_THREADS = 256;
+  static constexpr unsigned int MAX_THREADS = 256;
 
   /* Thread count and coarse progress, shared by both engines.
    *
@@ -375,6 +399,9 @@ public:
   bool strictColorRestrictions = false;
 
   unsigned int numThreads = 0;
+
+  /* set by armStop() until the next assemble() */
+  std::atomic<bool> stopArmed{false};
 
   /* number of top level tasks the parallel search split itself into, and how
    * many have finished. totalTasks == 0 means "not running in parallel", which
@@ -417,8 +444,9 @@ public:
   /* serialises the hand off of a finished assembly to the callback */
   mutable std::mutex callbackMutex;
 
-  /* worker count actually used: numThreads, else BURRTOOLS_THREADS, else the
-   * hardware concurrency -- every path clamped to MAX_THREADS
+  /* worker count actually used: numThreads, else the limit of the
+   * application, else BURRTOOLS_THREADS, else the hardware concurrency (see
+   * solveThreadBudget) -- every path clamped to MAX_THREADS
    */
   unsigned int getEffectiveThreads(void) const;
 

@@ -88,8 +88,13 @@ private:
     stacking::stackMap_c start, goal;
   };
 
+  /* A snapshot does not hold a copy of every shape: a shape that is as it
+   * was in the snapshot before is shared with it. One undo step then costs
+   * the memory of the shapes it changed, usually one, and not of the whole
+   * puzzle (the idea is from upstream's puzzleHistory_c, Girish Sharma).
+   */
   struct snapshot_c {
-    std::vector<std::unique_ptr<voxel_c>> shapes;
+    std::vector<std::shared_ptr<const voxel_c>> shapes;
     std::vector<problemSnap_c> problems;
     unsigned int selectedShape = (unsigned int)-1;
   };
@@ -108,6 +113,8 @@ private:
   int64_t lastTimeMs;
 
   static std::unique_ptr<voxel_c> cloneShape(const voxel_c * src);
+  /* everything a snapshot keeps of a shape is alike in the two */
+  static bool sameShape(const voxel_c * a, const voxel_c * b);
   static int64_t nowMs(void);
 
   std::unique_ptr<snapshot_c> capture(const puzzle_c * puzzle, unsigned int selectedShape) const;

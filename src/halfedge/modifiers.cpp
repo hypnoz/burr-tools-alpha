@@ -1072,7 +1072,7 @@ Polyhedron * mergeCoplanarFaces(const Polyhedron & src)
       std::set<const Face *> inGroup(groups[g].begin(), groups[g].end());
 
       // count the faces of the result so we can undo a failed merge
-      int facesBefore = res->numFaces();
+      [[maybe_unused]] int facesBefore = res->numFaces();
 
       if (mergeGroup(res, vl, groups[g], inGroup))
         continue;

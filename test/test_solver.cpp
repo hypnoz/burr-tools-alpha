@@ -11,6 +11,7 @@
 #include "lib/disassembler_0.h"
 #include "lib/disassembly.h"
 #include "lib/gridtype.h"
+#include "lib/helperpool.h"
 #include "lib/solvethread.h"
 #include "lib/solvertype.h"
 #include "lib/voxel.h"
@@ -230,6 +231,8 @@ TEST_CASE("Puzzle metadata inspection and modern accessors", "[metadata]") {
   CHECK(p->getShapes().size() == 8);
 }
 
+/* bt_assert and bt_assert_line do nothing in a build without assertions */
+#ifndef NDEBUG
 TEST_CASE("bt_assert throws assert_exception with C++20 source_location", "[assert]") {
   try {
     bt_assert(1 == 2);
@@ -254,6 +257,7 @@ TEST_CASE("assert_log correctly records lines", "[assert]") {
   CHECK(std::string(assert_log->line(initialLines)) == "first assert log entry");
   CHECK(std::string(assert_log->line(initialLines + 1)) == "second assert log entry");
 }
+#endif
 
 TEST_CASE("Symmetry calculation for non-cube grids with unaligned bounding boxes", "[symmetry]") {
   // Test GT_RHOMBIC whose voxel class (voxel_3_c) aligns bounding boxes to multiples of 5
@@ -1009,6 +1013,253 @@ TEST_CASE("Assembler 1: a stopped search resumes, saved or not, reporting each a
   }
 }
 
+/* The vector search and the plain search must find the same assemblies:
+ * on one thread, where the vector search does all of it, and on several,
+ * where every thread searches its tasks with it; from the matrix as made and
+ * from the reduced one (which loses rows and columns). Compared as sets of
+ * assemblies, not as counts. The list holds puzzles with holes and variable
+ * voxels (assembler 0) and with piece ranges (assembler 1), which the vector
+ * search was kept from before.
+ */
+static std::multiset<std::string> assembliesOf(const char * file, unsigned int threads, bool reduce,
+                                               bool noSimd, unsigned long * iterations = nullptr) {
+  setNoSimd(noSimd);
+  std::multiset<std::string> found;
+  {
+    auto p = puzzle_c::load(file);
+    REQUIRE(p != nullptr);
+    problem_c * problem = p->getProblem(0);
+    std::unique_ptr<assembler_c> assm = problem->getPuzzle().getGridType()->findAssembler(*problem);
+    REQUIRE(assm != nullptr);
+    assm->setNumThreads(threads);
+    REQUIRE(assm->createMatrix(false, false, false) == assembler_c::ERR_NONE);
+    if (reduce)
+      assm->reduce();
+    RecordingAssemblerCallback cb;
+    assm->assemble(&cb);
+    CHECK(assm->getFinished() >= 1.0f);
+    if (iterations)
+      *iterations = assm->getIterations();
+    found = std::move(cb.fingerprints);
+  }
+  setNoSimd(false);
+  return found;
+}
+
+TEST_CASE("Vector and plain search find the same assemblies, on one thread and on several",
+          "[solver][assembler][simd][parallel][equivalence]") {
+  struct entry_s { const char * file; bool referenceReduced; };
+  const entry_s puzzles[] = {
+    {"examples/PelikanBurr.xmpuzzle",               false},  // holes
+    {"examples/DraculasDentalDesaster.xmpuzzle",    false},
+    {"examples/Bermuda.xmpuzzle",                   false},  // rotated copies left out
+    {"examples/Prisgon.xmpuzzle",                   false},
+    {"examples/BallRoom.xmpuzzle",                  false},
+    {"examples/AugmentedSecondStellation.xmpuzzle", false},
+    {"examples/CubeInCage.xmpuzzle",                false},
+    {"examples/DemoMirrorParadox.xmpuzzle",         false},
+    {"examples/PiecesOfEight.xmpuzzle",             false},  // range
+    {"examples/DemoPieceGenerator.xmpuzzle",        false},  // range with variable voxels
+    {"examples/AlPackino.xmpuzzle",                 false},
+    {"examples/12PieceSeparation.xmpuzzle",         false},
+    {"examples/FourPieceTetrahedron.xmpuzzle",      false},
+    /* a range puzzle, and the one large enough to keep several threads
+     * busy; the plain search needs 7 s for it as made, so the reference is
+     * taken from the reduced matrix */
+    {"examples/SolidSixPieceBurrs.xmpuzzle",        true},
+  };
+
+  unsigned int tookTheVectorSearch = 0;
+  for (const entry_s & e : puzzles) {
+    unsigned long plainIterations = 0, vectorIterations = 0;
+    const std::multiset<std::string> plain = assembliesOf(e.file, 1, e.referenceReduced, true, &plainIterations);
+    REQUIRE(!plain.empty());
+    for (bool reduce : {false, true})
+      for (unsigned int threads : {1u, 4u}) {
+        INFO(e.file << ", " << threads << " threads" << (reduce ? ", reduced" : ""));
+        const std::multiset<std::string> vec = assembliesOf(e.file, threads, reduce, false, &vectorIterations);
+        CHECK(vec == plain);
+        if (threads == 1 && reduce == e.referenceReduced && vectorIterations != plainIterations)
+          tookTheVectorSearch++;
+      }
+  }
+
+  /* if no puzzle took the vector search, this compared the plain search
+   * with itself */
+  CHECK(tookTheVectorSearch >= 8);
+}
+
+/* A parallel search of assembler 1 stopped and saved by an older version
+ * carries signatures taken from the rows in the order the plain search
+ * placed them (flag 2); today's are taken from the sorted assembly (flag 4).
+ * Such a file must go on with the kind it has: loaded, it is saved again as
+ * it was, and continued it reports every assembly once.
+ */
+TEST_CASE("Assembler 1: a parallel search saved by an older version carries on",
+          "[assembler][parallel][resume]") {
+  const char * file = "examples/CubeInCage.xmpuzzle";
+  const std::multiset<std::string> all = assembliesOf(file, 1, false, true);
+
+  /* what the older version wrote: the plain search, signatures by row order.
+   * Loading a flag 2 position is what switches an assembler to that kind, so
+   * start from a search that has not reported anything yet */
+  std::string older;
+  {
+    auto p = puzzle_c::load(file);
+    assembler_1_c assm(*p->getProblem(0));
+    assm.setNumThreads(4);
+    REQUIRE(assm.createMatrix(false, false, false) == assembler_c::ERR_NONE);
+    class stopAtOnce_c : public assembler_cb {
+    public:
+      bool assembly(std::unique_ptr<assembly_c>) override { return false; }
+    } stopAtOnce;
+    assm.assemble(&stopAtOnce);
+    std::ostringstream str;
+    xmlWriter_c xml(str);
+    assm.save(xml);
+    older = extractAssemblerContent(str.str());
+    REQUIRE(older.compare(0, 2, "4 ") == 0);
+    /* no task finished and nothing reported: valid for either kind */
+    const size_t c = older.find(" C ");
+    const size_t sg = older.find(" S ");
+    REQUIRE(c != std::string::npos);
+    REQUIRE(sg != std::string::npos);
+    for (size_t i = c + 3; i < sg; i++)
+      if (older[i] == '1') older[i] = '0';
+    older = "2 " + older.substr(2, sg - 2) + " S 0";
+  }
+
+  /* stop it part way, save, load, finish */
+  class stopping_c : public RecordingAssemblerCallback {
+  public:
+    bool assembly(std::unique_ptr<assembly_c> a) override {
+      RecordingAssemblerCallback::assembly(std::move(a));
+      return fingerprints.size() < 20;
+    }
+  } first;
+  RecordingAssemblerCallback rest;
+  std::string again;
+  {
+    auto p = puzzle_c::load(file);
+    assembler_1_c assm(*p->getProblem(0));
+    assm.setNumThreads(4);
+    REQUIRE(assm.createMatrix(false, false, false) == assembler_c::ERR_NONE);
+    REQUIRE(assm.setPosition(older.c_str(), "2.1") == assembler_c::ERR_NONE);
+    assm.assemble(&first);
+    REQUIRE(assm.getFinished() < 1.0f);
+    std::ostringstream str;
+    xmlWriter_c xml(str);
+    assm.save(xml);
+    again = extractAssemblerContent(str.str());
+  }
+  /* still the older kind */
+  CHECK(again.compare(0, 2, "2 ") == 0);
+  {
+    auto p = puzzle_c::load(file);
+    assembler_1_c assm(*p->getProblem(0));
+    assm.setNumThreads(4);
+    REQUIRE(assm.createMatrix(false, false, false) == assembler_c::ERR_NONE);
+    REQUIRE(assm.setPosition(again.c_str(), "2.1") == assembler_c::ERR_NONE);
+    assm.assemble(&rest);
+    CHECK(assm.getFinished() >= 1.0f);
+  }
+  std::multiset<std::string> both = first.fingerprints;
+  both.insert(rest.fingerprints.begin(), rest.fingerprints.end());
+  CHECK(both == all);
+}
+
+/* The memory the vector search of assembler 1 would need decides whether it
+ * is used (canUseSimd): a row's mask is as wide as the solver's size class.
+ */
+TEST_CASE("Assembler 1: the vector search is refused past its memory budget", "[assembler][simd]") {
+  /* 100000 rows of 20 nodes: small masks fit easily, 4 KB masks do not */
+  CHECK(simdHuangFitsMemory(200, 100000, 2000000));
+  CHECK(simdHuangFitsMemory(2048, 100000, 2000000));
+  CHECK_FALSE(simdHuangFitsMemory(32768, 100000, 2000000));
+  /* the mask doubles with the size class */
+  CHECK(simdHuangMemoryEstimate(256, 1000, 0) < simdHuangMemoryEstimate(257, 1000, 0));
+  CHECK(simdHuangMemoryEstimate(32768, 1000, 0) - simdHuangMemoryEstimate(16384, 1000, 0) == 1000u * 2048u);
+  /* more nodes, more memory */
+  CHECK(simdHuangMemoryEstimate(256, 1000, 20000) > simdHuangMemoryEstimate(256, 1000, 0));
+
+  /* and through the switch: with no budget the plain search does the work,
+   * with the same answer */
+  const char * file = "examples/CubeInCage.xmpuzzle";
+  unsigned long withBudget = 0, without = 0;
+  const std::multiset<std::string> a = assembliesOf(file, 1, false, false, &withBudget);
+#ifdef _WIN32
+  (void)_putenv_s("BURRTOOLS_HUANG_MEM_MB", "0");
+#else
+  setenv("BURRTOOLS_HUANG_MEM_MB", "0", 1);
+#endif
+  const std::multiset<std::string> b = assembliesOf(file, 1, false, false, &without);
+#ifdef _WIN32
+  (void)_putenv_s("BURRTOOLS_HUANG_MEM_MB", "");
+#else
+  unsetenv("BURRTOOLS_HUANG_MEM_MB");
+#endif
+  CHECK(a == b);
+  CHECK(withBudget != without);
+}
+
+/* The thread limit of the application (Settings, -t n) holds for everything
+ * that picks its own number of threads, and a solve under it finds what it
+ * finds without one.
+ */
+TEST_CASE("Solver: the thread limit is kept by every stage", "[solver][threads]") {
+  struct restore_c { ~restore_c() { setSolveThreadLimit(0); } } restore;
+
+  setSolveThreadLimit(0);
+  CHECK(solveThreadLimit() == 0);
+  const unsigned int all = solveThreadBudget();
+  CHECK(all >= 1);
+
+  setSolveThreadLimit(3);
+  CHECK(solveThreadBudget() == 3);
+  CHECK(solveThreadSplit(3).disassembly == 1);
+  {
+    auto p = puzzle_c::load("examples/PelikanBurr.xmpuzzle");
+    assembler_0_c assm(*p->getProblem(0));
+    CHECK(assm.getEffectiveThreads() == 3);   // nothing asked for: the limit
+    assm.setNumThreads(2);
+    CHECK(assm.getEffectiveThreads() == 2);   // asked for: that
+  }
+
+  /* searching and taking apart at once stay within the limit together */
+  for (unsigned int n : {2u, 3u, 4u, 8u, 10u, 64u}) {
+    const solveThreadSplit_s split = solveThreadSplit(n);
+    INFO(n << " threads");
+    CHECK(split.assembly >= 1);
+    CHECK(split.disassembly >= 1);
+    CHECK(split.assembly + split.disassembly == n);
+    CHECK(split.assembly >= split.disassembly);
+  }
+  CHECK(solveThreadSplit(1).assembly == 1);
+  CHECK(solveThreadSplit(1).disassembly == 1);
+
+  /* a whole solve, under a limit and without */
+  const char * file = "examples/SolidSixPieceBurrs.xmpuzzle";
+  const int par = solveThread_c::PAR_REDUCE | solveThread_c::PAR_DISASSM;
+  unsigned long assemblies[2] = {0, 0}, solutions[2] = {0, 0};
+  int i = 0;
+  for (unsigned int limit : {0u, 2u}) {
+    setSolveThreadLimit(limit);
+    auto p = puzzle_c::load(file);
+    REQUIRE(p != nullptr);
+    p->getProblem(0)->removeAllSolutions();
+    solveThread_c solver(*p->getProblem(0), par);
+    REQUIRE(solver.start());
+    solver.waitUntilFinished();
+    CHECK(p->getProblem(0)->getSolveState() == SS_SOLVED);
+    assemblies[i] = p->getProblem(0)->getNumAssemblies();
+    solutions[i] = p->getProblem(0)->getNumSolutions();
+    i++;
+  }
+  CHECK(assemblies[0] == 588);
+  CHECK(assemblies[1] == assemblies[0]);
+  CHECK(solutions[1] == solutions[0]);
+}
+
 /* Pause and Continue through the solve thread, as the GUI does it: wherever
  * the pause lands -- in the assembler, with assemblies queued to be taken
  * apart, or part way through taking one apart -- nothing may be lost or
@@ -1039,8 +1290,11 @@ TEST_CASE("Solver: pausing and continuing finds every assembly and solution once
   }
   REQUIRE(solutions > 0);
 
+  /* The whole solve takes some 60 ms here since the vector search does this
+   * puzzle; the short delays are the ones that land inside it, the long
+   * ones still do on a slow machine or under a sanitizer. */
   int paused = 0;
-  for (int delayMs : {20, 100, 300, 700}) {
+  for (int delayMs : {2, 6, 20, 100, 300}) {
     for (bool viaSave : {false, true}) {
       INFO("pause after " << delayMs << " ms, " << (viaSave ? "saved and loaded" : "straight on"));
       auto p = puzzle_c::load(file);
@@ -1141,8 +1395,13 @@ TEST_CASE("Solver: an autosave pause saves a solve that carries on to the same t
     solutions = p->getProblem(0)->getNumSolutions();
   }
 
+  /* An autosave pause is only taken while assembling or taking apart (one
+   * that comes during the preparation is left for the next autosave), and
+   * the whole solve takes some 60 ms here. So besides the fixed delays, 0
+   * stands for "as soon as the assembler runs", which is the one sure to
+   * land inside the solve whatever the machine. */
   int paused = 0;
-  for (int delayMs : {30, 120, 400}) {
+  for (int delayMs : {0, 0, 30, 120}) {
     INFO("autosave pause after " << delayMs << " ms");
     auto p = puzzle_c::load(file);
     REQUIRE(p != nullptr);
@@ -1150,7 +1409,13 @@ TEST_CASE("Solver: an autosave pause saves a solve that carries on to the same t
     {
       solveThread_c solver(*p->getProblem(0), par);
       REQUIRE(solver.start());
-      std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+      if (delayMs == 0) {
+        while (solver.currentAction() == solveThread_c::ACT_PREPARATION ||
+               solver.currentAction() == solveThread_c::ACT_REDUCE)
+          std::this_thread::yield();
+      } else {
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+      }
       solver.stopSoft();
       solver.waitUntilFinished();
     }

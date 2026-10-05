@@ -25,7 +25,7 @@
  * after the leading flag (see their setPosition) is
  *
  *   flag 3:  " K <solutions already reported>"
- *   flag 2:  " T <tasks>" <each task, as the assembler writes it>
+ *   flag 2, 4:  " T <tasks>" <each task, as the assembler writes it>
  *            " C <one 0 or 1 per task, finished or not>"
  *            " S <count> <signature>..."
  *
@@ -92,7 +92,7 @@ struct tail_c {
 };
 
 /**
- * Read the tail for flag 2 or 3 from at. readTask(reader, task) reads one
+ * Read the tail for flag 2, 3 or 4 from at (4 is assembler_1_c's, laid out as 2). readTask(reader, task) reads one
  * task as writeTail's writeTask wrote it. False on a syntax error. done is
  * set to the number of tasks already finished.
  */
@@ -135,14 +135,14 @@ bool readTail(const char * at, unsigned int flag, tail_c<Task> & tail, size_t & 
   return true;
 }
 
-/** Write the tail for flag 2 or 3; nothing for any other flag. */
+/** Write the tail for flag 2, 3 or 4; nothing for any other flag. */
 template <class Task, class WriteTask>
 void writeTail(std::ostream & str, unsigned int flag, uint64_t simdReported,
                const std::vector<Task> & tasks, const std::vector<uint8_t> & completed,
                const std::unordered_set<uint64_t> & signatures, WriteTask writeTask) {
   if (flag == 3) {
     str << " K " << simdReported;
-  } else if (flag == 2) {
+  } else if (flag == 2 || flag == 4) {
     str << " T " << tasks.size();
     for (const Task & t : tasks)
       writeTask(str, t);

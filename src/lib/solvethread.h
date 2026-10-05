@@ -296,7 +296,10 @@ class solveThread_c : public assembler_cb, public thread_c {
       if (assembler_c * a = assm.load(std::memory_order_acquire))
         f(a);
     }
+    void disassemblyDone(void);
     std::atomic<unsigned int> assemblerThreadCount{1};
+    /* the cores the running assembly search counts for in helperPool's load */
+    std::atomic<int> assemblyLoad{0};
 
     std::mutex assemblyCallbackMutex;
 

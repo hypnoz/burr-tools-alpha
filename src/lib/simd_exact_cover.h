@@ -185,21 +185,41 @@ public:
 
   using SolutionCallback = std::function<bool(const std::vector<unsigned int> &solution_nodes)>;
 
+  /* Called now and then during a search (every few thousand nodes) with how
+   * far it is, 0..1, every choice at a level taken as alike. The caller can
+   * also use it to pass the iterations on while the search runs.
+   */
+  using ProgressCallback = std::function<void(float fraction)>;
+
   virtual void setRequiredColumn(unsigned int col) = 0;
+  /* An optional column (a variable voxel): covered at most once like any
+   * other, but never branched on, never a dead end when no row is left for
+   * it, and not asked for at the goal. Optional columns that are open with
+   * no row left count against the hole budget.
+   */
+  virtual void setOptionalColumn(unsigned int col) = 0;
+  /* How many optional columns may be left open with no row to cover them;
+   * a node with more is given up. As in the plain search this is looked at
+   * when a column is chosen and not at the goal (with the pieces' sizes
+   * fixed a complete cover leaves exactly this many open).
+   */
+  virtual void setHoleBudget(unsigned int h) = 0;
   virtual uint32_t addRow(unsigned int node_id, unsigned int piece_id, const std::vector<unsigned int> &cols) = 0;
   virtual void registerNodeAlias(unsigned int node_id, uint32_t row_idx) = 0;
 
   virtual void solve(
     SolutionCallback callback,
     const std::atomic<bool> &abort_flag,
-    std::atomic<uint64_t> &iterations
+    std::atomic<uint64_t> &iterations,
+    ProgressCallback progress = nullptr
   ) const = 0;
 
   virtual void solveSubtree(
     const std::vector<unsigned int> &prefix_node_ids,
     SolutionCallback callback,
     const std::atomic<bool> &abort_flag,
-    std::atomic<uint64_t> &iterations
+    std::atomic<uint64_t> &iterations,
+    ProgressCallback progress = nullptr
   ) const = 0;
 
   virtual unsigned int getNumRows() const = 0;
@@ -232,20 +252,24 @@ public:
 
   void setRequiredColumn(unsigned int col) override;
   void setRequiredColumns(const BitsetType &required);
+  void setOptionalColumn(unsigned int col) override;
+  void setHoleBudget(unsigned int h) override { holes = h; }
   uint32_t addRow(unsigned int node_id, unsigned int piece_id, const std::vector<unsigned int> &cols) override;
   void registerNodeAlias(unsigned int node_id, uint32_t row_idx) override;
 
   void solve(
     SolutionCallback callback,
     const std::atomic<bool> &abort_flag,
-    std::atomic<uint64_t> &iterations
+    std::atomic<uint64_t> &iterations,
+    ProgressCallback progress = nullptr
   ) const override;
 
   void solveSubtree(
     const std::vector<unsigned int> &prefix_node_ids,
     SolutionCallback callback,
     const std::atomic<bool> &abort_flag,
-    std::atomic<uint64_t> &iterations
+    std::atomic<uint64_t> &iterations,
+    ProgressCallback progress = nullptr
   ) const override;
 
   unsigned int getNumRows() const override { return rows.size(); }
@@ -256,6 +280,9 @@ private:
   unsigned int num_columns;
   unsigned int num_pieces;
   BitsetType required_columns;
+  BitsetType optional_columns;
+  std::vector<unsigned int> optional_column_list;
+  unsigned int holes = 0;
   std::vector<Row> rows;
   std::vector<unsigned int> active_column_list;
   std::unordered_map<unsigned int, uint32_t> node_to_row_idx;
@@ -265,12 +292,45 @@ private:
   bool use_neon = true;
 #endif
 
+  /* how many levels below the start of a search its progress is taken from */
+  static constexpr unsigned int PROGRESS_LEVELS = 8;
+
   struct SearchContext {
     std::vector<std::vector<uint32_t>> scratch_active_rows;
     std::vector<unsigned int> current_solution;
     std::vector<uint32_t> col_counts;
     uint64_t local_iterations = 0;
+    /* the nodes already added to the shared counter: they go over in
+     * batches of 256, and what is left at every solution, so that a reader
+     * sees the count move even in a search shorter than one batch */
+    uint64_t flushed_iterations = 0;
+
+    /* progress: for the first levels below base_depth, which choice the
+     * search is in out of how many */
+    const ProgressCallback * progress = nullptr;
+    unsigned int base_depth = 0;
+    uint32_t branch_idx[PROGRESS_LEVELS] = {};
+    uint32_t branch_cnt[PROGRESS_LEVELS] = {};
+
+    float fraction(void) const {
+      double f = 0, scale = 1;
+      for (unsigned int l = 0; l < PROGRESS_LEVELS && branch_cnt[l]; l++) {
+        scale /= branch_cnt[l];
+        f += branch_idx[l] * scale;
+      }
+      return (float)f;
+    }
   };
+
+  void initContext(SearchContext &ctx, const ProgressCallback &progress, unsigned int base_depth) const;
+
+  static void flushIterations(SearchContext &ctx, std::atomic<uint64_t> &iterations) {
+    const uint64_t unflushed = ctx.local_iterations - ctx.flushed_iterations;
+    if (unflushed > 0) {
+      iterations.fetch_add(unflushed, std::memory_order_relaxed);
+      ctx.flushed_iterations = ctx.local_iterations;
+    }
+  }
 
   void search(
     unsigned int depth,

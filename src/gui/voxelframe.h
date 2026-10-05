@@ -259,6 +259,7 @@ class voxelFrame_c : public Fl_Gl_Window {
       bool useChecker = false;
       Polyhedron * poly = nullptr;
       Polyhedron * pickPoly = nullptr;  // the flat mesh of the edge-line style, used to pick in the other styles
+      float meshRadius = 0;  // a mesh shown without a shape (showMesh): half the diagonal of its bounding box
       GLuint list = 0;  // the display list for this shape 0 means no list defined
       std::vector<std::string> cellLabels;
       std::string title;
@@ -290,6 +291,29 @@ class voxelFrame_c : public Fl_Gl_Window {
     std::unique_ptr<rotater_c> rotater;
     int rotMethod;
     double size;
+
+    /* The view moved sideways and up or down by dragging with the middle
+     * mouse button (or with the Command / Windows key held): in the units
+     * of the scene, applied in front of the rotation so that it moves the
+     * picture whichever way it is turned. Home takes it back.
+     */
+    double panX = 0, panY = 0;
+    bool panning = false;
+    int panStartMouseX = 0, panStartMouseY = 0;
+    double panStartX = 0, panStartY = 0;
+    void resetPan(void) { panX = panY = 0; }
+
+    /* A snap of the view cube is shown as a short turn and not as a jump
+     * (the idea is from upstream's view cube, Girish Sharma). turnFrom and
+     * turnTo are the rotation before and after, as quaternions (x, y, z, w);
+     * a timer steps from one to the other.
+     */
+    bool turning = false;
+    float turnFrom[4] = {0, 0, 0, 1}, turnTo[4] = {0, 0, 0, 1};
+    double turnStarted = 0;
+    void startTurn(const float from[9], const float to[9]);
+    void finishTurn(void);
+    static void cb_turn(void * v);
 
     VoxelViewCallbacks * cb;
 

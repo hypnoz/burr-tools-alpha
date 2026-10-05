@@ -205,8 +205,12 @@ void mainmenu::assertTablesConsistent(void) {
     /* A menu item exists on one platform but not the other. Add it to the
      * table that is missing it, or add it to appMenuOnly if it genuinely
      * belongs only in the macOS application menu.
+     *
+     * Thrown and not asserted: this is what --self-check is for, and it
+     * must say so in a build without assertions as well.
      */
-    bt_assert(found);
+    if (!found)
+      bt_te("a menu item is missing from this platform's menu table");
   }
 }
 

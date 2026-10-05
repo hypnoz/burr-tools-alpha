@@ -50,6 +50,15 @@ std::unique_ptr<voxel_c> shapeHistory_c::cloneShape(const voxel_c * src) {
   return v;
 }
 
+bool shapeHistory_c::sameShape(const voxel_c * a, const voxel_c * b) {
+  return a->getGridType() == b->getGridType() &&
+         *a == *b &&   // the size, the cells with their colours, the goal pieces
+         a->getHx() == b->getHx() && a->getHy() == b->getHy() && a->getHz() == b->getHz() &&
+         a->getName() == b->getName() &&
+         a->getWeight() == b->getWeight() &&
+         a->getDiskSize() == b->getDiskSize();
+}
+
 int64_t shapeHistory_c::nowMs(void) {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -99,8 +108,10 @@ bool shapeHistory_c::canCoalesce(actionKind_e kind, unsigned int selectedShape) 
   if (kind == AK_GRID_PAINT)
     return selectedShape == lastShape && dt >= 0 && dt <= GRID_PAINT_COALESCE_MS;
 
+  /* of the same shape only: turning one shape and then another within the
+   * time must stay two steps */
   if (kind == AK_TRANSFORM)
-    return dt >= 0 && dt <= TRANSFORM_COALESCE_MS;
+    return selectedShape == lastShape && dt >= 0 && dt <= TRANSFORM_COALESCE_MS;
 
   return false;
 }
@@ -170,8 +181,17 @@ std::unique_ptr<shapeHistory_c::snapshot_c> shapeHistory_c::capture(const puzzle
   auto snap = std::make_unique<snapshot_c>();
   snap->selectedShape = selectedShape;
 
-  for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++)
-    snap->shapes.push_back(cloneShape(puzzle->getShape(i)));
+  /* the snapshot this one follows: its shapes are shared where nothing
+   * has changed */
+  const snapshot_c * before = cursor < snapshots.size() ? snapshots[cursor].get() : nullptr;
+
+  for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++) {
+    const voxel_c * live = puzzle->getShape(i);
+    if (before && i < before->shapes.size() && sameShape(before->shapes[i].get(), live))
+      snap->shapes.push_back(before->shapes[i]);
+    else
+      snap->shapes.push_back(std::shared_ptr<const voxel_c>(cloneShape(live)));
+  }
 
   for (unsigned int p = 0; p < puzzle->getNumberOfProblems(); p++) {
     const problem_c * pr = puzzle->getProblem(p);

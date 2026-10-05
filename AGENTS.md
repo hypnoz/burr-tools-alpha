@@ -24,7 +24,17 @@ just docs           # Generate the Doxygen API reference into gendoc/html
 just clean          # Clean build artifacts
 just rebuild        # Rebuild from scratch (removes build/ and re-runs meson setup)
 just build-werror   # Build with warnings treated as errors (excluding vendored code)
+just build-release  # Optimised build without assertions (NDEBUG) and with -Werror, in build-rel
+just test-release   # The C++ test suite against that build
 ```
+
+`just build-release` is the build in which `bt_assert` does nothing. Run
+`just test-release` after touching anything near an assertion: never put a
+call with a side effect inside `bt_assert` (use `bt_assert2`, which still
+evaluates its argument, or call first and assert on the result), mark a
+variable only an assertion reads `[[maybe_unused]]`, and guard a test that
+expects an assertion to throw with `#ifndef NDEBUG`. The binaries that ship
+are built with assertions.
 
 **Test suite timings.** The recipes above build first, so what you wait for is
 compilation plus test execution. Test execution alone is about 1.6s for `just
@@ -152,7 +162,7 @@ Solver engines support runtime feature toggles via environment variables to allo
 
 | Environment Variable | Effect | Purpose |
 | :--- | :--- | :--- |
-| `BURRTOOLS_NO_SIMD=1` | Disables the SIMD bit-parallel solver in **both** assemblers (`assembler_0_c` and `assembler_1_c`), forcing classical DLX. Also read by the `SimdExactCover` / `SimdHuangCover256` constructors. | Measure pure speedup of SIMD bit-parallel exact cover against the Knuth DLX baseline. |
+| `BURRTOOLS_NO_SIMD=1` | Disables the SIMD bit-parallel solver in **both** assemblers (`assembler_0_c` and `assembler_1_c`), on one thread and in the worker threads of a parallel search, forcing classical DLX. Also read by the `SimdExactCover` / `SimdHuangCover256` constructors. | Measure pure speedup of SIMD bit-parallel exact cover against the Knuth DLX baseline. |
 | `BURRTOOLS_NO_VECTOR=1` | Disables architecture-specific vector SIMD instructions (AVX2, AVX-512 on x86-64, NEON on ARM) across all exact cover solvers and disassembler closure, falling back to portable 64-bit scalar word loops. Replaces needing platform-specific flags. | Clean, architecture-agnostic benchmark isolation of algorithmic gains (0-cost backtracking, cache locality) from vector intrinsics. |
 | `BURRTOOLS_NO_AVX2=1` | Disables the AVX2 and AVX-512 kernels **on x86-64**, falling back to the portable 64-bit word scalar loop. No effect on ARM -- use `BURRTOOLS_NO_NEON` there. | Isolate the algorithmic gain (0-cost backtracking, cache locality) from x86 vector intrinsics. |
 | `BURRTOOLS_NO_AVX512=1` | Disables AVX-512 vector instructions in SIMD solver and disassembler closure. | Isolate AVX-512 vector performance gains from AVX2. |
@@ -161,7 +171,8 @@ Solver engines support runtime feature toggles via environment variables to allo
 | `BURRTOOLS_NO_DISASM_POOL=1` | Disables multi-threaded disassembly pool, running disassemblies synchronously. | Measure speedup and scaling of parallel disassembly pool against synchronous baseline. |
 | `BURRTOOLS_DISASM_WORKERS=N` | Number of disassembly workers (assemblies taken apart at the same time) in the GUI solve path; default is the thread budget minus 2, at most 16. | Scaling of the disassembly queue. |
 | `BURRTOOLS_NO_DISASM_PAR=1` | A take-apart searches every level on one thread instead of spreading it over the free cores. | Compare against the search on one thread; answers must be identical. |
-| `BURRTOOLS_THREADS=N` | Forces solver to use $N$ worker threads (default: `hardware_concurrency`, clamped to `assembler_c::MAX_THREADS`). **Note:** read independently by the assembler and, once the disassembly pool lands, by that pool too, so `N` may yield `2N` workers overall. | Measure thread scaling curves (e.g. 1, 2, 4, 8 cores). |
+| `BURRTOOLS_THREADS=N` | The number of threads a solve may use when no limit is set by the application (default: `hardware_concurrency`). Read in one place, `solveThreadBudget()` in `helperpool.cpp`, which every stage asks: the assembly search, the take-apart workers and the threads lent to them, BurrTools 2, Panex, the packing of a saved search. The Settings entry "Solver Threads" and `-t n` of `burrTxt` / `burrTxt2` (`setSolveThreadLimit()`) come before it. | Measure thread scaling curves (e.g. 1, 2, 4, 8 cores). |
+| `BURRTOOLS_HUANG_MEM_MB=N` | The memory budget above which `assembler_1_c` keeps to the plain search instead of the vector search (default 256). `0` never uses the vector search. | Time both sides of the limit from one build. |
 
 ### Running an Interleaved A/B Benchmark
 

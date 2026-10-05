@@ -25,6 +25,7 @@
 
 #include <vector>
 #include <functional>
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <unordered_map>
@@ -40,6 +41,9 @@ public:
   virtual ~ISimdHuangCover() = default;
 
   using SolutionCallback = std::function<bool(const std::vector<unsigned int> &solution_nodes)>;
+  /* as ISimdExactCover::ProgressCallback: how far a search is, 0..1, told
+   * every few thousand nodes */
+  using ProgressCallback = std::function<void(float fraction)>;
 
   virtual void setColumnBounds(
     unsigned int col,
@@ -68,7 +72,8 @@ public:
   virtual void solve(
     SolutionCallback callback,
     const std::atomic<bool> &abort_flag,
-    std::atomic<uint64_t> &iterations
+    std::atomic<uint64_t> &iterations,
+    ProgressCallback progress = nullptr
   ) const = 0;
 
   virtual void solveSubtree(
@@ -76,16 +81,8 @@ public:
     const std::vector<unsigned int> &hidden_node_ids,
     SolutionCallback callback,
     const std::atomic<bool> &abort_flag,
-    std::atomic<uint64_t> &iterations
-  ) const = 0;
-
-  virtual void parallelSolve(
-    unsigned int num_workers,
-    SolutionCallback callback,
-    const std::atomic<bool> &abort_flag,
-    std::atomic<unsigned long> &iterations,
-    std::atomic<size_t> &total_tasks,
-    std::atomic<size_t> &completed_tasks
+    std::atomic<uint64_t> &iterations,
+    ProgressCallback progress = nullptr
   ) const = 0;
 
   virtual unsigned int getNumRows() const = 0;
@@ -155,7 +152,8 @@ public:
   void solve(
     SolutionCallback callback,
     const std::atomic<bool> &abort_flag,
-    std::atomic<uint64_t> &iterations
+    std::atomic<uint64_t> &iterations,
+    ProgressCallback progress = nullptr
   ) const override;
 
   void solveSubtree(
@@ -163,16 +161,8 @@ public:
     const std::vector<unsigned int> &hidden_node_ids,
     SolutionCallback callback,
     const std::atomic<bool> &abort_flag,
-    std::atomic<uint64_t> &iterations
-  ) const override;
-
-  void parallelSolve(
-    unsigned int num_workers,
-    SolutionCallback callback,
-    const std::atomic<bool> &abort_flag,
-    std::atomic<unsigned long> &iterations,
-    std::atomic<size_t> &total_tasks,
-    std::atomic<size_t> &completed_tasks
+    std::atomic<uint64_t> &iterations,
+    ProgressCallback progress = nullptr
   ) const override;
 
   unsigned int getNumRows() const override { return rows.size(); }
@@ -211,6 +201,9 @@ private:
    */
   [[maybe_unused]] bool use_neon = false;
 
+  /* how many levels below the start of a search its progress is taken from */
+  static constexpr unsigned int PROGRESS_LEVELS = 8;
+
   struct SearchContext {
     BitsetType placed_voxels;
     std::vector<uint32_t> col_weights;
@@ -218,14 +211,62 @@ private:
     std::vector<unsigned int> current_solution;
     std::vector<uint32_t> col_counts;
     uint64_t local_iterations = 0;
+    /* the nodes already added to the shared counter, see flushIterations() */
+    uint64_t flushed_iterations = 0;
+
+    /* progress: for the first levels below base_depth, which choice the
+     * search is in out of how many */
+    const ProgressCallback * progress = nullptr;
+    unsigned int base_depth = 0;
+    uint32_t branch_idx[PROGRESS_LEVELS] = {};
+    uint32_t branch_cnt[PROGRESS_LEVELS] = {};
+
+    float fraction(void) const {
+      double f = 0, scale = 1;
+      for (unsigned int l = 0; l < PROGRESS_LEVELS && branch_cnt[l]; l++) {
+        scale /= branch_cnt[l];
+        f += branch_idx[l] * scale;
+      }
+      return (float)f;
+    }
   };
 
-  struct SubtreeTask {
-    unsigned int depth = 0;
-    SearchContext ctx;
-  };
+  /* The nodes go over to the shared counter in batches of 256, and what is
+   * left at every solution and at the end, so that a reader sees the count
+   * move even in a search shorter than one batch. */
+  static void flushIterations(SearchContext &ctx, std::atomic<uint64_t> &iterations) {
+    const uint64_t unflushed = ctx.local_iterations - ctx.flushed_iterations;
+    if (unflushed > 0) {
+      iterations.fetch_add(unflushed, std::memory_order_relaxed);
+      ctx.flushed_iterations = ctx.local_iterations;
+    }
+  }
 
-    void generateTasks(unsigned int target_tasks, std::vector<SubtreeTask> &tasks) const;
+  /* How deep a search can go. Every row placed uses up one unit of its
+   * shape column, so the depth is at most the sum of the shapes' maxima;
+   * it also covers at least one voxel no other row placed covers, so it is
+   * at most the number of columns too (the maxima come from the file and
+   * may be more than fits).
+   */
+  unsigned int searchDepthBound() const {
+    unsigned int bound = 0;
+    for (unsigned int c = 1; c <= num_shapes; c++)
+      bound += columns[c].max_weight;
+    return std::min(bound, num_columns);
+  }
+
+  /* A fresh context. The scratch lists are indexed by depth, so they are
+   * sized by the depth bound and not by the number of columns: at 32768
+   * columns that was about 790 KB of empty vectors for every context. The
+   * list must not be resized during a search (search() holds references
+   * into it), hence the spare 16.
+   */
+  void initContext(SearchContext &ctx) const {
+    ctx.scratch_active_rows.resize(searchDepthBound() + 16);
+    ctx.current_solution.reserve(num_columns);
+    ctx.col_weights.assign(num_columns + 1, 0);
+    ctx.col_counts.assign(num_columns + 1, 0);
+  }
 
   void search(
     unsigned int depth,

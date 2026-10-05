@@ -153,7 +153,11 @@ bool voxel_0_c::transform(unsigned int nr) {
 
 void voxel_0_c::transformPoint(int * x, int * y, int * z, unsigned int trans) const {
 
-  bt_assert(trans < NUM_TRANSFORMATIONS_MIRROR);
+  /* a check of what comes in, not of the program: a transformation out of
+   * range would read past the tables below, so it is refused in a build
+   * without assertions too */
+  if (trans >= NUM_TRANSFORMATIONS_MIRROR)
+    bt_te("trans < NUM_TRANSFORMATIONS_MIRROR");
 
   int sx = *x;
   int sy = *y;

@@ -91,6 +91,10 @@ unsigned int chooseDisasmWorkerCount(bool rotationsEnabled) {
    * 6.1 s). */
   (void)rotationsEnabled;
 
+  /* with a limit set the take-aparts get their share of it */
+  if (const unsigned int limit = solveThreadLimit())
+    return solveThreadSplit(limit).disassembly;
+
   const unsigned int budget = solveThreadBudget();
   if (budget <= 2)
     return 1;
@@ -312,6 +316,15 @@ void solveThread_c::run(void){
       return;
     }
 
+    /* From here on a stop asked of the assembler is kept until it has
+     * run. Without this, one that came between the action being set to
+     * assembling and assemble() starting was thrown away as assemble()
+     * cleared the flag, and the search ran to its end with Stop pressed
+     * (and an autosave pause was not taken). A stop from before this point
+     * has set stopPressed, which is looked at next.
+     */
+    a->armStop();
+
     if (!stopPressed.load(std::memory_order_relaxed)) {
 
       for (unsigned int i = 0; i < puzzle.getPuzzle().getNumberOfShapes(); i++)
@@ -341,20 +354,32 @@ void solveThread_c::run(void){
       }
       {
         /* the assembly search uses its threads' cores until it is through */
+        /* (less what enqueueDisassembly() has given up for the time the
+         * search stands still at a full queue: held says how much is left) */
         struct load_c {
           helperPool_c * pool;
-          int n;
-          load_c(helperPool_c * p, int cores) : pool(p), n(cores) { if (pool) pool->addLoad(n); }
-          ~load_c() { if (pool) pool->addLoad(-n); }
+          std::atomic<int> & held;
+          load_c(helperPool_c * p, int cores, std::atomic<int> & h) : pool(p), held(h) {
+            if (pool) {
+              pool->addLoad(cores);
+              held.store(cores, std::memory_order_release);
+            }
+          }
+          ~load_c() { if (pool) pool->addLoad(-held.exchange(0, std::memory_order_acq_rel)); }
         };
+        /* With a limit on the threads, the search shares it with the
+         * take-apart workers running beside it. */
+        if (const unsigned int limit = solveThreadLimit())
+          a->setNumThreads((parameters & PAR_DISASSM) ? solveThreadSplit(limit).assembly : limit);
+
         if (solverType == SOLVER_BT2) {
           const unsigned int workers = bt2ChooseAssemblerWorkers(a);
           assemblerThreadCount.store(workers, std::memory_order_relaxed);
-          load_c load(helperPool.get(), (int)workers);
+          load_c load(helperPool.get(), (int)workers, assemblyLoad);
           assemblerThreadCount.store(bt2Assemble(a, this, workers), std::memory_order_relaxed);
         } else {
           assemblerThreadCount.store(a->getEffectiveThreads(), std::memory_order_relaxed);
-          load_c load(helperPool.get(), (int)a->getEffectiveThreads());
+          load_c load(helperPool.get(), (int)a->getEffectiveThreads(), assemblyLoad);
           a->assemble(this);
         }
       }
@@ -536,7 +561,17 @@ void solveThread_c::cancelDisassemblyWork(void) {
    * too as it winds down; only one may join the workers. */
   std::lock_guard<std::mutex> cancelLock(cancelMutex);
 
-  disasmWorkerStop.store(true, std::memory_order_release);
+  {
+    /* Set with the queue's mutex held. A worker looks at this flag under
+     * that mutex and then goes to sleep; were the flag set and the workers
+     * woken in between, without the mutex, the worker would sleep on and
+     * never see it, and the join below would wait for ever (it did, about
+     * once in a hundred solves of a small puzzle). The same holds for
+     * stopPressed, which the caller has set before coming here.
+     */
+    std::lock_guard<std::mutex> lock(disasmQueueMutex);
+    disasmWorkerStop.store(true, std::memory_order_release);
+  }
 
   for (unsigned int i = 0; i < disassemblers.size(); i++)
     if (disassemblers[i])
@@ -588,8 +623,7 @@ void solveThread_c::disasmWorkerRun(disassembler_c * workerDisassm) {
 
     if (disasmWorkerStop.load(std::memory_order_acquire)) {
       puzzle.addPending(std::move(task.assembly), true, task.assemblyNumber, task.solutionNumber);
-      if (disasmPending.fetch_sub(1, std::memory_order_acq_rel) == 1)
-        disasmQueueCv.notify_all();
+      disassemblyDone();
       continue;
     }
 
@@ -603,8 +637,19 @@ void solveThread_c::disasmWorkerRun(disassembler_c * workerDisassm) {
     }
     helperPool->addLoad(-1);
 
-    if (disasmPending.fetch_sub(1, std::memory_order_acq_rel) == 1)
-      disasmQueueCv.notify_all();
+    disassemblyDone();
+  }
+}
+
+/* One assembly less to take apart; wakes flushDisassemblyQueue() when it was
+ * the last. The count is not guarded by the queue's mutex, so the mutex is
+ * taken for a moment before waking: without that the waiter could look at
+ * the count, be overtaken here, and then sleep through the wake-up.
+ */
+void solveThread_c::disassemblyDone(void) {
+  if (disasmPending.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+    { std::lock_guard<std::mutex> lock(disasmQueueMutex); }
+    disasmQueueCv.notify_all();
   }
 }
 
@@ -634,11 +679,28 @@ void solveThread_c::enqueueDisassembly(std::unique_ptr<assembly_c> a, unsigned l
      * take-aparts. A stop ends the wait: what is queued is kept. */
     std::unique_lock<std::mutex> lock(disasmQueueMutex);
 #ifndef NO_THREADING
-    disasmSpaceCv.wait(lock, [this]() {
+    auto room = [this]() {
       return disasmQueue.size() < disasmQueueLimit ||
              stopPressed.load(std::memory_order_acquire) ||
              disasmWorkerStop.load(std::memory_order_acquire);
-    });
+    };
+    if (!room()) {
+      /* The assembly search stands still while this waits: its other
+       * threads end up waiting behind this one as soon as they find an
+       * assembly too. So for as long, its cores do not count as in use,
+       * and the take-aparts may borrow them for their levels. Without
+       * this a search with few take-apart workers (a low thread limit)
+       * left most of its cores idle whenever the queue was full.
+       */
+      const int given = helperPool ? assemblyLoad.exchange(0, std::memory_order_acq_rel) : 0;
+      if (given)
+        helperPool->addLoad(-given);
+      disasmSpaceCv.wait(lock, room);
+      if (given) {
+        helperPool->addLoad(given);
+        assemblyLoad.fetch_add(given, std::memory_order_acq_rel);
+      }
+    }
 #endif
     disasmQueue.push(std::move(task));
   }
@@ -1251,12 +1313,25 @@ solveProgress_c solveThread_c::progressSnapshot(float assemblyFraction, bool hav
     else
       disasmFrac = done / total;
 
-    /* Taking apart with rotations is much the slower side. */
-    const double asmWeight = (parameters & PAR_CHECK_ROTATIONS) ? 0.2 : 0.5;
-    p.overall = (float)(asmWeight * af + (1.0 - asmWeight) * disasmFrac);
-
     /* how long a take-apart takes is only known once one is through */
     const double avg = getAverageDisassemblySeconds();
+
+    /* The two sides count by what they cost: the whole assembly search
+     * at the rate so far (thread-seconds) against all the take-aparts at
+     * the average of the ones done. The bar then moves with the time
+     * spent of the time the solve will take, whichever side is the slow
+     * one (the idea is upstream's progressModel_c, Tom Burns). Before
+     * either can be measured: half and half, or with rotations, where
+     * taking apart is much the slower side, one to four.
+     */
+    double asmWeight = (parameters & PAR_CHECK_ROTATIONS) ? 0.2 : 0.5;
+    if (af > 0.02f && asmSeconds > 0 && avg > 0 && p.disasmCompleted > 0 && total >= 1.0) {
+      const double threads = p.assemblerThreads > 0 ? (double)p.assemblerThreads : 1.0;
+      const double asmCost = asmSeconds * threads / (double)af;
+      const double disCost = avg * total;
+      asmWeight = asmCost / (asmCost + disCost);
+    }
+    p.overall = (float)(asmWeight * af + (1.0 - asmWeight) * disasmFrac);
     double disLeft = -1;
     if (p.disasmPending == 0 && future < 0.5)
       disLeft = 0;
