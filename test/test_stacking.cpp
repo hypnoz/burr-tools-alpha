@@ -17,6 +17,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -26,6 +27,38 @@
 #include <sstream>
 
 using namespace stacking;
+
+/* Every folder these tests write goes under one scratch folder of this
+ * process, removed at exit. Fixed names in the temp folder let two test
+ * runs at once (CI's meson and a rerun, or parallel runs on a desktop)
+ * wipe each other's saved searches. A search without a workDir saves to
+ * BURRTOOLS_PANEX_DIR, so that points in here too, not at the user's cache. */
+namespace {
+class scratchRoot_c {
+  public:
+    scratchRoot_c(void) {
+      std::random_device rd;
+      root = std::filesystem::temp_directory_path() /
+             ("burrtools-stacking-" + std::to_string(rd()) + "-" +
+              std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+      std::filesystem::create_directories(root);
+      const std::string cache = (root / "cache").string();
+#ifdef _WIN32
+      (void)_putenv_s("BURRTOOLS_PANEX_DIR", cache.c_str());
+#else
+      setenv("BURRTOOLS_PANEX_DIR", cache.c_str(), 1);
+#endif
+    }
+    ~scratchRoot_c(void) {
+      std::error_code ec;
+      std::filesystem::remove_all(root, ec);
+    }
+    std::filesystem::path root;
+};
+const scratchRoot_c scratchRoot;
+
+std::filesystem::path scratch(const char * name) { return scratchRoot.root / name; }
+}
 
 static puzzle_c makeBoard(void) {
   return puzzle_c(new gridType_c(gridType_c::GT_STACKING));
@@ -488,7 +521,7 @@ static void checkTransfers(const separation_c & path) {
 TEST_CASE("panex: tracing back between saved levels", "[stacking][panex]") {
   /* A tiny memory share and disk budget: the levels go to disk, only every
    * few of them stay, and the path is traced back between those. */
-  const std::string dir = (std::filesystem::temp_directory_path() / "burrtools-panex-test").string();
+  const std::string dir = scratch("panex-test").string();
   puzzle_c puz = makeBoard();
   problem_c * pr = makePanexSwap(puz, 5);
   panex::panexSearch_c search;
@@ -518,7 +551,7 @@ TEST_CASE("panex: tracing back between saved levels", "[stacking][panex]") {
 }
 
 TEST_CASE("panex: a stopped search carries on where it stopped", "[stacking][panex]") {
-  const std::string dir = (std::filesystem::temp_directory_path() / "burrtools-panex-resume").string();
+  const std::string dir = scratch("panex-resume").string();
   std::filesystem::remove_all(dir);
   puzzle_c puz = makeBoard();
   problem_c * pr = makePanexSwap(puz, 5);
@@ -603,7 +636,7 @@ TEST_CASE("panex: the search agrees with findStackPath on plain rods", "[stackin
       REQUIRE(plain);
       panex::panexSearch_c search;
       search.anyRules = true;
-      search.workDir = (std::filesystem::temp_directory_path() / "burrtools-panex-plain").string();
+      search.workDir = scratch("panex-plain").string();
       std::unique_ptr<separation_c> path = panex::solve(*pr, search);
       REQUIRE(path);
       CHECK(logicalMoves(*path) == logicalMoves(*plain));
@@ -615,7 +648,7 @@ TEST_CASE("panex: the search agrees with findStackPath on plain rods", "[stackin
 /* An export may leave the saved levels out: the search still carries on,
  * and finds its path back by solving the rest by halves. */
 TEST_CASE("panex: a saved search without its levels still finds the path", "[stacking][panex]") {
-  const std::string dir = (std::filesystem::temp_directory_path() / "burrtools-panex-nolevels").string();
+  const std::string dir = scratch("panex-nolevels").string();
   std::filesystem::remove_all(dir);
   puzzle_c puz = makeBoard();
   problem_c * pr = makePanexSwap(puz, 5);
@@ -744,7 +777,7 @@ TEST_CASE("panex: the classic tower needs no search", "[stacking][panex]") {
     setenv("BURRTOOLS_NO_TOWER_RULE", "1", 1);
     panex::panexSearch_c searched;
     searched.anyRules = true;
-    searched.workDir = (std::filesystem::temp_directory_path() / "burrtools-panex-tower").string();
+    searched.workDir = scratch("panex-tower").string();
     std::unique_ptr<separation_c> found = panex::solve(*pr, searched);
     unsetenv("BURRTOOLS_NO_TOWER_RULE");
     REQUIRE(found);
@@ -778,7 +811,7 @@ uint64_t packRoundTrip(const std::filesystem::path & f, bool keys, size_t chunk)
 } // namespace
 
 TEST_CASE("blockpack: files come back unchanged, keys packed small", "[stacking][panex][export]") {
-  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "burrtools-blockpack";
+  const std::filesystem::path dir = scratch("blockpack");
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
   std::mt19937_64 rng(7);
@@ -832,7 +865,7 @@ TEST_CASE("blockpack: files come back unchanged, keys packed small", "[stacking]
 }
 
 TEST_CASE("blockpack: a real search's saved levels", "[stacking][panex][export]") {
-  const std::string dir = (std::filesystem::temp_directory_path() / "burrtools-blockpack-panex").string();
+  const std::string dir = scratch("blockpack-panex").string();
   std::filesystem::remove_all(dir);
   puzzle_c puz = makeBoard();
   problem_c * pr = makePanexSwap(puz, 5);

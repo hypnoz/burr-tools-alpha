@@ -72,6 +72,7 @@ bt2Cells_c & bt2Cells_c::operator=(const bt2Cells_c & src) {
   cbUser = 0;
   cbFn = 0;
   iterations = 0;
+  splitShare = 0;
   return *this;
 }
 

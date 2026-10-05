@@ -1927,6 +1927,7 @@ void mainWindow_c::ReplacePuzzle(puzzle_c * NewPuzzle) {
   applySolverOptions(solutionProblem->getSelection());
 }
 
+// cppcheck-suppress duplInheritedMember
 void mainWindow_c::show(int argn, char ** argv) {
   LFl_Double_Window::show();
 

@@ -1467,7 +1467,6 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   debugPanel = 0;
   TabDebug = 0;
   solverPane = 0;
-  lastSolveStats = solveStats_c();
   notesUpdate = 0;
   notesRevert = 0;
   contentTile = 0;

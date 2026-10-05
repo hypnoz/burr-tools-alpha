@@ -367,6 +367,7 @@ public:
   int handle(int event);
 
   using LFl_Double_Window::show;
+  // cppcheck-suppress duplInheritedMember
   void show(int argn, char ** argv);
 
   void openFromSystem(const char * filename);

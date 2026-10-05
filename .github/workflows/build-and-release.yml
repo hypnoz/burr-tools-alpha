@@ -87,13 +87,22 @@ jobs:
 
       # meson keeps only the last 100 lines of a failing test's output, and the
       # solvers' progress lines on stderr crowd out Catch2's report. On failure,
-      # rerun the binary with stderr dropped so the failing assertions show.
+      # print the failing assertions from meson's full log. A rerun would not
+      # do: a failure that depends on timing usually passes the second time.
       - name: Run tests
         run: |
           just test || {
-            ./build/test_burrtools 2>/dev/null | grep -v -E '^blockpack:' || true
+            grep -v -E '^(blockpack:|using assembler|removed [0-9]+ rows|range optimisation)' \
+              build/meson-logs/testlog.txt | grep -B 12 -A 20 -E 'FAILED:|test cases:' || true
             exit 1
           }
+
+      - name: Upload test log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-testlog
+          path: build/meson-logs/testlog.txt
 
       - name: Run static analysis
         run: just check
