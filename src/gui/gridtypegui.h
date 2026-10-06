@@ -25,6 +25,7 @@
 #include "Layouter.h"
 
 #include <memory>
+#include <string>
 #include <vector>
 
 class gridType_c;
@@ -90,7 +91,8 @@ class gridTypeSelectorWindow_c : public LFl_Double_Window {
       SEL_CANCEL,     ///< Cancel, Escape or the close box
       SEL_OK,         ///< OK: a new puzzle of the selected grid
       SEL_OPEN,       ///< Open File...: open a puzzle instead
-      SEL_TUTORIAL    ///< Tutorial: a new puzzle of the selected grid, and its tutorial
+      SEL_TUTORIAL,   ///< Tutorial: a new puzzle of the selected grid, and its tutorial
+      SEL_EXAMPLE     ///< the example's "open file" link: open that example puzzle
     } result_e;
 
   private:
@@ -105,6 +107,9 @@ class gridTypeSelectorWindow_c : public LFl_Double_Window {
 
     result_e res;
 
+    /* for SEL_EXAMPLE: the example's file name in the examples folder */
+    std::string example;
+
     void showInfo(void);
 
   public:
@@ -115,12 +120,21 @@ class gridTypeSelectorWindow_c : public LFl_Double_Window {
     /* after the window has been closed with OK or Tutorial, the created grid type */
     std::unique_ptr<gridType_c> getGridType(void);
 
+    /* the grid selected in the list, by its place there, and selecting one */
+    unsigned int selected(void) const { return current; }
+    void select(unsigned int i);
+
     /* how the window was closed; SEL_CANCEL until it is */
     result_e result(void) const { return res; }
 
     void select_cb(void);
     /* close the window with the given result */
     void finish(result_e r);
+
+    /* close the window to open this example, a file name in the examples folder */
+    void openExample(const char * file);
+    /* for SEL_EXAMPLE: that file name */
+    const std::string & exampleFile(void) const { return example; }
 };
 
 #endif

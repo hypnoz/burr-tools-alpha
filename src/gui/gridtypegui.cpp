@@ -31,6 +31,7 @@
 #include <FL/Fl_Image.H>
 
 #include <algorithm>
+#include <cstring>
 
 gridTypeGui_0_c::gridTypeGui_0_c(int /*x*/, int /*y*/, int /*w*/, int /*h*/, gridType_c * /*gt*/) {
   end();
@@ -82,11 +83,20 @@ void gridTypeSelectorWindow_c::select_cb(void) {
     }
 }
 
+void gridTypeSelectorWindow_c::select(unsigned int i) {
+  if (i >= gti.size())
+    return;
+  gti[i]->btn->setonly();
+  current = i;
+  showInfo();
+}
+
 /* The description, warnings and example of the selected grid, as one text. */
 void gridTypeSelectorWindow_c::showInfo(void) {
   const gridType_c::gridType type = gti[current]->gt->getType();
-  /* The picture fits under the text, without a scroll bar. */
-  const std::string html = tutorials::selectorHtml(type, info->textsize(), 420, 260);
+  /* The picture fits under the text, without a scroll bar: the height
+   * limits most pictures, the width only the wide Stacking one. */
+  const std::string html = tutorials::selectorHtml(type, info->textsize(), 560, 260);
   info->value(html.c_str());
   info->topline(0);
 }
@@ -104,6 +114,22 @@ static void cb_gridTypeSelectorOpen_stub(Fl_Widget * /*o*/, void *v) {
 }
 static void cb_gridTypeSelectorTutorial_stub(Fl_Widget * /*o*/, void *v) {
   static_cast<gridTypeSelectorWindow_c*>(v)->finish(gridTypeSelectorWindow_c::SEL_TUTORIAL);
+}
+
+/* The "open file" link of the example: close the window to open it.
+ * Fl_Help_View asks here for its images too, which stay as they are. */
+static const char * cb_gridTypeSelectorLink_stub(Fl_Widget * w, const char * uri) {
+  const size_t n = std::strlen(EXAMPLE_LINK);
+  if (!uri || std::strncmp(uri, EXAMPLE_LINK, n) != 0)
+    return uri;
+  if (gridTypeSelectorWindow_c * win = dynamic_cast<gridTypeSelectorWindow_c *>(w->window()))
+    win->openExample(uri + n);
+  return nullptr;
+}
+
+void gridTypeSelectorWindow_c::openExample(const char * file) {
+  example = file;
+  finish(SEL_EXAMPLE);
 }
 
 gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(false), current(0), info(nullptr), res(SEL_CANCEL) {
@@ -172,6 +198,7 @@ gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(fal
   info->textcolor(FL_FOREGROUND_COLOR);
   info->setMinimumSize(600, 600);
   info->weight(1, 1);
+  info->link(cb_gridTypeSelectorLink_stub);
 
   (new LFl_Box(1, 2))->setMinimumSize(0, GAP);
 

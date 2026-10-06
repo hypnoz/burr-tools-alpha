@@ -502,9 +502,11 @@ void usage(puzzleKind_e kind = PK_ANY) {
     cout << "                                   keeps only the newest moves in memory and the\n";
     cout << "                                   rest on disk, so free disk space limits it\n";
     cout << "                                   (also: full)\n";
-    cout << "  The Sliding Full Solver writes to $BURRTOOLS_SLIDE_DIR, or the user's cache\n";
-    cout << "  folder, and deletes its files when done. BURRTOOLS_SLIDE_DISK_GB limits the\n";
-    cout << "  disk it may take (default: all but 2 GB or a twentieth of the disk).\n";
+    cout << "  The Sliding Full Solver keeps its first 256 MB of older moves in memory, then\n";
+    cout << "  writes to $BURRTOOLS_SLIDE_DIR, or the user's cache folder, and deletes its\n";
+    cout << "  files when done. BURRTOOLS_SLIDE_DISK_GB limits the disk it may take (default:\n";
+    cout << "  all but 2 GB or a twentieth of the disk, but at least 1 GB or half the free\n";
+    cout << "  space, whichever is less).\n";
   } else {
     cout << "  The start and goal stacks come from the file. A move is one disc going\n";
     cout << "  from the top of one rod to the top of another. With Panex columns a\n";

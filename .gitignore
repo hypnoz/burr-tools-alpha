@@ -34,6 +34,9 @@ gendoc/
 __pycache__/
 *.pyc
 
+# The GUI's crash save, written to the folder it was started from (src/gui/main.cpp)
+__rescue.xmpuzzle
+
 # Local generated test output
 *.stl
 puzzles/

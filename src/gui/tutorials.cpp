@@ -64,10 +64,10 @@ For even more advanced topics or learning, visit the BurrTools documentation web
 const char slidingTutorial[] = R"TUTORIAL(This tutorial is for the Sliding space grid. A sliding puzzle is a flat tray with pieces in it. The pieces start in one place and must be slid, one at a time, to their goal places without lifting them out of the tray. BurrTools finds the fewest moves, where one move is one piece going anywhere it can reach while the others stay put, around corners included.
 
 -- Creating the pieces:
-On the Entities tab, press "New" to add a shape for each piece. A sliding piece is flat: set its X and Y size, keep Z at 1, and draw its cells in the grid with the solid red square. Pieces that are copies of one another, such as four identical small squares, may be the same shape used several times; the solver treats copies as one, which makes the search much faster. Use "Label" to give each piece a name, as the names appear in the tray editor.
+On the Entities tab, press "New" to add a shape for each piece. A sliding piece is flat: set its X and Y size, keep Z at 1, and draw its cells in the grid with the solid red square. Pieces that are copies of one another, such as four identical small squares, may be the same shape used several times; the solver treats copies as one, which makes the search much faster. Use "Label" to give each piece a name, as the names appear on the Start/Goal tab.
 
 -- Creating the tray:
-Press "New Start/Goal Positions" to add the tray. This is the board the pieces slide on, and it holds both where each piece starts and where it must end. Set its size on the Size tab. Then use the "Tray edit" tab:
+Press "New Start/Goal Positions" to add the tray. This is the board the pieces slide on, and it holds both where each piece starts and where it must end. Set its size on the Size tab. Then use the "Start/Goal" tab:
 Walls: click cells to switch them between floor and wall. Pieces only move over floor. A variable cell (the green square) is a corridor: a piece may slide across it but may not stop on it.
 Start: select a piece in the shape list, then click the tray where it should start. Click a placed start again to remove it. Every piece in the puzzle needs a start.
 Goal: select a piece, then click where it must end. A piece without a goal may end anywhere, which is common: often only one piece has to reach a goal.
@@ -121,9 +121,11 @@ struct gridInfo_c {
   /* The selector's description, and a warning or nullptr. */
   const char * description;
   const char * warning;
-  /* The picture in exampleimages.h and the puzzle it shows. */
+  /* The picture in exampleimages.h, the puzzle it shows, and that
+   * puzzle's file in the examples folder. */
   const char * picture;
   const char * pictureOf;
+  const char * file;
   /* For the grids that share cellGridTutorial: what is particular to it. */
   const char * intro;
 };
@@ -139,22 +141,22 @@ const gridInfo_c grids[] = {
    "Pieces are made of cubes. This is the usual interlocking burr or packing puzzle: BurrTools finds "
    "every way the pieces fill the result shape, then works out which of those can really be taken "
    "apart, and how.",
-   nullptr, "brick", "Cube in Cage, from the examples folder", nullptr},
+   nullptr, "brick", "Cube in Cage by Mineyuki Uyematsu", "CubeInCage.xmpuzzle", nullptr},
   {gridType_c::GT_SLIDING, "Sliding",
    "Pieces are flat shapes in a tray. Mark where each piece starts and where it must end, and the "
    "solver finds the fewest moves that slide them from start to goal, one piece at a time. Pieces "
    "can carry others nested inside them when that is allowed.",
-   nullptr, "sliding", "A ten-piece sliding puzzle in a 4x5 tray, at its start", nullptr},
+   nullptr, "sliding", "Sliding puzzle by GiiKER Super Slide", "SliderByGiiker.xmpuzzle", nullptr},
   {gridType_c::GT_STACKING, "Stacking",
    "Pieces are discs on vertical rods. A move takes the top disc of one rod and puts it on another, "
    "as in the Tower of Hanoi or Panex. Rules such as no large disc on a smaller one are set for each "
    "rod set, and the solver finds the fewest moves from the start stacks to the goal stacks.",
-   nullptr, "stacking", "Panex Swap 3-10, at its start", nullptr},
+   nullptr, "stacking", "Panex Level 8 by Toshio Akanuma", "PanexLevel3to10.xmpuzzle", nullptr},
   {gridType_c::GT_TRIANGULAR_PRISM, "Triangular Prism",
    "Like Brick, with a different cell. Each cell is a prism with a triangular base, and the cells of "
    "a layer are triangles, half pointing up and half pointing down. Layers stack on top of one "
    "another. Pieces are found, and taken apart, as for Brick.",
-   nullptr, "prism", "Prisgon, from the examples folder",
+   nullptr, "prism", "Prisgon by Markus G\xC3\xB6tz", "Prisgon.xmpuzzle",
    "This tutorial is for the Triangular Prism space grid. It works like the Brick grid, with a "
    "different cell: each cell is a prism with a triangular base. In the grid editor a layer is a "
    "field of triangles, half pointing up and half pointing down; click a triangle to fill it. The "
@@ -164,7 +166,7 @@ const gridInfo_c grids[] = {
    "Pieces are made of balls. The balls sit in the tightest packing there is, each layer resting in "
    "the hollows of the one below, as oranges are stacked at a market. Good for pyramid and ball "
    "packing puzzles.",
-   noDisassembler, "spheres", "Ball Room, from the examples folder",
+   noDisassembler, "spheres", "Ball Room by Stewart Coffin", "BallRoom.xmpuzzle",
    "This tutorial is for the Spheres space grid, where pieces are made of balls. The balls sit in "
    "the tightest packing: each layer rests in the hollows of the one below. The grid editor "
    "shows one layer at a time and the slider moves between layers. Layers are offset from one "
@@ -174,7 +176,7 @@ const gridInfo_c grids[] = {
   {gridType_c::GT_RHOMBIC, "Rhombic",
    "Pieces are made of small tetrahedra cut from cubes, so that they build rhombic dodecahedra, "
    "stellations and other shapes with faces that are not square.",
-   noDisassembler, "rhombic", "Diagonal Cube, from the examples folder",
+   noDisassembler, "rhombic", "Diagonal Cube by Stewart Coffin", "DiagonalCube.xmpuzzle",
    "This tutorial is for the Rhombic space grid. Each cube of the grid is cut into small "
    "tetrahedra, and pieces are made of these, so that they can build rhombic dodecahedra, "
    "stellations and other shapes whose faces are not square. In the grid editor each cube shows "
@@ -184,7 +186,7 @@ const gridInfo_c grids[] = {
   {gridType_c::GT_TETRA_OCTA, "Tetrahedra-Octahedra",
    "Pieces are made of tetrahedra and octahedra, which together fill space. Good for pyramid, "
    "tetrahedron and octahedron shaped puzzles. A piece may use both kinds of cell.",
-   noDisassembler, "tetraocta", "Four Piece Tetrahedron, from the examples folder",
+   noDisassembler, "tetraocta", "Four Piece Tetrahedron by Wayne Daniel", "FourPieceTetrahedron.xmpuzzle",
    "This tutorial is for the Tetrahedra-Octahedra space grid. Its cells are tetrahedra and "
    "octahedra, which fill space together, and a piece may use both. It is the grid for pyramids, "
    "tetrahedra and octahedra built from such pieces. In the grid editor each cube of the grid "
@@ -302,11 +304,23 @@ std::string selectorHtml(gridType_c::gridType type, int fontSize, int maxW, int 
     snprintf(size, sizeof(size), "width=\"%d\" height=\"%d\"", (int)(w * scale), (int)(h * scale));
     html += "<p><font size=\"" + label + "\" color=\"#2F6FD0\"><b>Example:</b></font><br>";
     appendEscaped(html, g->pictureOf);
-    html += "</p><p><center><img src=\"" + imageFile + "\" " + size + "></center></p>";
+    if (g->file) {
+      html += " (<a href=\"" + std::string(EXAMPLE_LINK) + g->file + "\">open file</a>)";
+    }
+    html += "</p>";
+    /* the wide, low Panex picture looks crowded against the text without a
+     * gap; Fl_Help_View gives an empty line no height, so the gap holds spaces */
+    if (type == gridType_c::GT_STACKING)
+      html += "<p>&nbsp;<br>&nbsp;</p>";
+    html += "<p><center><img src=\"" + imageFile + "\" " + size + "></center></p>";
   }
 
   html += "</body></html>";
   return html;
+}
+
+const char * exampleFile(gridType_c::gridType type) {
+  return infoFor(type)->file;
 }
 
 const char * pictureName(gridType_c::gridType type) {

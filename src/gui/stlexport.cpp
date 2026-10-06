@@ -19,6 +19,7 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include "stlexport.h"
+#include "btmessage.h"
 #include "filechooser.h"
 
 #include "../tools/homedir.h"
@@ -112,13 +113,13 @@ void stlExport_c::cb_Update3DView(void)
   {
     /* nothing to show: the preview must not keep the last mesh */
     view3D->getView()->showNothing();
-    fl_message("%s",e.comment);
+    bt_message("%s",e.comment);
     return;
   }
   catch (...)
   {
     view3D->getView()->showNothing();
-    fl_message("The generated mesh is faulty in some way, try to tweak the parameter");
+    bt_message("The generated mesh is faulty in some way, try to tweak the parameter");
     return;
   }
 
@@ -384,7 +385,7 @@ void stlExport_c::exportSTL(int shape)
   // Native save dialogs already confirm overwrite; still ask for a typed path.
   if (fileExists(name.c_str()))
   {
-    if (fl_choice("File exists overwrite?", "Cancel", "Overwrite", 0) == 0)
+    if (bt_choice("File exists overwrite?", "Cancel", "Overwrite", 0) == 0)
     {
       return;
     }
@@ -395,11 +396,11 @@ void stlExport_c::exportSTL(int shape)
   }
 
   catch (stlException_c e) {
-    fl_message("%s",e.comment);
+    bt_message("%s",e.comment);
   }
   catch (...)
   {
-    fl_message("The generated mesh is faulty in some way, try to tweak the parameter");
+    bt_message("The generated mesh is faulty in some way, try to tweak the parameter");
   }
 }
 

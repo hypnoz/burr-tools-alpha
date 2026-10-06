@@ -21,6 +21,7 @@
 
 /* mainWindow_c, part: the Solver tab: solving, pausing, the solution list and its disassemblies. */
 #include "mainwindow.h"
+#include "btmessage.h"
 #include "mainwindow_internal.h"
 
 #include "configuration.h"
@@ -146,7 +147,7 @@ void mainWindow_c::cb_BtnStart(bool prep_only) {
   if (assmThread)
     return;
   if (solutionProblem->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
@@ -155,7 +156,7 @@ void mainWindow_c::cb_BtnStart(bool prep_only) {
     const problem_c * pr = puzzle->getProblem(solutionProblem->getSelection());
     const std::string saved = panex::savedSearch(*pr);
     if (!saved.empty()) {
-      int choice = fl_choice("This problem has %s.\n\nContinue it, or start over and discard it?",
+      int choice = bt_choice("This problem has %s.\n\nContinue it, or start over and discard it?",
                              "Cancel", "Continue", "Start Over", saved.c_str());
       if (choice == 0)
         return;
@@ -188,7 +189,7 @@ void mainWindow_c::cb_BtnCont(bool prep_only, int forProblem) {
 
   if (!stackingPuzzle &&
       !(ggt->getGridType()->getCapabilities() & gridType_c::CAP_ASSEMBLE)) {
-    fl_message("Sorry, this space grid doesn't have an assembler (yet)!");
+    bt_message("Sorry, this space grid doesn't have an assembler (yet)!");
     return;
   }
 
@@ -196,35 +197,35 @@ void mainWindow_c::cb_BtnCont(bool prep_only, int forProblem) {
       !(ggt->getGridType()->getCapabilities() & gridType_c::CAP_DISASSEMBLE) &&
       !(puzzle && sliding::isSliding(*puzzle)) &&
       !stackingPuzzle) {
-    fl_message("Sorry, this space grid doesn't have a disassembler (yet)!\n"
+    bt_message("Sorry, this space grid doesn't have a disassembler (yet)!\n"
                "You must disable the disassembler first\n");
     return;
   }
 
   if (prob >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
   if (stackingPuzzle) {
     problem_c * pr = puzzle->getProblem(prob);
     if (!pr->rodSetValid()) {
-      fl_message("Choose a rod set with Set Start/Goal Rods");
+      bt_message("Choose a rod set with Set Start/Goal Rods");
       return;
     }
     if (SolveDisasm->value() == 0 && JustCount->value() == 0) {
-      fl_message("Turn on Find Solutions");
+      bt_message("Turn on Find Solutions");
       return;
     }
     std::string err = stacking::setupError(*pr);
     if (!err.empty()) {
-      fl_message("%s", err.c_str());
+      bt_message("%s", err.c_str());
       return;
     }
     for (unsigned int i = 0; i < puzzle->getNumberOfShapes(); i++)
       stacking::ensureHotspot(puzzle->getShape(i));
   } else if (!puzzle->getProblem(prob)->resultValid()) {
-    fl_message("A result shape must be defined");
+    bt_message("A result shape must be defined");
     return;
   }
 
@@ -233,13 +234,13 @@ void mainWindow_c::cb_BtnCont(bool prep_only, int forProblem) {
     if (pr->resultValid() && sliding::isStartGoalShape(getResultShape(*pr))) {
       const std::string err = sliding::startGoalError(*puzzle, pr->getResultId());
       if (!err.empty()) {
-        fl_message("%s", err.c_str());
+        bt_message("%s", err.c_str());
         return;
       }
     }
     std::string overflow = sliding::stampOverflowMessage(*puzzle->getProblem(prob));
     if (!overflow.empty()) {
-      fl_message("%s", overflow.c_str());
+      bt_message("%s", overflow.c_str());
       return;
     }
   }
@@ -267,7 +268,7 @@ void mainWindow_c::cb_BtnCont(bool prep_only, int forProblem) {
   if (panexSelected()) {
     std::string why = panex::unsupported(*puzzle->getProblem(prob));
     if (!why.empty()) {
-      fl_message("%s", why.c_str());
+      bt_message("%s", why.c_str());
       return;
     }
     par |= solveThread_c::PAR_PANEX_SOLVER;
@@ -295,7 +296,7 @@ void mainWindow_c::cb_BtnCont(bool prep_only, int forProblem) {
   autosaveProblem = prob;
 
   if (!assmThread->start(prep_only)) {
-    fl_message("Could not start the solving process, the thread creation failed, sorry.");
+    bt_message("Could not start the solving process, the thread creation failed, sorry.");
     assmThread.reset();
 
   } else {
@@ -325,6 +326,26 @@ bool mainWindow_c::abortable(unsigned int prob) const {
   return !recovery.empty() && std::filesystem::exists(recovery, ec);
 }
 
+bool mainWindow_c::resettable(unsigned int prob) const {
+  if (!puzzle || prob >= puzzle->getNumberOfProblems() || solvingProblem(prob))
+    return false;
+  const problem_c * pr = puzzle->getProblem(prob);
+  if (stacking::isStacking(*puzzle) && !panex::savedSearch(*pr).empty())
+    return false;
+  return pr->getSolveState() == SS_SOLVED || pr->getSolveState() == SS_UNKNOWN;
+}
+
+void mainWindow_c::setAbortLabel(unsigned int prob) {
+  if (resettable(prob)) {
+    BtnAbort->label("Reset");
+    BtnAbort->tooltip(" Throw away this problem's solve: its results and the autosave copy ");
+  } else {
+    BtnAbort->label("Abort");
+    BtnAbort->tooltip(" Stop at once and throw away everything kept of this problem's solve: its results, "
+                      "the paused state, a saved search, and the autosave copy ");
+  }
+}
+
 void mainWindow_c::cb_BtnAbort(void) {
 
   const unsigned int prob = solutionProblem->getSelection();
@@ -334,10 +355,14 @@ void mainWindow_c::cb_BtnAbort(void) {
   if (assmThread && !solvingProblem(prob))
     return;
 
-  if (fl_choice("Abort the solve of this problem and throw away all of it?\n\n"
-                "Its solutions, the paused state, any saved search and the autosave copy "
-                "are deleted. This cannot be undone.",
-                "Cancel", "Abort", 0) != 1)
+  const bool reset = resettable(prob);
+  if (reset ? bt_choice("Reset this problem and throw away its solve?\n\n"
+                        "Its solutions and the autosave copy are deleted. This cannot be undone.",
+                        "Cancel", "Reset", 0) != 1
+            : bt_choice("Abort the solve of this problem and throw away all of it?\n\n"
+                        "Its solutions, the paused state, any saved search and the autosave copy "
+                        "are deleted. This cannot be undone.",
+                        "Cancel", "Abort", 0) != 1)
     return;
 
   problem_c * pr = puzzle->getProblem(prob);
@@ -834,7 +859,7 @@ void mainWindow_c::cb_AddDisasm(void) {
     return;
 
   if (!(ggt->getGridType()->getCapabilities() & gridType_c::CAP_DISASSEMBLE)) {
-    fl_message("Sorry, this space grid doesn't have a disassembler (yet)!");
+    bt_message("Sorry, this space grid doesn't have a disassembler (yet)!");
     return;
   }
 
@@ -862,7 +887,7 @@ void mainWindow_c::cb_AddAllDisasm(bool all) {
     return;
 
   if (!(ggt->getGridType()->getCapabilities() & gridType_c::CAP_DISASSEMBLE)) {
-    fl_message("Sorry, this space grid doesn't have a disassembler (yet)!");
+    bt_message("Sorry, this space grid doesn't have a disassembler (yet)!");
     return;
   }
 

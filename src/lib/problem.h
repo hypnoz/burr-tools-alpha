@@ -217,6 +217,17 @@ private:
   std::atomic<unsigned long long> usedMs;
 
   /**
+   * How much the solver went through, for showing once it is done: the
+   * search steps of the assembler, or the arrangements of a sliding search,
+   * or the stackings of a stacking search; how many moves deep a sliding or
+   * Panex search went; and how many assemblies were tried for taking apart.
+   * Set by the program that runs the solver, between runs; 0 when unknown.
+   */
+  unsigned long long searched = 0;
+  unsigned long searchDepth = 0;
+  unsigned long triedApart = 0;
+
+  /**
    * number of holes maximally allowed
    * this value *may* be used to limit the number of holes, if you have piece ranges
    * in your puzzle. As soon as there are no piece ranges, this value can be calculated
@@ -575,6 +586,16 @@ public:
   unsigned long getUsedTime(void) const { bt_assert(solveState != SS_UNSOLVED); return (unsigned long)(usedMs / 1000); }
   /** Time spent solving, in milliseconds. */
   unsigned long long getUsedMs(void) const { bt_assert(solveState != SS_UNSOLVED); return usedMs.load(std::memory_order_relaxed); }
+
+  /** How much the solver went through; see the fields of the same names. */
+  unsigned long long getSearched(void) const { return searched; }
+  unsigned long getSearchDepth(void) const { return searchDepth; }
+  unsigned long getTriedApart(void) const { return triedApart; }
+  void setSearchStats(unsigned long long s, unsigned long depth, unsigned long apart) {
+    searched = s;
+    searchDepth = depth;
+    triedApart = apart;
+  }
   /** get number of solutions that were stored */
   unsigned int getNumberOfSavedSolutions(void) const { return solutions.size(); }
 

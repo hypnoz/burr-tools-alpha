@@ -19,6 +19,7 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include "BlockList.h"
+#include "btmessage.h"
 
 #include "piececolor.h"
 #include "slidingcolors.h"
@@ -1214,7 +1215,7 @@ void DiskSelector::onSize(unsigned int index) {
   long v = text ? strtol(text, &end, 10) : 0;
   bool bad = !text || !*text || !end || *end || v < 1 || v > 100;
   if (bad) {
-    fl_message("An invalid size was entered, please pick a value between 1-100.");
+    bt_message("An invalid size was entered, please pick a value between 1-100.");
     applySize(index, 1);
     return;
   }

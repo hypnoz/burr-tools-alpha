@@ -21,6 +21,7 @@
 
 /* mainWindow_c, part: About, the tutorial and the solver help texts. */
 #include "mainwindow.h"
+#include "btmessage.h"
 #include "tutorials.h"
 #include "mainwindow_internal.h"
 
@@ -134,7 +135,7 @@
 void cb_About_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_About(); }
 void mainWindow_c::cb_About(void) {
 
-  fl_message("This is the GUI for BurrTools\n"
+  bt_message("This is the GUI for BurrTools\n"
              "\n"
              "This version is a fork of the original BurrTools 0.7.1, hosted at\n"
              "https://github.com/hypnoz/burr-tools\n"
@@ -273,8 +274,8 @@ void mainWindow_c::cb_SolverTypeHelp(void) {
     addSolverHelpHeading(row++, "Sliding Full Solver (full depth)");
     addSolverHelpBody(row++,
         "•  The default. No limit on arrangements. It either finds the fewest moves or proves there is no solution. When a solution exists it takes no longer than the Fast or Deep Solver.\n"
-        "•  Searches one move at a time, on every core. Only the newest moves stay in memory; everything older is written to a folder in this computer's cache, compressed, and deleted when the search ends. So it is limited by free disk space, not by memory: billions of arrangements are possible.\n"
-        "•  It keeps 2 GB of the disk free, or a twentieth of it if that is more. Memory is needed only for the widest move: it stops if that would not fit in about 2 GB, or in half of this computer's memory with Enable High Memory.\n"
+        "•  Searches one move at a time, on every core. Only the newest moves stay in memory; everything older is compressed and, once it passes 256 MB, written to a folder in this computer's cache and deleted when the search ends. Small searches never use the disk. So it is limited by free disk space, not by memory: billions of arrangements are possible.\n"
+        "•  It keeps 2 GB of the disk free, or a twentieth of it if that is more, but may always use 1 GB or half the free space, whichever is less. Memory is needed only for the widest move: it stops if that would not fit in about 2 GB, or in half of this computer's memory with Enable High Memory.\n"
         "•  The Solver tab shows how many moves deep it is and how many arrangements it has searched, and Stop ends the search at any time.\n"
         "•  With many start layouts, every start that cannot reach the goal is searched to the end to prove it. The Fast or Deep Solver can finish such a puzzle sooner.");
   } else if (puzzle && stacking::isStacking(*puzzle)) {

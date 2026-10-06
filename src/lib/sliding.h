@@ -223,9 +223,15 @@ struct slideSearch_c {
   std::string workDir;
   /**
    * Disk those levels may take, in bytes; 0 for $BURRTOOLS_SLIDE_DISK_GB,
-   * or else all the free space but a margin.
+   * or else all the free space but a margin, and at least a little of it.
    */
   unsigned long long diskBudget = 0;
+  /**
+   * Bytes of older levels a full search keeps in memory before it starts
+   * writing them to disk; 0 for the default (256 MB). A small search never
+   * touches the disk.
+   */
+  unsigned long long memoryLevelBytes = 0;
 
   /** Out: how the search ended, and how many arrangements it visited. */
   slideOutcome_e outcome = SLIDE_NO_PATH;

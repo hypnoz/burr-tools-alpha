@@ -33,10 +33,13 @@
 #endif
 #include <windows.h>
 #elif defined(__APPLE__)
+#include <mach-o/dyld.h>
 #include <sys/sysctl.h>
 #include <cstdint>
+#include <vector>
 #elif defined(__unix__)
 #include <unistd.h>
+#include <vector>
 #endif
 
 unsigned long long physicalMemoryBytes(void) {
@@ -80,4 +83,40 @@ std::string userCacheDirectory(void) {
     return std::string(home) + "/.cache/burrtools";
   return "";
 #endif
+}
+
+std::string executableDirectory(void) {
+  std::string path;
+#if defined(_WIN32)
+  wchar_t buf[MAX_PATH * 4];
+  const DWORD n = GetModuleFileNameW(nullptr, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
+  if (n == 0 || n >= sizeof(buf) / sizeof(buf[0]))
+    return "";
+  const int len = WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, nullptr, 0, nullptr, nullptr);
+  if (len <= 0)
+    return "";
+  path.resize(len);
+  WideCharToMultiByte(CP_UTF8, 0, buf, (int)n, &path[0], len, nullptr, nullptr);
+  const size_t slash = path.find_last_of("\\/");
+#elif defined(__APPLE__)
+  uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::vector<char> buf(size + 1, 0);
+  if (_NSGetExecutablePath(buf.data(), &size) != 0)
+    return "";
+  path = buf.data();
+  const size_t slash = path.rfind('/');
+#elif defined(__unix__)
+  std::vector<char> buf(4096, 0);
+  const ssize_t n = readlink("/proc/self/exe", buf.data(), buf.size() - 1);
+  if (n <= 0)
+    return "";
+  path.assign(buf.data(), (size_t)n);
+  const size_t slash = path.rfind('/');
+#else
+  const size_t slash = std::string::npos;
+#endif
+  if (slash == std::string::npos)
+    return "";
+  return path.substr(0, slash);
 }

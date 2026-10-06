@@ -34,6 +34,13 @@ namespace tutorials {
 /* The name of a grid type as the selector and the tutorials give it. */
 const char * gridName(gridType_c::gridType type);
 
+/* The link of the selector's "open file" text: this, then the file name. */
+#define EXAMPLE_LINK "burrtools-example:"
+
+/* The file of a grid type's example puzzle in the examples folder, such
+ * as "CubeInCage.xmpuzzle"; nullptr when there is none. */
+const char * exampleFile(gridType_c::gridType type);
+
 /* The name of its example picture in exampleimages.h. */
 const char * pictureName(gridType_c::gridType type);
 

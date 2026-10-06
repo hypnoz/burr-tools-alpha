@@ -1081,12 +1081,14 @@ void mainWindow_c::CreateSolveTab(void) {
 
     o = new layouter_c(0, 13);
 
-    /* Two lines, always: "slide search: 192 moves deep" over "2,916,869,760
-     * arrangements". Nothing below moves when only one is used. */
+    /* Three lines, always: two of text, "Sliding search, 192 moves deep."
+     * over "Scanned 2.92 billion arrangements.", and room for one of them to
+     * wrap when the pane is narrow. Nothing below moves when fewer are used. */
     LFl_Box * activityLabel = new LFl_Box("Activity: ", 0, 0, 1, 1);
     activityLabel->stretchRight();
     activityLabel->stretchTop();
-    OutputActivity = new LFl_Multiline_Output(1, 0, 3, 1, 2);
+    OutputActivity = new LFl_Multiline_Output(1, 0, 3, 1, 3);
+    OutputActivity->type(FL_MULTILINE_OUTPUT_WRAP);
     OutputActivity->box(FL_FLAT_BOX);
     OutputActivity->color(FL_BACKGROUND_COLOR);
     OutputActivity->tooltip(" What is currently done ");
@@ -1430,9 +1432,8 @@ void mainWindow_c::openTutorial(int gridType) {
   tutorialPanel->value(html.c_str());
   tutorialPanel->topline(0);
   const std::string note = std::string("<p>The tutorial for the <b>") + tutorials::gridName(type) +
-      "</b> space grid is on the right.</p><p>Help, Tutorial opens the tutorial for the kind of "
-      "puzzle that is open. File, New has the others: choose a space grid there and press "
-      "Tutorial.</p>";
+      "</b> space grid is on the right.</p><p>Tutorials for each puzzle type can be found at the "
+      "\"File -&gt; New\" screen or from the \"Help -&gt; Tutorial\" dropdown menu.</p>";
   tutorialNote->value(note.c_str());
 
   if (TabTutorial->parent() != TaskSelectionTab) {

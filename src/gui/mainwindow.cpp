@@ -19,6 +19,7 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include "mainwindow.h"
+#include "btmessage.h"
 #include "mainwindow_internal.h"
 
 #include "configuration.h"
@@ -143,6 +144,70 @@ static std::string withCommas(unsigned long n) {
     out += digits[i];
   }
   return out;
+}
+
+/* A count for the Activity line: "999,999", then "125.3 million",
+ * "23.53 billion", "4.125 trillion", one more decimal for each step. */
+static std::string shortCount(unsigned long long n) {
+  if (n < 1000000ull)
+    return withCommas((unsigned long)n);
+  static const char * const names[] = {"million", "billion", "trillion", "quadrillion", "quintillion"};
+  double v = n / 1e6;
+  int step = 0;
+  /* a value that rounds up to 1000 belongs to the next name */
+  while (step < 4 && std::round(v * std::pow(10, step + 1)) >= 1000 * std::pow(10, step + 1)) {
+    v /= 1000;
+    step++;
+  }
+  char count[48];
+  snprintf(count, sizeof(count), "%.*f %s", step + 1, v, names[step]);
+  return count;
+}
+
+/* What the solver is doing, in sentences for the Activity line's two
+ * lines: the same as solveProgress_c::activity(), which other programs
+ * print, said the way the rest of the window says things. */
+static std::string activitySentence(const solveProgress_c & p) {
+  char tmp[200];
+  std::string second;
+  if (!p.running.empty()) {
+    const disassemblyProgress_c & d = p.running[0];
+    second = "\nLevel " + std::to_string(d.level) + ": " + shortCount(d.levelDone) + " of " +
+             shortCount(d.levelSize);
+    if (d.pieces > 2)
+      second += ", split " + std::to_string(d.separations) + " of " + std::to_string(d.pieces - 1);
+    if (d.threads > 1)
+      second += ", " + std::to_string(d.threads) + " threads";
+    second += ".";
+  }
+  switch (p.stage) {
+    case solveProgress_c::STAGE_PREPARE:
+      snprintf(tmp, sizeof(tmp), "Preparing piece %u of %u.", p.piece, p.pieces);
+      return tmp;
+    case solveProgress_c::STAGE_REDUCE:
+      snprintf(tmp, sizeof(tmp), "Optimizing piece %u of %u.", p.piece, p.pieces);
+      return tmp;
+    case solveProgress_c::STAGE_ASSEMBLE:
+      if (!p.disassembly)
+        return "Assembling.";
+      snprintf(tmp, sizeof(tmp), "Assembling. Taken apart %u, %u waiting.",
+               p.disasmCompleted, p.disasmPending);
+      return tmp + second;
+    case solveProgress_c::STAGE_DISASSEMBLE:
+      snprintf(tmp, sizeof(tmp), "Taking apart %u of %u.",
+               p.disasmCompleted + (p.disasmPending ? 1 : 0), p.disasmCompleted + p.disasmPending);
+      return tmp + second;
+    case solveProgress_c::STAGE_STOPPING:
+      return "Please wait.";
+    case solveProgress_c::STAGE_PAUSED:
+      return "Paused.";
+    case solveProgress_c::STAGE_DONE:
+      return "Finished.";
+    case solveProgress_c::STAGE_ERROR:
+      return "Error.";
+    default:
+      return "";
+  }
 }
 
 static int liveMenuIndex(const Fl_Menu_ * m, Fl_Callback * cb) {
@@ -319,7 +384,7 @@ void cb_RemoveColor_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>
 void mainWindow_c::cb_RemoveColor(void) {
 
   if (colorSelector->getSelection() == 0)
-    fl_message("Can not delete the Neutral colour, this colour has to be there");
+    bt_message("Can not delete the Neutral colour, this colour has to be there");
   else {
     changeColor(colorSelector->getSelection());
     puzzle->removeColor(colorSelector->getSelection());
@@ -342,7 +407,7 @@ void cb_ChangeColor_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>
 void mainWindow_c::cb_ChangeColor(void) {
 
   if (colorSelector->getSelection() == 0)
-    fl_message("Can not edit the Neutral colour");
+    bt_message("Can not edit the Neutral colour");
   else {
     unsigned char r, g, b;
     puzzle->getColor(colorSelector->getSelection()-1, &r, &g, &b);
@@ -415,7 +480,7 @@ void mainWindow_c::cb_DeleteShape(void) {
 
   } else
 
-    fl_message("No shape to delete selected!");
+    bt_message("No shape to delete selected!");
 
 }
 
@@ -447,7 +512,7 @@ void mainWindow_c::cb_CopyShape(void) {
 
   } else
 
-    fl_message("No shape to copy selected!");
+    bt_message("No shape to copy selected!");
 
 }
 
@@ -500,8 +565,7 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
       Big3DView();
     hideDebugRightPane();
     ViewSizes[currentTab] = View3D->getZoom();
-    if (ViewSizes[0] >= 0)
-      View3D->setZoom(ViewSizes[0]);
+    View3D->setZoom(ViewSizes[0] >= 0 ? ViewSizes[0] : startZoom());
     currentTab = 0;
   } else if(o->value() == TabProblems) {
     relayoutTab(TabProblems);
@@ -519,8 +583,7 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
     Big3DView();
     hideDebugRightPane();
     ViewSizes[currentTab] = View3D->getZoom();
-    if (ViewSizes[1] >= 0)
-      View3D->setZoom(ViewSizes[1]);
+    View3D->setZoom(ViewSizes[1] >= 0 ? ViewSizes[1] : startZoom());
     currentTab = 1;
   } else if(o->value() == TabSolve) {
     relayoutTab(TabSolve);
@@ -541,8 +604,7 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
     hideDebugRightPane();
     StatusLine->setText("");
     ViewSizes[currentTab] = View3D->getZoom();
-    if (ViewSizes[2] >= 0)
-      View3D->setZoom(ViewSizes[2]);
+    View3D->setZoom(ViewSizes[2] >= 0 ? ViewSizes[2] : startZoom());
     currentTab = 2;
   } else if (o->value() == TabTutorial) {
 
@@ -989,7 +1051,7 @@ void cb_ShapeToResult_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c
 void mainWindow_c::cb_ShapeToResult(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
@@ -1049,7 +1111,7 @@ void cb_AddShapeToProblem_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWind
 void mainWindow_c::cb_AddShapeToProblem(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
   unsigned int shape = shapeAssignmentSelector->getSelection();
@@ -1098,7 +1160,7 @@ void cb_AddAllShapesToProblem_stub(Fl_Widget* /*o*/, void* v) { static_cast<main
 void mainWindow_c::cb_AddAllShapesToProblem(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
@@ -1172,7 +1234,7 @@ void cb_RemoveShapeFromProblem_stub(Fl_Widget* /*o*/, void* v) { static_cast<mai
 void mainWindow_c::cb_RemoveShapeFromProblem(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
@@ -1229,7 +1291,7 @@ void cb_SetShapeMinimumToZero_stub (Fl_Widget* /*o*/, void* v) { static_cast<mai
 void mainWindow_c::cb_SetShapeMinimumToZero(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
@@ -1258,7 +1320,7 @@ void cb_RemoveAllShapesFromProblem_stub(Fl_Widget* /*o*/, void* v) { static_cast
 void mainWindow_c::cb_RemoveAllShapesFromProblem(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
@@ -1307,7 +1369,7 @@ void cb_SetAllRange_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>
 void mainWindow_c::cb_SetAllRange(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
@@ -1408,7 +1470,7 @@ void mainWindow_c::cb_BtnPlacementBrowser(void) {
     return;
 
   if (!pa->getPiecePlacementSupported()) {
-    fl_message("Sorry, no placement browser for this type of puzzle");
+    bt_message("Sorry, no placement browser for this type of puzzle");
     return;
   }
 
@@ -1465,7 +1527,7 @@ void cb_AllowColor_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(
 void mainWindow_c::cb_AllowColor(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
@@ -1487,7 +1549,7 @@ void cb_DisallowColor_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c
 void mainWindow_c::cb_DisallowColor(void) {
 
   if (problemSelector->getSelection() >= puzzle->getNumberOfProblems()) {
-    fl_message("First create a problem");
+    bt_message("First create a problem");
     return;
   }
 
@@ -1901,7 +1963,7 @@ bool mainWindow_c::threadStopped(void) {
 
   if (assmThread) {
 
-    fl_message("Stop solving process first!");
+    bt_message("Stop solving process first!");
     return false;
   }
 
@@ -1930,7 +1992,7 @@ bool mainWindow_c::tryToLoad(const char * f, bool * reportedError) {
     std::error_code ec;
     if (!recovery.empty() && std::filesystem::exists(recovery, ec) &&
         std::filesystem::last_write_time(recovery, ec) > std::filesystem::last_write_time(f, ec)) {
-      int choice = fl_choice("BurrTools autosaved a solve of this puzzle after the file was last "
+      int choice = bt_choice("BurrTools autosaved a solve of this puzzle after the file was last "
                              "saved, so it has progress the file does not.\n\n"
                              "Restore the autosaved solve?",
                              "Discard It", "Restore", nullptr);
@@ -1959,7 +2021,7 @@ bool mainWindow_c::tryToLoad(const char * f, bool * reportedError) {
 
   catch (xmlParserException_c &e)
   {
-    fl_message("%s",(std::string("load error: ") + e.what()).c_str());
+    bt_message("%s",(std::string("load error: ") + e.what()).c_str());
     if (reportedError) *reportedError = true;
     return false;
   }
@@ -1985,7 +2047,7 @@ bool mainWindow_c::tryToLoad(const char * f, bool * reportedError) {
     std::string names;
     for (unsigned int s : flattened)
       names += (names.empty() ? "S" : ", S") + std::to_string(s + 1);
-    fl_message("Sliding shapes are one layer deep. %s had more than one layer: only the "
+    bt_message("Sliding shapes are one layer deep. %s had more than one layer: only the "
                "first layer was kept. Save the puzzle to keep this change.", names.c_str());
     changed = true;
   }
@@ -2001,10 +2063,10 @@ bool mainWindow_c::tryToLoad(const char * f, bool * reportedError) {
   }
 
   if (containsStarted)
-    fl_message("This puzzle file contains started but not finished search for solutions.");
+    bt_message("This puzzle file contains started but not finished search for solutions.");
 
   if (puzzle->getCommentPopup())
-    fl_message("%s",puzzle->getComment().c_str());
+    bt_message("%s",puzzle->getComment().c_str());
 
   return true;
 }
@@ -2039,7 +2101,7 @@ void mainWindow_c::openFromSystem(const char * filename) {
   bool reportedError = false;
 
   if (!tryToLoad(filename, &reportedError) && !reportedError)
-    fl_message("Could not open %s", filename);
+    bt_message("Could not open %s", filename);
 }
 
 void mainWindow_c::ReplacePuzzle(puzzle_c * NewPuzzle) {
@@ -2392,12 +2454,20 @@ void mainWindow_c::initViewMenuIcons(void) {
 #endif
 }
 
+/* The zoom a tab starts with: the usual one, or further out when what it
+ * shows would not fit, such as a large sliding tray. */
+double mainWindow_c::startZoom(void) const {
+  return std::min(LView3dGroup::defaultZoom, View3D->getView()->fitZoom());
+}
+
 void mainWindow_c::selectEntitiesTab(bool resetZoom) {
   TaskSelectionTab->value(TabPieces);
   cb_TaskSelectionTab(TaskSelectionTab);
   if (resetZoom) {
-    View3D->resetZoomToDefault();
-    ViewSizes[0] = LView3dGroup::defaultZoom;
+    /* another puzzle: each tab frames what it shows when first seen */
+    ViewSizes[1] = ViewSizes[2] = -1;
+    View3D->setZoom(startZoom());
+    ViewSizes[0] = View3D->getZoom();
   }
 }
 
@@ -2857,10 +2927,9 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
   float finished = asmFrac;
   if (running)
     finished = progress.overall;
-  /* Stacking has no assembler, so getFinished() stays 0 after the search.
-   * A finished search is the whole job. */
+  /* A finished solve is the whole job, though there may be no assembler
+   * to say so: stacking has none, and a solve loaded from a file keeps none. */
   else if (prob < puzzle->getNumberOfProblems() &&
-           stacking::isStacking(*puzzle) &&
            puzzle->getProblem(prob)->getSolveState() == SS_SOLVED)
     finished = 1;
 
@@ -3143,63 +3212,55 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
     switch(assmThread->currentAction()) {
     case solveThread_c::ACT_PREPARATION:
     case solveThread_c::ACT_REDUCE:
-      OutputActivity->value(progress.activity().c_str());
+      OutputActivity->value(activitySentence(progress).c_str());
       break;
     case solveThread_c::ACT_ASSEMBLING:
       if (sliding::isSliding(*puzzle) && assmThread->disassemblyEnabled()) {
         /* A long sliding search should not look frozen. */
         char tmp[96];
         if (assmThread->getSearchDepth() > 0)
-          snprintf(tmp, 96, "slide search: %s moves deep\n%s arrangements",
-                   withCommas(assmThread->getSearchDepth()).c_str(),
-                   withCommas(assmThread->getSlideProgress()).c_str());
+          snprintf(tmp, 96, "Sliding search, %s moves deep.\nScanned %s arrangements.",
+                   shortCount(assmThread->getSearchDepth()).c_str(),
+                   shortCount(assmThread->getSlideProgress()).c_str());
         else
-          snprintf(tmp, 96, "slide search: %s arrangements",
-                   withCommas(assmThread->getSlideProgress()).c_str());
+          snprintf(tmp, 96, "Sliding search.\nScanned %s arrangements.",
+                   shortCount(assmThread->getSlideProgress()).c_str());
         OutputActivity->value(tmp);
       } else if (stacking::isStacking(*puzzle) && assmThread->panexSearch()) {
-        /* Short enough for the Activity line: 3.7M, 12.4B. */
-        const double n = (double)assmThread->getSlideProgress();
-        char count[32];
-        if (n >= 1e9)
-          snprintf(count, sizeof(count), "%.1fB", n / 1e9);
-        else if (n >= 1e6)
-          snprintf(count, sizeof(count), "%.1fM", n / 1e6);
-        else
-          snprintf(count, sizeof(count), "%.0f", n);
+        const std::string count = shortCount(assmThread->getSlideProgress());
         char tmp[96];
         if (assmThread->getSearchTraced() > 0)
-          snprintf(tmp, 96, "panex: tracing the path\n%s of %s moves",
-                   withCommas(assmThread->getSearchTraced()).c_str(),
-                   withCommas(assmThread->getSearchDepth()).c_str());
+          snprintf(tmp, 96, "Panex search, tracing the path.\nTraced %s of %s moves.",
+                   shortCount(assmThread->getSearchTraced()).c_str(),
+                   shortCount(assmThread->getSearchDepth()).c_str());
         else
-          snprintf(tmp, 96, "panex: %s moves deep\n%s stackings found",
-                   withCommas(assmThread->getSearchDepth()).c_str(), count);
+          snprintf(tmp, 96, "Panex search, %s moves deep.\nFound %s stackings.",
+                   shortCount(assmThread->getSearchDepth()).c_str(), count.c_str());
         OutputActivity->value(tmp);
       } else if (stacking::isStacking(*puzzle)) {
         char tmp[64];
-        snprintf(tmp, 64, "stack search\n%s stackings",
-                 withCommas(assmThread->getSlideProgress()).c_str());
+        snprintf(tmp, 64, "Stacking search.\nScanned %s stackings.",
+                 shortCount(assmThread->getSlideProgress()).c_str());
         OutputActivity->value(tmp);
       } else {
         /* with what each take-apart under way is doing */
-        OutputActivity->value(progress.activity().c_str());
+        OutputActivity->value(activitySentence(progress).c_str());
       }
       break;
     case solveThread_c::ACT_DISASSEMBLING:
-      OutputActivity->value(progress.activity().c_str());
+      OutputActivity->value(activitySentence(progress).c_str());
       break;
     case solveThread_c::ACT_PAUSING:
-      OutputActivity->value("pause");
+      OutputActivity->value("Paused.");
       break;
     case solveThread_c::ACT_FINISHED:
-      OutputActivity->value("finished");
+      OutputActivity->value("Finished.");
       break;
     case solveThread_c::ACT_WAIT_TO_STOP:
-      OutputActivity->value("please wait");
+      OutputActivity->value("Please wait.");
       break;
     case solveThread_c::ACT_ERROR:
-      OutputActivity->value("error");
+      OutputActivity->value("Error.");
       break;
     }
 
@@ -3211,6 +3272,7 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
       BtnCont->deactivate();
       BtnStop->activate();
       if (BtnAbort) BtnAbort->activate();
+      setAbortLabel(prob);
 
       // we can not edit solutions for a currently solved problem
       BtnSrtFind->deactivate();
@@ -3260,6 +3322,7 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
     if (BtnAbort) {
       if (abortable(prob)) BtnAbort->activate();
       else BtnAbort->deactivate();
+      setAbortLabel(prob);
     }
 
     if (prob < puzzle->getNumberOfProblems()) {
@@ -3269,19 +3332,19 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
 
       switch(pr->getSolveState()) {
       case SS_UNSOLVED:
-        OutputActivity->value("nothing");
+        OutputActivity->value("Not solved yet.");
         BtnCont->deactivate();
         break;
       case SS_SOLVED:
-        OutputActivity->value("finished");
+        OutputActivity->value(finishedActivity(*pr).c_str());
         BtnCont->deactivate();
         break;
       case SS_SOLVING:
-        OutputActivity->value("pause");
+        OutputActivity->value("Paused.");
         BtnCont->activate();
         break;
       case SS_UNKNOWN:
-        OutputActivity->value("partial");
+        OutputActivity->value("Partly solved.");
         BtnCont->deactivate();
         break;
 
@@ -3311,7 +3374,7 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
             if (!saved.empty()) {
               BtnCont->activate();
               BtnCont->copy_tooltip((" Carry on " + saved + " ").c_str());
-              OutputActivity->value("paused (saved)");
+              OutputActivity->value("Paused. The search is saved.");
             }
           }
         } else {
@@ -3392,13 +3455,14 @@ void mainWindow_c::update(void) {
 
       const bool finished = assmThread->currentAction() == solveThread_c::ACT_FINISHED;
       std::string solverNote = assmThread->getSolverNote();
+      recordSearchStats();
       assmThread.reset();
       if (autosaving) {
         autosaving = false;
         if (!finished) {
           /* Paused only to save: save, and carry straight on. */
           if (!writeAutosave())
-            fl_message("Could not autosave the solve to %s.", autosavePath().c_str());
+            bt_message("Could not autosave the solve to %s.", autosavePath().c_str());
           cb_BtnCont(false, (int)autosaveProblem);
           updateInterface();
           return;
@@ -3407,7 +3471,7 @@ void mainWindow_c::update(void) {
       if (finished)
         removeAutosave();
       if (!solverNote.empty())
-        fl_message("%s", solverNote.c_str());
+        bt_message("%s", solverNote.c_str());
 
     } else if (assmThread->currentAction() == solveThread_c::ACT_ERROR) {
 
@@ -3415,29 +3479,29 @@ void mainWindow_c::update(void) {
 
       switch(assmThread->getErrorState()) {
       case assembler_c::ERR_TOO_MANY_UNITS:
-        fl_message("Pieces contain %i units too many", assmThread->getErrorParam());
+        bt_message("Pieces contain %i units too many", assmThread->getErrorParam());
         break;
       case assembler_c::ERR_TOO_FEW_UNITS:
-        fl_message("Pieces contain %i units less than required\n"
+        bt_message("Pieces contain %i units less than required\n"
                    "See user guide sections\n"
                    "1.3.2.1 'Voxel States'\n"
                    "3.4.2 'Basic Drawing Tools' and\n"
                    "3.8 'Miscellaneous Editing Tools'", assmThread->getErrorParam());
         break;
       case assembler_c::ERR_CAN_NOT_PLACE:
-        fl_message("Piece %i can be placed nowhere within the result", assmThread->getErrorParam()+1);
+        bt_message("Piece %i can be placed nowhere within the result", assmThread->getErrorParam()+1);
         selectShape = assmThread->getErrorParam();
         break;
       case assembler_c::ERR_CAN_NOT_RESTORE_VERSION:
-        fl_message("Impossible to restore the saved state because the internal format changed.\n"
+        bt_message("Impossible to restore the saved state because the internal format changed.\n"
                    "You either have to start from the beginning or finish with the old version of BurrTools, sorry");
         break;
       case assembler_c::ERR_CAN_NOT_RESTORE_SYNTAX:
-        fl_message("Impossible to restore the saved state because something with the data is wrong.\n"
+        bt_message("Impossible to restore the saved state because something with the data is wrong.\n"
                    "You have to start from the beginning, sorry");
         break;
       case assembler_c::ERR_PUZZLE_UNHANDABLE:
-        fl_message("Something went wrong the program can not solve your puzzle definitions.\n"
+        bt_message("Something went wrong the program can not solve your puzzle definitions.\n"
                    "You should send the puzzle file to the programmer!");
         break;
       default:
@@ -3461,6 +3525,43 @@ void mainWindow_c::update(void) {
       updateInterface();
   }
   platform::setDocumentEdited(this, changed);
+}
+
+/* Keep with its problem how much the solve that has just stopped went
+ * through, for the Activity line and the file. A sliding or stacking
+ * search counts afresh each run; the assembler carries its count on. */
+void mainWindow_c::recordSearchStats(void) {
+  for (unsigned int i = 0; i < puzzle->getNumberOfProblems(); i++) {
+    problem_c * pr = puzzle->getProblem(i);
+    if (pr != &assmThread->getProblem())
+      continue;
+    unsigned long long searched = pr->getSearched();
+    unsigned long apart = pr->getTriedApart();
+    if (sliding::isSliding(*puzzle) || stacking::isStacking(*puzzle)) {
+      searched += assmThread->getSlideProgress();
+    } else {
+      searched = std::max<unsigned long long>(searched, lastSolveStats.dlxIterations);
+      apart += assmThread->getDisassemblyCompleted();
+    }
+    pr->setSearchStats(searched, std::max(pr->getSearchDepth(), assmThread->getSearchDepth()), apart);
+    return;
+  }
+}
+
+/* "Finished.", and what the solve went through, on the Activity line's two lines. */
+std::string mainWindow_c::finishedActivity(const problem_c & pr) const {
+  std::string text = "Finished.";
+  if (pr.getSearched()) {
+    const char * what = sliding::isSliding(*puzzle) ? "arrangements"
+                      : stacking::isStacking(*puzzle) ? "stackings"
+                      : "search steps";
+    text += " Scanned " + shortCount(pr.getSearched()) + " " + what + ".";
+  }
+  if (pr.getSearchDepth())
+    text += "\nSearched " + shortCount(pr.getSearchDepth()) + " moves deep.";
+  else if (pr.getTriedApart())
+    text += "\nTried to take apart " + shortCount(pr.getTriedApart()) + " assemblies.";
+  return text;
 }
 
 void mainWindow_c::Toggle3DView(void)

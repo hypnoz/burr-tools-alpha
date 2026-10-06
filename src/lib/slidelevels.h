@@ -207,6 +207,7 @@ public:
   }
 
   size_t size(void) const { return count; }
+  bool inMemory(void) const { return path.empty(); }
   /* Bytes the keys and their index take on disk, or in memory for a set
    * kept there. */
   uint64_t bytes(void) const {

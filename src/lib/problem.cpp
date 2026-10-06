@@ -118,6 +118,12 @@ void problem_c::save(xmlWriter_c & xml) const
     xml.newAttrib("time", (unsigned long)(usedMs / 1000));
     /* The same to the millisecond; older versions read only "time". */
     xml.newAttrib("timeMs", std::to_string(usedMs.load(std::memory_order_relaxed)));
+    if (searched)
+      xml.newAttrib("searched", std::to_string(searched));
+    if (searchDepth)
+      xml.newAttrib("searchDepth", searchDepth);
+    if (triedApart)
+      xml.newAttrib("triedApart", triedApart);
   }
 
   if (maxHoles != 0xFFFFFFFF)
@@ -253,6 +259,9 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
   numAssemblies.store(0, std::memory_order_relaxed);
   numSolutions.store(0, std::memory_order_relaxed);
   usedMs = 0;
+  searched = 0;
+  searchDepth = 0;
+  triedApart = 0;
   maxHoles = 0xFFFFFFFF;
 
   std::string str = pars.getAttributeValue("maxHoles");
@@ -282,6 +291,16 @@ problem_c::problem_c(puzzle_c & puz, xmlParser_c & pars) : puzzle(puz), result(0
     str = pars.getAttributeValue("timeMs");
     if (str.length())
       usedMs = strtoull(str.c_str(), nullptr, 10);
+
+    str = pars.getAttributeValue("searched");
+    if (str.length())
+      searched = strtoull(str.c_str(), nullptr, 10);
+    str = pars.getAttributeValue("searchDepth");
+    if (str.length())
+      searchDepth = strtoul(str.c_str(), nullptr, 10);
+    str = pars.getAttributeValue("triedApart");
+    if (str.length())
+      triedApart = strtoul(str.c_str(), nullptr, 10);
   }
 
   unsigned int pieces = 0;
@@ -1059,6 +1078,9 @@ void problem_c::removeAllSolutions(void) {
   numAssemblies.store(0, std::memory_order_relaxed);
   numSolutions.store(0, std::memory_order_relaxed);
   usedMs = 0;
+  searched = 0;
+  searchDepth = 0;
+  triedApart = 0;
 }
 
 void problem_c::addPending(std::unique_ptr<assembly_c> a, bool counted, unsigned long assemblyNumber,
@@ -1346,4 +1368,7 @@ void problem_c::makeUnknown(void)
   numAssemblies.store(0, std::memory_order_relaxed);
   numSolutions.store(0, std::memory_order_relaxed);
   usedMs = 0;
+  searched = 0;
+  searchDepth = 0;
+  triedApart = 0;
 }

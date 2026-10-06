@@ -374,6 +374,9 @@ private:
   void updateEntitiesTab(bool slidingPuzzle);
   void updateSolverTab(bool stackingPuzzle, unsigned int prob);
   void selectEntitiesTab(bool resetZoom = false);
+  double startZoom(void) const;
+  void recordSearchStats(void);
+  std::string finishedActivity(const problem_c & pr) const;
   void updateUndoRedoButtons(void);
   void recordShapeAction(int kind);
   void applyHistoryRestore(unsigned int selected);
@@ -500,6 +503,10 @@ public:
   void cb_BtnAbort(void);
   /* Abort has something to throw away for this problem. */
   bool abortable(unsigned int prob) const;
+  /* Whether the Abort button resets a problem whose solve is over (finished,
+   * or its result unknown) instead of stopping one that is running or paused. */
+  bool resettable(unsigned int prob) const;
+  void setAbortLabel(unsigned int prob);
   void cb_BtnPlacementBrowser(void);
   void cb_BtnMovementBrowser(void);
   void cb_BtnAssemblerStep(void);

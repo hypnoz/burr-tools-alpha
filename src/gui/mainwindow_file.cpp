@@ -21,6 +21,7 @@
 
 /* mainWindow_c, part: files: new, open, save, autosave, import and export, the paused solver state. */
 #include "mainwindow.h"
+#include "btmessage.h"
 #include "mainwindow_internal.h"
 
 #include "configuration.h"
@@ -38,6 +39,7 @@
 #include "WindowWidgets.h"
 #include "BlockList.h"
 #include "Images.h"
+#include "exampleimages.h"
 
 #include "../lib/sliding.h"
 #include "../lib/stacking.h"
@@ -144,7 +146,7 @@ bool mainWindow_c::confirmDiscard(const char * action) {
   snprintf(msg, sizeof(msg),
            "The puzzle has unsaved changes.\nSave before you %s?", action);
 
-  switch (fl_choice("%s", "Cancel", "Save", "Don't Save", msg)) {
+  switch (bt_choice("%s", "Cancel", "Save", "Don't Save", msg)) {
 
     case 1:
       cb_Save();
@@ -158,6 +160,48 @@ bool mainWindow_c::confirmDiscard(const char * action) {
   }
 }
 
+/* An example puzzle, by its file name: from the examples folder that came
+ * with the program, found beside it or a few folders up (beside a macOS app
+ * bundle, or the source tree around a build) or in the current folder.
+ * Failing that, the copy built into the program, written to the cache
+ * folder. Empty when there is neither. */
+static std::string findExample(const std::string & file) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  std::vector<fs::path> places;
+  const std::string exe = executableDirectory();
+  if (!exe.empty())
+    for (fs::path p = exe; places.size() < 5; p = p.parent_path()) {
+      places.push_back(p);
+      if (p == p.parent_path())
+        break;
+    }
+  places.push_back(fs::current_path(ec));
+  for (const fs::path & place : places)
+    for (const char * folder : {"examples", "Examples"}) {
+      const fs::path f = place / folder / file;
+      if (fs::is_regular_file(f, ec))
+        return f.string();
+    }
+
+  const std::string cache = userCacheDirectory();
+  if (cache.empty())
+    return "";
+  for (unsigned int i = 0; i < exampleImages::count; i++) {
+    const exampleImages::file_c & e = exampleImages::files[i];
+    if (file != e.name)
+      continue;
+    const fs::path dir = fs::path(cache) / "examples";
+    fs::create_directories(dir, ec);
+    const fs::path f = dir / file;
+    std::ofstream out(f, std::ios::binary);
+    out.write(reinterpret_cast<const char *>(e.data), (std::streamsize)e.size);
+    out.close();
+    return out ? f.string() : "";
+  }
+  return "";
+}
+
 void cb_New_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_New(); }
 void mainWindow_c::cb_New(void) {
 
@@ -166,21 +210,43 @@ void mainWindow_c::cb_New(void) {
     if (!confirmDiscard("create a new puzzle"))
       return;
 
-    gridTypeSelectorWindow_c w;
-    gridSelector = &w;
-    w.show();
+    /* Open File... that is cancelled comes back here, to the grid that
+     * was selected */
+    std::unique_ptr<gridTypeSelectorWindow_c> selector;
+    unsigned int selected = 0;
+    for (;;) {
+      selector = std::make_unique<gridTypeSelectorWindow_c>();
+      selector->select(selected);
+      gridSelector = selector.get();
+      selector->show();
 
-    while (w.visible())
-      Fl::wait();
-    gridSelector = 0;
+      while (selector->visible())
+        Fl::wait();
+      gridSelector = 0;
+      selected = selector->selected();
+
+      if (selector->result() != gridTypeSelectorWindow_c::SEL_OPEN)
+        break;
+      /* the question about unsaved changes is answered already */
+      if (const char * f = bt_file_chooser_open("Open Puzzle", "Puzzle Files\t*.xmpuzzle", "")) {
+        tryToLoad(f);
+        return;
+      }
+    }
+    gridTypeSelectorWindow_c & w = *selector;
 
     switch (w.result()) {
       case gridTypeSelectorWindow_c::SEL_CANCEL:
-        return;
       case gridTypeSelectorWindow_c::SEL_OPEN:
-        /* the question about unsaved changes is answered already */
-        tryToLoad(bt_file_chooser_open("Open Puzzle", "Puzzle Files\t*.xmpuzzle", ""));
         return;
+      case gridTypeSelectorWindow_c::SEL_EXAMPLE: {
+        const std::string f = findExample(w.exampleFile());
+        if (f.empty())
+          bt_alert("The example puzzle %s could not be found.", w.exampleFile().c_str());
+        else
+          tryToLoad(f.c_str());
+        return;
+      }
       case gridTypeSelectorWindow_c::SEL_OK:
       case gridTypeSelectorWindow_c::SEL_TUTORIAL:
         break;
@@ -264,7 +330,7 @@ void mainWindow_c::cb_Load_Ps3d(void) {
       puzzle_c * newPuzzle = loadPuzzlerSolver3D(&in).release();
 
       if (!newPuzzle) {
-        fl_alert("Could not load puzzle, sorry!");
+        bt_alert("Could not load puzzle, sorry!");
         return;
       }
 
@@ -300,7 +366,7 @@ void mainWindow_c::cb_Load_Scad(void) {
       puzzle_c * newPuzzle = loadOpenScadPuzzle(&in).release();
 
       if (!newPuzzle) {
-        fl_alert("Could not load puzzle, sorry!");
+        bt_alert("Could not load puzzle, sorry!");
         return;
       }
 
@@ -396,7 +462,7 @@ void mainWindow_c::cb_Save(void) {
 
     else {
       if (!writePuzzleFile(fname))
-        fl_alert("The puzzle could not be saved to %s.", fname.c_str());
+        bt_alert("The puzzle could not be saved to %s.", fname.c_str());
       else {
         changed = false;
         if (shapeHistory)
@@ -544,13 +610,13 @@ void mainWindow_c::cb_SaveAs(void) {
 
     if (f) {
 
-      if (!fileExists(f) || fl_choice("File exists; overwrite?", "Cancel", "Overwrite", 0)) {
+      if (!fileExists(f) || bt_choice("File exists; overwrite?", "Cancel", "Overwrite", 0)) {
 
         const std::string f2 = hasFileExtension(f, ".xmpuzzle") ? std::string(f)
                                                                  : std::string(f) + ".xmpuzzle";
 
         if (!writePuzzleFile(f2)) {
-          fl_alert("The puzzle could not be saved to %s.", f2.c_str());
+          bt_alert("The puzzle could not be saved to %s.", f2.c_str());
         } else {
           changed = false;
           if (shapeHistory)
@@ -561,7 +627,7 @@ void mainWindow_c::cb_SaveAs(void) {
 
       } else {
 
-        fl_message("File not saved!\n");
+        bt_message("File not saved!\n");
       }
     }
   }
@@ -620,7 +686,7 @@ void mainWindow_c::cb_ExportGltf(void) {
       steps = pr->getSavedSolution(sol)->getDisassembly()->sumSteps();
   }
   if (!steps || stacking::isStacking(*puzzle)) {
-    fl_alert("The selected solution has no disassembly to animate.");
+    bt_alert("The selected solution has no disassembly to animate.");
     return;
   }
 
@@ -648,7 +714,7 @@ void mainWindow_c::cb_ExportGltf(void) {
     return;
 
   const std::string f2 = hasFileExtension(f, ".glb") ? std::string(f) : std::string(f) + ".glb";
-  if (f2 != f && fileExists(f2.c_str()) && !fl_choice("File exists; overwrite?", "Cancel", "Overwrite", 0))
+  if (f2 != f && fileExists(f2.c_str()) && !bt_choice("File exists; overwrite?", "Cancel", "Overwrite", 0))
     return;
 
   /* the colours the 3D view paints the pieces in */
@@ -667,7 +733,7 @@ void mainWindow_c::cb_ExportGltf(void) {
     err = gltfExport::writeSolutionAnimation(f2.c_str(), *pr, sol, colors, opt);
   }
   if (!err.empty())
-    fl_alert("Could not export the animation:\n%s", err.c_str());
+    bt_alert("Could not export the animation:\n%s", err.c_str());
 }
 
 void cb_Export_Scad_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_Export_Scad(); }
@@ -793,7 +859,7 @@ bool mainWindow_c::problemPaused(unsigned int prob) const {
 void mainWindow_c::cb_ExportPaused(void) {
   const unsigned int prob = solutionProblem->getSelection();
   if (!problemPaused(prob)) {
-    fl_message("Pause a solve first: the problem selected on the Solver tab has no paused solve.");
+    bt_message("Pause a solve first: the problem selected on the Solver tab has no paused solve.");
     return;
   }
   const problem_c * pr = puzzle->getProblem(prob);
@@ -815,7 +881,7 @@ void mainWindow_c::cb_ExportPaused(void) {
     }
     bool withLevels = true;
     if (levelBytes > 1000000000ull) {
-      const int choice = fl_choice(
+      const int choice = bt_choice(
           "The saved search keeps %s of levels for finding the path once the search is done.\n\n"
           "Include them? Left out, the file is much smaller, but finding the path at the end "
           "takes longer.",
@@ -861,10 +927,10 @@ void mainWindow_c::cb_ExportPaused(void) {
   std::filesystem::remove(tmp, ec);
   if (!ok) {
     std::filesystem::remove(target, ec);
-    fl_alert("Could not export the paused solve to %s.", target.c_str());
+    bt_alert("Could not export the paused solve to %s.", target.c_str());
     return;
   }
-  fl_message("Exported the paused solve of problem %u to %s.", prob + 1, target.c_str());
+  bt_message("Exported the paused solve of problem %u to %s.", prob + 1, target.c_str());
 }
 
 void mainWindow_c::cb_ImportPaused(void) {
@@ -879,7 +945,7 @@ void mainWindow_c::cb_ImportPaused(void) {
   std::ifstream in(f, std::ios::binary);
   char magic[sizeof(SOLVE_MAGIC)];
   if (!in.read(magic, sizeof(magic)) || !std::equal(magic, magic + sizeof(magic), SOLVE_MAGIC)) {
-    fl_alert("%s is not a paused solver state exported by BurrTools.", f);
+    bt_alert("%s is not a paused solver state exported by BurrTools.", f);
     return;
   }
 
@@ -907,7 +973,7 @@ void mainWindow_c::cb_ImportPaused(void) {
         xmlParser_c pars(*str);
         loaded = std::make_unique<puzzle_c>(pars);
       } catch (xmlParserException_c & e) {
-        fl_alert("The puzzle in %s could not be read: %s", f, e.what());
+        bt_alert("The puzzle in %s could not be read: %s", f, e.what());
         std::filesystem::remove(tmp, ec);
         return;
       }
@@ -937,7 +1003,7 @@ void mainWindow_c::cb_ImportPaused(void) {
   }
   std::filesystem::remove(tmp, ec);
   if (!ok || !loaded || prob >= loaded->getNumberOfProblems()) {
-    fl_alert("%s could not be read completely.", f);
+    bt_alert("%s could not be read completely.", f);
     return;
   }
 
@@ -952,18 +1018,18 @@ void mainWindow_c::cb_ImportPaused(void) {
   applySolverOptions(prob);
   cb_TaskSelectionTab(TaskSelectionTab);
   updateInterface();
-  fl_message("Imported the paused solve of problem %u. Press Continue on the Solver tab to carry it on, "
+  bt_message("Imported the paused solve of problem %u. Press Continue on the Solver tab to carry it on, "
              "and save the puzzle to keep it.", prob + 1);
 }
 void mainWindow_c::cb_Export_Scad(void) {
 
   if (puzzle->getGridType()->getType() != gridType_c::GT_BRICKS) {
-    fl_alert("Puzzlecad export is only available for cube-grid puzzles.");
+    bt_alert("Puzzlecad export is only available for cube-grid puzzles.");
     return;
   }
 
   if (puzzle->getNumberOfShapes() == 0) {
-    fl_alert("Nothing to export.");
+    bt_alert("Nothing to export.");
     return;
   }
 
@@ -974,7 +1040,7 @@ void mainWindow_c::cb_Export_Scad(void) {
   if (!f)
     return;
 
-  if (fileExists(f) && !fl_choice("File exists; overwrite?", "Cancel", "Overwrite", 0))
+  if (fileExists(f) && !bt_choice("File exists; overwrite?", "Cancel", "Overwrite", 0))
     return;
 
   const std::string f2 = hasFileExtension(f, ".scad") ? std::string(f) : std::string(f) + ".scad";
@@ -986,7 +1052,7 @@ void mainWindow_c::cb_Export_Scad(void) {
     prob = problemSelector->getSelection();
 
   if (!out || !saveOpenScadPuzzle(out, puzzle, fname.empty() ? f2.c_str() : fname.c_str(), prob)) {
-    fl_alert("Could not export puzzlecad file.");
+    bt_alert("Could not export puzzlecad file.");
     return;
   }
 }

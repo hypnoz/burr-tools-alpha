@@ -20,6 +20,7 @@
  */
 
 #include "tooltabs.h"
+#include "btmessage.h"
 
 #include "../lib/puzzle.h"
 #include "../lib/voxel.h"
@@ -94,6 +95,58 @@ public:
   void cb_Press(long button) { do_callback(this, button); }
 };
 
+/* Beside the change size group's link buttons: a line along the right edge
+ * of their check boxes, and "Locked" beside it, reading downwards. It lies
+ * under the buttons, in their column and the one after it. */
+class LockBracket : public Fl_Widget, public layoutable_c {
+
+  const LFl_Check_Button * first{nullptr};
+  const LFl_Check_Button * last{nullptr};
+
+  static const int GAP = 4;
+
+  /* where the check boxes of the buttons are, as FLTK draws them */
+  static int boxSize(const Fl_Check_Button * b) { return std::min((int)b->labelsize(), 25); }
+  static int boxX(const Fl_Check_Button * b) { return b->x() + Fl::box_dx(b->box()) + 2; }
+  static int boxY(const Fl_Check_Button * b) { return b->y() + (b->h() - boxSize(b)) / 2; }
+
+public:
+
+  LockBracket(int x, int y, int w, int h) : Fl_Widget(0, 0, 0, 0), layoutable_c(x, y, w, h) {
+    labelcolor(fl_rgb_color(85, 26, 139));
+    labelfont(FL_HELVETICA);
+  }
+
+  void buttons(const LFl_Check_Button * f, const LFl_Check_Button * l) { first = f; last = l; }
+
+  void getMinSize(int *width, int *height) const override {
+    int bw = 0, bh = 0;
+    if (first)
+      first->getMinSize(&bw, &bh);
+    fl_font(labelfont(), labelsize());
+    *width = bw + GAP + fl_height();
+    *height = (int)fl_width("Locked");
+  }
+
+  void draw(void) override {
+    if (!first || !last)
+      return;
+    const int lineX = boxX(first) + boxSize(first);
+    const int top = boxY(first);
+    const int bottom = boxY(last) + boxSize(last);
+
+    fl_color(labelcolor());
+    fl_line_style(FL_SOLID, 2);
+    fl_line(lineX, top, lineX, bottom - 1);
+    fl_line_style(0);
+
+    fl_font(labelfont(), labelsize());
+    const int tw = (int)fl_width("Locked");
+    /* turned a quarter clockwise: the baseline runs down, the letters stand to its right */
+    fl_draw(-90, "Locked", lineX + 1 + GAP + fl_descent(), (top + bottom - tw) / 2);
+  }
+};
+
 // the change size group
 class ChangeSize : public layouter_c {
 
@@ -105,9 +158,9 @@ class ChangeSize : public layouter_c {
   Fl_Int_Input* SizeOutY;
   Fl_Int_Input* SizeOutZ;
 
-  Fl_Check_Button * ConnectX;
-  Fl_Check_Button * ConnectY;
-  Fl_Check_Button * ConnectZ;
+  LFl_Check_Button * ConnectX;
+  LFl_Check_Button * ConnectY;
+  LFl_Check_Button * ConnectZ;
 
   void calcNewSizes(int ox, int oy, int oz, int *nx, int *ny, int *nz);
 
@@ -342,8 +395,12 @@ ToolsButtons::ToolsButtons(int x, int y, int w, int h) : layouter_c(x, y, w, h) 
   (new LFl_Box(0, 6, 1, 1))->setMinimumSize(0, 5);
 
   (new LFl_Box(7, 3, 1, 1))->setMinimumSize(5, 0);
-  new LFlatButton_c(8, 3, 1, 1, "Fill Holes", "", cb_ToolsButtons_stub, 40);
-  new LFlatButton_c(8, 5, 1, 1, "Grid Scale", "", cb_ToolsButtons_stub, 41);
+  new LFlatButton_c(8, 3, 1, 1, "Fill Holes",
+      " Fill every empty voxel that is closed in by the shape, so that it cannot be reached from outside ",
+      cb_ToolsButtons_stub, 40);
+  new LFlatButton_c(8, 5, 1, 1, "Grid Scale",
+      " Scale the shape up, keeping only its surface and the edges of each original voxel, so that the voxels show as a grid ",
+      cb_ToolsButtons_stub, 41);
 
   end();
 }
@@ -488,7 +545,9 @@ ChangeSize::ChangeSize(int x, int y, int w, int h) : layouter_c(x, y, w, h) {
   SizeX->step(0.25);
   SizeX->callback(cb_ChangeSize_stub, 0l);
   SizeX->clear_visible_focus();
-  SizeX->weight(1, 0);
+  /* the rollers take four fifths of the width to spare, the space after the bracket the rest */
+  SizeX->weight(4, 0);
+  (new LFl_Box(8, 1, 1, 1))->weight(1, 0);
 
   SizeY = new LFl_Roller(5, 3, 1, 1);
   SizeY->type(1);
@@ -522,6 +581,10 @@ ChangeSize::ChangeSize(int x, int y, int w, int h) : layouter_c(x, y, w, h) {
   (new LFl_Box("Y", 1, 3, 1, 1))->labelcolor(fl_rgb_color(0, 128, 0));
   (new LFl_Box("Z", 1, 5, 1, 1))->labelcolor(fl_rgb_color(0, 0, 255));
 
+  /* before the buttons, so that they draw over it */
+  LockBracket * bracket = new LockBracket(6, 1, 2, 5);
+  bracket->tooltip(" Sizes that are ticked are locked together: changing one changes the others ");
+
   ConnectX = new LFl_Check_Button(" ", 6, 1, 1, 1);
   ConnectY = new LFl_Check_Button(" ", 6, 3, 1, 1);
   ConnectZ = new LFl_Check_Button(" ", 6, 5, 1, 1);
@@ -533,6 +596,8 @@ ChangeSize::ChangeSize(int x, int y, int w, int h) : layouter_c(x, y, w, h) {
   ConnectX->clear_visible_focus();
   ConnectY->clear_visible_focus();
   ConnectZ->clear_visible_focus();
+
+  bracket->buttons(ConnectX, ConnectZ);
 
   end();
 }
@@ -1259,7 +1324,7 @@ void ToolTab_1::cb_transform(long task) {
 
     if (task == 26) {
 
-      fl_message("Sorry this is not yet implemented!");
+      bt_message("Sorry this is not yet implemented!");
       return;
 
     }
@@ -1557,7 +1622,7 @@ void ToolTab_3::applyTask(voxel_c * space, long task) {
                    space->translate(fx, fy, fz, 0);
                  }
                  break;
-        case 26: fl_message("Sorry minimizing is not (yet) implemented for the rhombic grid!"); return;
+        case 26: bt_message("Sorry minimizing is not (yet) implemented for the rhombic grid!"); return;
         case 40: space->fillHoles(0); break;
         case 41: space->scale(7, true); break;
       }
@@ -1701,7 +1766,7 @@ void ToolTab_4::applyTask(voxel_c * space, long task) {
                    space->translate(fx, fy, fz, 0);
                  }
                  break;
-        case 26: fl_message("Sorry minimizing is not (yet) implemented for the rhombic grid!"); return;
+        case 26: bt_message("Sorry minimizing is not (yet) implemented for the rhombic grid!"); return;
         case 40: space->fillHoles(0); break;
       }
 }

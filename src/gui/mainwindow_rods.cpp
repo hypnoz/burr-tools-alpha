@@ -21,6 +21,7 @@
 
 /* mainWindow_c, part: sliding start/goal states, and the stacking rod sets, rods and discs (Entities and Problems tabs). */
 #include "mainwindow.h"
+#include "btmessage.h"
 #include "mainwindow_internal.h"
 
 #include "configuration.h"
@@ -398,7 +399,7 @@ void mainWindow_c::cb_DeleteRod(void) {
   if (sel >= puzzle->rodSetCount())
     return;
   if (puzzle->rodSetCount() < 2) {
-    fl_message("Keep at least one rod set");
+    bt_message("Keep at least one rod set");
     return;
   }
   puzzle->removeRodSet(sel);

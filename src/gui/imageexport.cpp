@@ -19,6 +19,7 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include "imageexport.h"
+#include "btmessage.h"
 
 #include <filesystem>
 #include <memory>
@@ -309,7 +310,7 @@ void imageExport_c::PostDraw(void) {
     const std::string path = failedPath;
     failedPath.clear();     // so the alert is shown once, not on every draw
 
-    fl_alert("Could not write the image to\n%s\n\n"
+    bt_alert("Could not write the image to\n%s\n\n"
              "Check that the path exists and is writable.", path.c_str());
 
     return;

@@ -37,4 +37,7 @@ unsigned long long physicalMemoryBytes(void);
  */
 std::string userCacheDirectory(void);
 
+/** The folder the running program is in; empty when it cannot be found. */
+std::string executableDirectory(void);
+
 #endif

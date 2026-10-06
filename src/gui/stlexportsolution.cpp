@@ -20,6 +20,7 @@
  */
 
 #include "stlexportsolution.h"
+#include "btmessage.h"
 
 #include "Layouter.h"
 #include "separator.h"
@@ -186,7 +187,7 @@ void stlExportSolution_c::cb_Export(void)
   }
 
   if (entries.empty()) {
-    fl_message("No piece shapes to export for this solution.");
+    bt_message("No piece shapes to export for this solution.");
     return;
   }
 
@@ -197,7 +198,7 @@ void stlExportSolution_c::cb_Export(void)
     if (f) { fclose(f); existing++; }
   }
   if (existing > 0) {
-    if (fl_choice("%d output file(s) already exist. Overwrite?",
+    if (bt_choice("%d output file(s) already exist. Overwrite?",
                   "Cancel", "Overwrite", 0, existing) == 0)
       return;
   }
@@ -211,10 +212,10 @@ void stlExportSolution_c::cb_Export(void)
       stl->write(entries[i].fname.c_str(), *v);
       exported++;
     } catch (stlException_c e) {
-      fl_message("Error exporting %s:\n%s", entries[i].fname.c_str(), e.comment);
+      bt_message("Error exporting %s:\n%s", entries[i].fname.c_str(), e.comment);
       errors++;
     } catch (...) {
-      fl_message("Unexpected error exporting %s", entries[i].fname.c_str());
+      bt_message("Unexpected error exporting %s", entries[i].fname.c_str());
       errors++;
     }
   }

@@ -170,6 +170,7 @@ gui_src = [
   'src/gui/grideditor_2.cpp',
   'src/gui/grideditor_3.cpp',
   'src/gui/grideditor_4.cpp',
+  'src/gui/btmessage.cpp',
   'src/gui/gridtypegui.cpp',
   'src/gui/groupseditor.cpp',
   'src/gui/guigridtype.cpp',
@@ -406,7 +407,8 @@ vendored_lua_lib = static_library('vendored_lua', lua_src,
           override_options: ['werror=false'],
 	  )
 
-# The grid selector's example pictures, built into the program.
+# The grid selector's example pictures, and the puzzles they show, built
+# into the program: the puzzles for when the examples folder is not beside it.
 example_pictures = files(
   'src/gui/images/examples/brick.png',
   'src/gui/images/examples/prism.png',
@@ -415,6 +417,13 @@ example_pictures = files(
   'src/gui/images/examples/tetraocta.png',
   'src/gui/images/examples/sliding.png',
   'src/gui/images/examples/stacking.png',
+  'examples/CubeInCage.xmpuzzle',
+  'examples/SliderByGiiker.xmpuzzle',
+  'examples/PanexLevel3to10.xmpuzzle',
+  'examples/Prisgon.xmpuzzle',
+  'examples/BallRoom.xmpuzzle',
+  'examples/DiagonalCube.xmpuzzle',
+  'examples/FourPieceTetrahedron.xmpuzzle',
 )
 example_images_cpp = custom_target('exampleimages',
   input: ['src/gui/images/examples/embed.py'] + example_pictures,

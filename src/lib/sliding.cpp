@@ -2085,26 +2085,15 @@ void releaseFreeMemory(void) {
 class searchFolder_c {
 public:
   explicit searchFolder_c(const std::string & workDir) {
-    std::filesystem::path base;
     if (!workDir.empty())
       base = workDir;
     else if (const char * e = std::getenv("BURRTOOLS_SLIDE_DIR"))
       base = e;
     else {
       const std::string cache = userCacheDirectory();
-      if (cache.empty())
-        return;
-      base = std::filesystem::path(cache) / "sliding";
+      if (!cache.empty())
+        base = std::filesystem::path(cache) / "sliding";
     }
-    std::random_device rd;
-    const uint64_t r = ((uint64_t)rd() << 32) ^ rd() ^
-                       (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
-    char name[32];
-    snprintf(name, sizeof(name), "search-%016llx", (unsigned long long)r);
-    std::error_code ec;
-    std::filesystem::create_directories(base / name, ec);
-    if (!ec)
-      dir = base / name;
   }
   ~searchFolder_c(void) {
     if (!dir.empty()) {
@@ -2115,16 +2104,41 @@ public:
   searchFolder_c(const searchFolder_c &) = delete;
   searchFolder_c & operator=(const searchFolder_c &) = delete;
 
+  /* Make the folder the first time it is needed; false when it cannot be. */
+  bool open(void) {
+    if (!dir.empty())
+      return true;
+    if (tried || base.empty())
+      return false;
+    tried = true;
+    std::random_device rd;
+    const uint64_t r = ((uint64_t)rd() << 32) ^ rd() ^
+                       (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
+    char name[32];
+    snprintf(name, sizeof(name), "search-%016llx", (unsigned long long)r);
+    std::error_code ec;
+    std::filesystem::create_directories(base / name, ec);
+    if (!ec)
+      dir = base / name;
+    return !dir.empty();
+  }
+
+  /* Empty till open succeeds. */
   std::filesystem::path dir;
+
+private:
+  std::filesystem::path base;
+  bool tried = false;
 };
 
 /* The full slide search: breadth first, one level at a time, a level being
  * every arrangement a given number of moves from the start.
  *
  *  - Only the level being expanded and the one before stay in memory, as
- *    sorted arrays. Older levels go to files, delta coded (slidelevels.h),
- *    so the search is limited by the disk rather than by memory. A level is
- *    written while the next one is expanded.
+ *    sorted arrays. Older levels are delta coded (slidelevels.h) and kept
+ *    in memory while they are small, then go to files, so the search is
+ *    limited by the disk rather than by memory. A level is written while
+ *    the next one is expanded.
  *  - A move that one piece makes can always be made backwards, and so can a
  *    nested group's unless the group closes round a piece on its way. An
  *    arrangement reached by a move that can be made backwards is new unless
@@ -2154,36 +2168,34 @@ void levelSearch(const slideSpace_c<key_t> & s, slideSearch_c & search, std::vec
   search.oneWayRepeats = 0;
 
   searchFolder_c folder(search.workDir);
+  const unsigned long long memoryLevelBytes =
+      search.memoryLevelBytes ? search.memoryLevelBytes : 256000000ull;
   unsigned long long diskBudget = search.diskBudget;
   if (!diskBudget)
     if (const char * e = std::getenv("BURRTOOLS_SLIDE_DISK_GB"))
       diskBudget = (unsigned long long)(std::atof(e) * 1e9);
-  if (!diskBudget && !folder.dir.empty()) {
-    /* All the disk but a margin for everything else. */
+  /* With no budget given, it is set when the folder is made: all the free
+   * disk but a margin for everything else, and never less than a little
+   * of what is free, so a nearly full disk still takes a modest search. */
+  auto setDiskBudget = [&]() {
+    if (diskBudget)
+      return;
     std::error_code ec;
     const std::filesystem::space_info space = std::filesystem::space(folder.dir, ec);
-    if (!ec) {
-      const unsigned long long margin =
-          std::max<unsigned long long>(2000000000ull, space.capacity / 20);
-      diskBudget = space.available > margin ? space.available - margin : 1;
+    if (ec) {
+      diskBudget = 1;
+      return;
     }
-  }
-  unsigned int fileNumber = 0;
-  /* A new key set, in the folder when there is one, else in memory. */
-  auto newSet = [&]() {
-    auto set = std::make_shared<set_t>();
-    std::filesystem::path p;
-    if (!folder.dir.empty()) {
-      char name[32];
-      snprintf(name, sizeof(name), "%06u.keys", fileNumber++);
-      p = folder.dir / name;
-    }
-    return set->create(p) ? set : nullptr;
+    const unsigned long long margin =
+        std::max<unsigned long long>(2000000000ull, space.capacity / 20);
+    const unsigned long long least = std::min<unsigned long long>(1000000000ull, space.available / 2);
+    diskBudget = std::max<unsigned long long>(
+        {space.available > margin ? space.available - margin : 0, least, 1});
   };
 
-  /* Every level that has left memory, stored[k] for level k, for tracing
-   * the path back; and with nested slides, the same levels merged into a
-   * few sets, largest first, to look in. */
+  /* Every level that has left the three arrays, stored[k] for level k, for
+   * tracing the path back; and with nested slides, the same levels merged
+   * into a few sets, largest first, to look in. */
   std::vector<setPtr_t> stored;
   std::vector<setPtr_t> visitedSets;
   /* Bytes on disk, and in memory, the stored levels take. */
@@ -2197,12 +2209,26 @@ void levelSearch(const slideSpace_c<key_t> & s, slideSearch_c & search, std::vec
           continue;
         seen.push_back(v.get());
         memory += v->indexBytes();
-        if (folder.dir.empty())
+        if (v->inMemory())
           memory += v->bytes();
         else
           disk += v->bytes();
       }
     return std::make_pair(disk, memory);
+  };
+  unsigned int fileNumber = 0;
+  /* A new key set of about the given size: in memory while the stored
+   * levels there are small, else in the folder when there is one. */
+  auto newSet = [&](unsigned long long bytes) {
+    auto set = std::make_shared<set_t>();
+    std::filesystem::path p;
+    if (storedBytes().second + bytes > memoryLevelBytes && folder.open()) {
+      setDiskBudget();
+      char name[32];
+      snprintf(name, sizeof(name), "%06u.keys", fileNumber++);
+      p = folder.dir / name;
+    }
+    return set->create(p) ? set : nullptr;
   };
   auto ioFailed = [&]() {
     search.outcome = SLIDE_DISK;
@@ -2212,7 +2238,7 @@ void levelSearch(const slideSpace_c<key_t> & s, slideSearch_c & search, std::vec
   };
   /* Store a level that leaves memory. */
   auto saveLevel = [&](const vec_t & level) {
-    setPtr_t set = newSet();
+    setPtr_t set = newSet((unsigned long long)level.size() * sizeof(key_t));
     if (!set || !set->addAll(level.begin(), level.end()) || !set->finish())
       return false;
     stored.push_back(set);
@@ -2225,7 +2251,7 @@ void levelSearch(const slideSpace_c<key_t> & s, slideSearch_c & search, std::vec
         setPtr_t a = visitedSets[visitedSets.size() - 2];
         setPtr_t b = visitedSets.back();
         visitedSets.resize(visitedSets.size() - 2);
-        setPtr_t m = newSet();
+        setPtr_t m = newSet(a->bytes() + b->bytes());
         if (!m)
           return false;
         typename set_t::cursor_c ca(*a);
@@ -2427,8 +2453,10 @@ void levelSearch(const slideSpace_c<key_t> & s, slideSearch_c & search, std::vec
               std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     if (bytes.first > diskBudget && !folder.dir.empty()) {
       search.outcome = SLIDE_DISK;
-      search.error = "The search filled the disk space it may use (" +
-                     std::to_string(diskBudget / 1000000000ull) + " GB in " + folder.dir.string() + ").";
+      char gb[32];
+      snprintf(gb, sizeof(gb), "%.1f GB", diskBudget / 1e9);
+      search.error = "The search filled the disk space it may use (" + std::string(gb) + " in " +
+                     folder.dir.string() + ").";
       return;
     }
 

@@ -107,6 +107,6 @@ unsigned int guiGridType_c::defaultSize(void) const {
     case gridType_c::GT_RHOMBIC: return 5;
     case gridType_c::GT_SPHERES: return 3;
     case gridType_c::GT_SLIDING: return 6;
-    default:                     return 6;
+    default:                     return 4;
   }
 }

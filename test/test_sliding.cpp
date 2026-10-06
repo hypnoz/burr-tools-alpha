@@ -999,8 +999,9 @@ TEST_CASE("sliding: the full search counts the same arrangements with one-way mo
     }
 }
 
-/* With nowhere to write, the levels stay in memory; with no disk to spare,
- * the search says so. */
+/* Small levels stay in memory, and so do big ones with nowhere to write;
+ * with no disk to spare, the search says so. memoryLevelBytes = 1 sends
+ * every level past the first two towards the disk. */
 TEST_CASE("sliding: the full search keeps its levels where it can", "[sliding]") {
   problem_c * pr = nullptr;
   std::unique_ptr<assembly_c> start;
@@ -1015,6 +1016,7 @@ TEST_CASE("sliding: the full search keeps its levels where it can", "[sliding]")
   onDisk.maxStates = sliding::FULL_SEARCH;
   onDisk.nested = true;
   onDisk.workDir = dir.string();
+  onDisk.memoryLevelBytes = 1;
   CHECK(sliding::findSlidePath(*pr, *start, onDisk) == nullptr);
   CHECK(onDisk.outcome == sliding::SLIDE_NO_PATH);
   CHECK(onDisk.diskBytes > 0);
@@ -1029,6 +1031,7 @@ TEST_CASE("sliding: the full search keeps its levels where it can", "[sliding]")
   inMemory.maxStates = sliding::FULL_SEARCH;
   inMemory.nested = true;
   inMemory.workDir = dir.string();
+  inMemory.memoryLevelBytes = 1;
   CHECK(sliding::findSlidePath(*pr, *start, inMemory) == nullptr);
   CHECK(inMemory.outcome == sliding::SLIDE_NO_PATH);
   CHECK(inMemory.diskBytes == 0);
@@ -1040,10 +1043,23 @@ TEST_CASE("sliding: the full search keeps its levels where it can", "[sliding]")
   full.nested = true;
   full.workDir = dir.string();
   full.diskBudget = 1;
+  full.memoryLevelBytes = 1;
   CHECK(sliding::findSlidePath(*pr, *start, full) == nullptr);
   CHECK(full.outcome == sliding::SLIDE_DISK);
   CHECK(!full.error.empty());
   std::filesystem::remove_all(dir);
+
+  /* A small search on a full disk: it never writes, nor makes its folder. */
+  sliding::slideSearch_c small;
+  small.maxStates = sliding::FULL_SEARCH;
+  small.nested = true;
+  small.workDir = dir.string();
+  small.diskBudget = 1;
+  CHECK(sliding::findSlidePath(*pr, *start, small) == nullptr);
+  CHECK(small.outcome == sliding::SLIDE_NO_PATH);
+  CHECK(small.diskBytes == 0);
+  CHECK(small.visited == onDisk.visited);
+  CHECK(!std::filesystem::exists(dir));
 }
 
 /* The full search runs on every core, but finds the same path each time:

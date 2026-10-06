@@ -19,6 +19,7 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include "placementbrowser.h"
+#include "btmessage.h"
 
 #include "voxelframe.h"
 
@@ -119,7 +120,7 @@ placementBrowser_c::placementBrowser_c(problem_c * p) :
 
   if ((puzzle->getAssembler()->getFinished() > 0) &&
       (puzzle->getAssembler()->getFinished() < 1))
-    fl_message("Attention: The assembler is neither in initial nor in final position\n"
+    bt_message("Attention: The assembler is neither in initial nor in final position\n"
                "The displayed placements may not be what you expect\n"
                "Read the documentation");
 

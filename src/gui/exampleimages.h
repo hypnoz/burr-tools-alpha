@@ -20,7 +20,8 @@
  */
 /*
  * The example pictures of the grid selector, PNG files built into the
- * program from src/gui/images/examples (see render.sh and embed.py there).
+ * program from src/gui/images/examples (see render.sh and embed.py there),
+ * and copies of the example puzzles they show, from examples/.
  */
 #ifndef __EXAMPLEIMAGES_H__
 #define __EXAMPLEIMAGES_H__
@@ -30,7 +31,8 @@
 namespace exampleImages {
 
 struct file_c {
-  const char * name;          ///< the file name without ".png": "brick", "sliding", ...
+  const char * name;          ///< a picture's file name without ".png": "brick", "sliding", ...;
+                              ///< an example puzzle's file name: "CubeInCage.xmpuzzle", ...
   const unsigned char * data;
   size_t size;
 };

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# Writes a C++ file that holds the example pictures of the grid selector,
-# for exampleimages.h. Run by the build: embed.py out.cpp picture.png ...
+# Writes a C++ file that holds the example pictures of the grid selector
+# and their example puzzles, for exampleimages.h. Run by the build:
+# embed.py out.cpp picture.png ... puzzle.xmpuzzle ...
 import os
 import sys
 
@@ -16,6 +17,8 @@ with open(out, 'w') as f:
         f.write('};\n\n')
     f.write('const file_c files[] = {\n')
     for i, path in enumerate(files):
-        name = os.path.splitext(os.path.basename(path))[0]
+        name = os.path.basename(path)
+        if name.endswith('.png'):
+            name = name[:-4]
         f.write('  {"%s", file%d, sizeof(file%d)},\n' % (name, i, i))
     f.write('};\n\nconst unsigned int count = %d;\n\n} // namespace exampleImages\n' % len(files))
