@@ -494,7 +494,8 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
     KeepRotations->activate();
   }
 
-  /* Just Levels and Strict Colors do nothing for sliding. Nested slides
+  /* Just Levels does nothing for sliding, and Strict Colors nothing for
+   * sliding or stacking (neither uses the assembler). Nested slides
    * takes Just Levels' place and High Memory (sliding and stacking) takes
    * Deep Symmetry Check's;
    * search depth is the Solver Type choice.
@@ -508,12 +509,12 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
       else w->hide();
       moved = true;
     };
-    if (slidingPuzzle) {
+    if (slidingPuzzle)
       DropDisassemblies->value(0);
+    if (slidingPuzzle || stackingPuzzle)
       StrictColors->value(0);
-    }
     setVis(DropDisassemblies, !slidingPuzzle);
-    setVis(StrictColors, !slidingPuzzle);
+    setVis(StrictColors, !slidingPuzzle && !stackingPuzzle);
     setVis(NestedSlides, slidingPuzzle);
     setVis(HighMemory, slidingPuzzle || stackingPuzzle);
     /* The symmetry filter drops starts that are rotations or mirrors of
@@ -543,8 +544,6 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
     KeepMirrors->deactivate();
     KeepRotations->value(0);
     KeepRotations->deactivate();
-    StrictColors->value(0);
-    StrictColors->deactivate();
   }
 }
 

@@ -85,7 +85,7 @@ static int ownColor(int x) {
 float pieceColorR(int x) {
   if (const int own = ownColor(x); own >= 0)
     return float((own >> 16) & 0xFF) / 255.0f;
-  if (x < COLS)
+  if (x >= 0 && x < COLS)
     return r[x];
   else
     return float((1+sin(0.7*x))/2);
@@ -94,7 +94,7 @@ float pieceColorR(int x) {
 float pieceColorG(int x) {
   if (const int own = ownColor(x); own >= 0)
     return float((own >> 8) & 0xFF) / 255.0f;
-  if (x < COLS)
+  if (x >= 0 && x < COLS)
     return g[x];
   else
     return float((1+sin(1.3*x+1.5))/2);
@@ -103,7 +103,7 @@ float pieceColorG(int x) {
 float pieceColorB(int x) {
   if (const int own = ownColor(x); own >= 0)
     return float((own >> 0) & 0xFF) / 255.0f;
-  if (x < COLS)
+  if (x >= 0 && x < COLS)
     return b[x];
   else
     return float((1+sin(3.5*x+2.3))/2);
@@ -112,7 +112,7 @@ float pieceColorB(int x) {
 unsigned int pieceColorRi(int x) {
   if (const int own = ownColor(x); own >= 0)
     return (unsigned int)((own >> 16) & 0xFF);
-  if (x < COLS)
+  if (x >= 0 && x < COLS)
     return (unsigned int)(r[x]*255);
   else
     return (unsigned int)(255*(1+sin(0.7*x))/2);
@@ -121,7 +121,7 @@ unsigned int pieceColorRi(int x) {
 unsigned int pieceColorGi(int x) {
   if (const int own = ownColor(x); own >= 0)
     return (unsigned int)((own >> 8) & 0xFF);
-  if (x < COLS)
+  if (x >= 0 && x < COLS)
     return (unsigned int)(g[x]*255);
   else
     return (unsigned int)(255*(1+sin(1.3*x+1.5))/2);
@@ -130,7 +130,7 @@ unsigned int pieceColorGi(int x) {
 unsigned int pieceColorBi(int x) {
   if (const int own = ownColor(x); own >= 0)
     return (unsigned int)((own >> 0) & 0xFF);
-  if (x < COLS)
+  if (x >= 0 && x < COLS)
     return (unsigned int)(b[x]*255);
   else
     return (unsigned int)(255*(1+sin(3.5*x+2.3))/2);

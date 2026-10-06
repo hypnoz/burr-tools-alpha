@@ -3169,11 +3169,12 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
           snprintf(count, sizeof(count), "%.0f", n);
         char tmp[96];
         if (assmThread->getSearchTraced() > 0)
-          snprintf(tmp, 96, "panex: tracing the path\n%lu of %lu moves",
-                   assmThread->getSearchTraced(), assmThread->getSearchDepth());
+          snprintf(tmp, 96, "panex: tracing the path\n%s of %s moves",
+                   withCommas(assmThread->getSearchTraced()).c_str(),
+                   withCommas(assmThread->getSearchDepth()).c_str());
         else
-          snprintf(tmp, 96, "panex: %lu moves deep\n%s found",
-                   assmThread->getSearchDepth(), count);
+          snprintf(tmp, 96, "panex: %s moves deep\n%s stackings found",
+                   withCommas(assmThread->getSearchDepth()).c_str(), count);
         OutputActivity->value(tmp);
       } else if (stacking::isStacking(*puzzle)) {
         char tmp[64];
