@@ -65,6 +65,47 @@ bool shapeIsRequired(const problem_c & prob, unsigned int shapeId);
 /** Toggle the S# mark of shapeId on one cell. goal selects the goal map. */
 bool toggleCellMark(voxel_c * tray, int x, int y, unsigned int shapeId, bool goal);
 
+/**
+ * Mark the whole of a piece as its start (goal false) or its goal on a
+ * start/goal shape, as the piece is drawn: its anchor cell, the leftmost
+ * cell of its top row (y rises upwards, as in the grid editor), at (x, y). Replaces the piece's earlier start or
+ * goal. Empty on success, else why it does not fit, and nothing changes.
+ */
+std::string stampPiece(voxel_c * tray, const voxel_c * piece, unsigned int shapeId,
+                       int x, int y, bool goal);
+
+/** The tray cells stampPiece would mark, whether they fit or not. */
+std::vector<std::pair<int, int>> stampCells(const voxel_c * piece, int x, int y);
+
+/** Why stampPiece would refuse, or empty when the piece fits; changes nothing. */
+std::string stampFits(const voxel_c * tray, const voxel_c * piece, unsigned int shapeId,
+                      int x, int y, bool goal);
+
+/** True when shapeId's start or goal is exactly where stampPiece would put it. */
+bool stampIsAt(const voxel_c * tray, const voxel_c * piece, unsigned int shapeId,
+               int x, int y, bool goal);
+
+/**
+ * After piece shapeId was edited: remove its start and goal from every
+ * start/goal shape where they are no longer the piece's shape. Returns the
+ * start/goal shapes that lost one; an edit that leaves the shape as it was,
+ * such as moving it in its grid, removes nothing.
+ */
+std::vector<unsigned int> dropChangedStamps(puzzle_c & puz, unsigned int shapeId);
+
+/** Remove shapeId's start or goal; true when it had one. */
+bool clearStamp(voxel_c * tray, unsigned int shapeId, bool goal);
+
+/** The piece whose start or goal covers (x, y), or ~0u. */
+unsigned int stampAt(const voxel_c * tray, int x, int y, bool goal);
+
+/**
+ * Empty when the start/goal shape trayShape describes a puzzle that can be
+ * solved, else what is wrong: a start or goal that is not the whole piece,
+ * a goal without a start, or no piece with both a start and a goal.
+ */
+std::string startGoalError(const puzzle_c & puz, unsigned int trayShape);
+
 /** Keep piece-voxel colours in step with start stamps so the assembler can lock them. */
 void refreshStartLocks(problem_c & prob);
 
@@ -127,8 +168,9 @@ const unsigned int DEEP_SEARCH_STATES = 1000000;
 /** maxStates for a full search: no limit on arrangements visited. */
 const unsigned int FULL_SEARCH = 0;
 /**
- * Memory any search may fill with arrangements, about 2 GB. A full search
- * that reaches it stops instead of exhausting the machine's memory.
+ * Memory any search may fill with arrangements, about 2 GB. A search that
+ * reaches it stops instead of exhausting the machine's memory. A full search
+ * keeps only its newest levels in memory, so it goes much further.
  */
 const unsigned long long SEARCH_MEMORY_BYTES = 2000000000ULL;
 
@@ -146,7 +188,8 @@ enum slideOutcome_e {
   SLIDE_NO_PATH,   ///< every reachable arrangement was searched: there is no path
   SLIDE_LIMIT,     ///< stopped at maxStates; a path may still exist
   SLIDE_MEMORY,    ///< stopped at its memory limit; a path may still exist
-  SLIDE_STOPPED    ///< *stop was set
+  SLIDE_STOPPED,   ///< *stop was set
+  SLIDE_DISK       ///< a full search could not keep its levels on disk; see error
 };
 
 /** Settings for one slide search, and how it went. */
@@ -155,7 +198,9 @@ struct slideSearch_c {
   unsigned long maxStates = SEARCH_STATES;
   /**
    * Arrangements to hold in memory before giving up, whatever maxStates
-   * says; 0 for as many as fit the memory budget (memoryStates).
+   * says; 0 for as many as fit the memory budget (memoryStates). A full
+   * search holds only its newest levels in memory and keeps the older ones
+   * on disk, so it counts just those.
    */
   unsigned long maxMemoryStates = 0;
   /** With maxMemoryStates 0, budget half the physical memory, not 2 GB. */
@@ -166,12 +211,38 @@ struct slideSearch_c {
   const std::atomic<bool> * stop = nullptr;
   /** When set, kept up to date with the arrangements visited so far. */
   std::atomic<unsigned long> * progress = nullptr;
+  /** When set, a full search keeps it up to date with the moves it has searched to. */
+  std::atomic<unsigned long> * depthProgress = nullptr;
+  /** Threads for a full search; 0 for the application's limit (solveThreadBudget). */
+  unsigned int threads = 0;
+  /**
+   * Where a full search keeps its older levels, in a folder of its own that
+   * goes when the search ends. Empty for $BURRTOOLS_SLIDE_DIR, or else the
+   * user's cache folder; with neither, they stay in memory.
+   */
+  std::string workDir;
+  /**
+   * Disk those levels may take, in bytes; 0 for $BURRTOOLS_SLIDE_DISK_GB,
+   * or else all the free space but a margin.
+   */
+  unsigned long long diskBudget = 0;
 
   /** Out: how the search ended, and how many arrangements it visited. */
   slideOutcome_e outcome = SLIDE_NO_PATH;
   unsigned long visited = 0;
   /** Out: the memory limit the search used, in arrangements. */
   unsigned long memoryStates = 0;
+  /** Out, for a full search: the moves searched to, and the most disk its levels took. */
+  unsigned long depth = 0;
+  unsigned long long diskBytes = 0;
+  /**
+   * Out, for a full search with nested slides: arrangements reached by a
+   * move that cannot be made backwards that had been reached two or more
+   * moves earlier, so had to be looked for on disk.
+   */
+  unsigned long oneWayRepeats = 0;
+  /** Out: what went wrong, for SLIDE_DISK. */
+  std::string error;
 };
 
 /**
@@ -217,6 +288,13 @@ std::string finalPlacementKey(const separation_c & path);
  * than it has voxels.
  */
 std::string stampOverflowMessage(const problem_c & prob);
+
+/**
+ * Make every shape of a sliding puzzle one layer deep, pieces and
+ * start/goal shapes alike, keeping the first layer (z = 0): pieces slide
+ * flat on a flat tray. Returns the shapes that were changed.
+ */
+std::vector<unsigned int> flattenPieces(puzzle_c & puz);
 
 /** Count floor (non-empty) cells on the result tray. */
 unsigned int floorCells(const voxel_c & tray);

@@ -167,15 +167,28 @@ void mainWindow_c::cb_New(void) {
       return;
 
     gridTypeSelectorWindow_c w;
+    gridSelector = &w;
     w.show();
 
     while (w.visible())
       Fl::wait();
+    gridSelector = 0;
 
-    if (!w.accepted())
-      return;
+    switch (w.result()) {
+      case gridTypeSelectorWindow_c::SEL_CANCEL:
+        return;
+      case gridTypeSelectorWindow_c::SEL_OPEN:
+        /* the question about unsaved changes is answered already */
+        tryToLoad(bt_file_chooser_open("Open Puzzle", "Puzzle Files\t*.xmpuzzle", ""));
+        return;
+      case gridTypeSelectorWindow_c::SEL_OK:
+      case gridTypeSelectorWindow_c::SEL_TUTORIAL:
+        break;
+    }
 
-    ReplacePuzzle(new puzzle_c(w.getGridType()));
+    std::unique_ptr<gridType_c> gt = w.getGridType();
+    const int type = gt->getType();
+    ReplacePuzzle(new puzzle_c(std::move(gt)));
 
     if (!fname.empty())
       setFileName("");
@@ -185,7 +198,16 @@ void mainWindow_c::cb_New(void) {
     StatusLine->setText("");
     selectEntitiesTab(true);
     activateShape(0);
+
+    if (w.result() == gridTypeSelectorWindow_c::SEL_TUTORIAL)
+      openTutorial(type);
   }
+}
+
+void mainWindow_c::startupChooseGrid(void) {
+
+  if (fname.empty() && !changed)
+    cb_New();
 }
 
 void cb_Load_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_Load(); }

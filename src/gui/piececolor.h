@@ -25,12 +25,18 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #define GL_SILENCE_DEPRECATION 1
 #include <FL/fl_draw.H>
-#pragma GCC diagnostic pop 
+#pragma GCC diagnostic pop
+
+#include <vector> 
 
 /* this module provides the colours for the pieces. The first few colours are defined within
  * a table, the following colours use a function that hopefully delivers ever changing
  * nice colour values
  */
+
+/* Colours that shapes have of their own, by shape number, 0xRRGGBB or -1
+ * for none: they replace the colour of that number below. */
+void setOwnPieceColors(const std::vector<int> & colors);
 
 /* the following 3 functions return the base colour of piece x */
 float pieceColorR(int x);

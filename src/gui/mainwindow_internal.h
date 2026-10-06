@@ -66,6 +66,8 @@ void cb_DiskList_stub(Fl_Widget* /*o*/, void* v);
 void cb_StackMode_stub(Fl_Widget* o, void* v);
 void cb_StackRod_stub(Fl_Widget* /*o*/, void* v);
 void cb_StackValidRelayout_stub(Fl_Widget* /*o*/, void* v);
+void cb_ShapeColor_stub(Fl_Widget* /*o*/, void* v);
+void cb_SlideValidRelayout_stub(Fl_Widget* /*o*/, void* v);
 void cb_StackListSel_stub(Fl_Widget* /*o*/, void* v);
 void cb_ProblemRod_stub(Fl_Widget* /*o*/, void* v);
 void easeRodZoom(LView3dGroup * view);

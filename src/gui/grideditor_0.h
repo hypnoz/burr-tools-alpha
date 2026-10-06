@@ -43,6 +43,7 @@ private:
   void drawTileFrame(int x, int y, int z, int tx, int ty, int sx, int sy);
   void drawTileColor(int x, int y, int z, int tx, int ty, int sx, int sy);
   void drawTileCursor(int x, int y, int z, int tx, int ty, int sx, int sy);
+  void drawTileOutline(int x, int y, int tx, int ty, int sx, int sy);
 
 public:
 

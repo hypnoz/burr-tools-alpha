@@ -23,62 +23,28 @@
 
 #include "guigridtype.h"
 #include "Layouter.h"
+#include "tutorials.h"
 
 #include "../lib/gridtype.h"
 
 #include <FL/Fl_Browser_.H>
 #include <FL/Fl_Image.H>
 
+#include <algorithm>
+
 gridTypeGui_0_c::gridTypeGui_0_c(int /*x*/, int /*y*/, int /*w*/, int /*h*/, gridType_c * /*gt*/) {
   end();
 }
 
-static const char * gridTypeDescription(gridType_c::gridType type) {
-  switch (type) {
-    case gridType_c::GT_BRICKS:
-      return "Pieces are cubes.\n"
-             "This is the usual interlocking burr: find how the\n"
-             "pieces fill the result and how they come apart.";
-    case gridType_c::GT_TRIANGULAR_PRISM:
-      return "Like Brick, with a different cell shape.\n"
-             "Each cell is a triangular prism. Layers are packed\n"
-             "triangles, half pointing up and half pointing down.";
-    case gridType_c::GT_SPHERES:
-      return "Like Brick, with a different cell shape.\n"
-             "Each cell is a sphere. The spheres sit in a tight\n"
-             "three-dimensional packing.";
-    case gridType_c::GT_RHOMBIC:
-      return "Like Brick, with a different cell shape.\n"
-             "Each cell is a small tetrahedron cut from a cube.\n"
-             "Together they build rhombic dodecahedra.";
-    case gridType_c::GT_TETRA_OCTA:
-      return "Like Brick, with a different cell shape.\n"
-             "The cells are tetrahedra and octahedra that fill\n"
-             "space together. Pieces use both shapes.";
-    case gridType_c::GT_SLIDING:
-      return "Pieces are flat shapes on a shared floor.\n"
-             "Mark a start cell and a goal cell for each piece.\n"
-             "The solver slides them from start to goal.";
-    case gridType_c::GT_STACKING:
-      return "Pieces are flat discs on vertical rods.\n"
-             "Move the top disc from one rod to another, as in\n"
-             "Tower of Hanoi, until the stacks match the goal.";
-    default:
-      return "";
-  }
-}
-
 gridTypeGui_1_c::gridTypeGui_1_c(int x, int y, int w, int h, gridType_c * /*gt*/) {
-  new LFl_Box("There are no parameters for this space grid!\n"
-      "This space grid also has no disassembler (yet)", x, y, w, h);
+  new LFl_Box("There are no parameters for this space grid.", x, y, w, h);
 
   end();
 }
 
 gridTypeGui_2_c::gridTypeGui_2_c(int x, int y, int w, int h, gridType_c * /*gt*/) {
 
-  new LFl_Box("There are no parameters for this space grid!\n"
-      "This space grid has no disassembler", x, y, w, h);
+  new LFl_Box("There are no parameters for this space grid.", x, y, w, h);
 
   end();
 }
@@ -96,7 +62,6 @@ class gridTypeInfos_c {
 };
 
 static void cb_WindowButton_stub(Fl_Widget * /*o*/, void *v) { ((Fl_Double_Window*)(v))->hide(); }
-static void cb_gridTypeSelectorOk_stub(Fl_Widget * /*o*/, void *v) { ((gridTypeSelectorWindow_c*)(v))->ok_cb(); }
 
 gridTypeParameterWindow_c::gridTypeParameterWindow_c(guiGridType_c * ggt) : LFl_Double_Window(false) {
   label("Set parameters for grid type");
@@ -110,35 +75,38 @@ gridTypeParameterWindow_c::gridTypeParameterWindow_c(guiGridType_c * ggt) : LFl_
 
 static void cb_gridTypeSelectorSelect_stub(Fl_Widget * /*o*/, void *v) { ((gridTypeSelectorWindow_c*)(v))->select_cb(); }
 void gridTypeSelectorWindow_c::select_cb(void) {
-  for (unsigned int i = 0; i < gti.size(); i++) {
+  for (unsigned int i = 0; i < gti.size(); i++)
     if (gti[i]->btn->value()) {
-
-      gti[current]->gui->hide();
       current = i;
-      gti[current]->gui->show();
-
-      if (typeDescription)
-        typeDescription->copy_label(gridTypeDescription(gti[current]->gt->getType()));
-
-      /* Brick-like types have no parameters, so the frame under the
-       * description would be an empty box. */
-      if (parameterFrame) {
-        if (gti[current]->gui->children() > 0)
-          parameterFrame->show();
-        else
-          parameterFrame->hide();
-      }
-
-      if (layouter_c * root = dynamic_cast<layouter_c*>(resizable())) {
-        root->invalidateMinSize();
-        root->resize(root->x(), root->y(), root->w(), root->h());
-      }
-      redraw();
+      showInfo();
     }
-  }
 }
 
-gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(false), typeDescription(0), parameterFrame(0), okPressed(false) {
+/* The description, warnings and example of the selected grid, as one text. */
+void gridTypeSelectorWindow_c::showInfo(void) {
+  const gridType_c::gridType type = gti[current]->gt->getType();
+  /* The picture fits under the text, without a scroll bar. */
+  const std::string html = tutorials::selectorHtml(type, info->textsize(), 420, 260);
+  info->value(html.c_str());
+  info->topline(0);
+}
+
+/* FLTK keeps a widget's argument in the same place as its user data, so
+ * each button has a callback of its own. */
+static void cb_gridTypeSelectorOk_stub(Fl_Widget * /*o*/, void *v) {
+  static_cast<gridTypeSelectorWindow_c*>(v)->finish(gridTypeSelectorWindow_c::SEL_OK);
+}
+static void cb_gridTypeSelectorCancel_stub(Fl_Widget * /*o*/, void *v) {
+  static_cast<gridTypeSelectorWindow_c*>(v)->finish(gridTypeSelectorWindow_c::SEL_CANCEL);
+}
+static void cb_gridTypeSelectorOpen_stub(Fl_Widget * /*o*/, void *v) {
+  static_cast<gridTypeSelectorWindow_c*>(v)->finish(gridTypeSelectorWindow_c::SEL_OPEN);
+}
+static void cb_gridTypeSelectorTutorial_stub(Fl_Widget * /*o*/, void *v) {
+  static_cast<gridTypeSelectorWindow_c*>(v)->finish(gridTypeSelectorWindow_c::SEL_TUTORIAL);
+}
+
+gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(false), current(0), info(nullptr), res(SEL_CANCEL) {
 
   /* for each grid type available we need to create an instance
    * here and put it into a gridtypeinfo class and into the
@@ -163,14 +131,22 @@ gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(fal
 
   label("Select space grid");
 
-  LFl_Frame *fr;
+  /* Text two points larger than the rest of the program, and room around
+   * everything: a margin at the window's edge, gaps between the parts. */
+  const int textSize = FL_NORMAL_SIZE + 2;
+  const int MARGIN = 20;
+  const int GAP = 16;
+  (new LFl_Box(0, 0))->setMinimumSize(MARGIN, MARGIN);
+  (new LFl_Box(4, 4))->setMinimumSize(MARGIN, MARGIN);
 
-  /* first the selector for all grid types */
+  /* the grid types to choose from */
   {
-    fr = new LFl_Frame(0, 0, 1, 2);
+    LFl_Frame * fr = new LFl_Frame(1, 1, 1, 1);
 
     for (unsigned int i = 0; i < gti.size(); i++) {
-      gti[i]->btn = new LFl_Radio_Button(gti[i]->ggt->getName(), 0, i);
+      gti[i]->btn = new LFl_Radio_Button(tutorials::gridName(gti[i]->gt->getType()), 0, i);
+      gti[i]->btn->labelsize(textSize);
+      gti[i]->btn->pitch(8);
       gti[i]->btn->callback(cb_gridTypeSelectorSelect_stub, this);
       if (i == 0)
         gti[i]->btn->set();
@@ -182,74 +158,79 @@ gridTypeSelectorWindow_c::gridTypeSelectorWindow_c(void) : LFl_Double_Window(fal
 
     int listW = 0, listH = 0;
     fr->getMinSize(&listW, &listH);
-    fr->setMinimumSize(listW + 10, 0);
+    fr->setMinimumSize(listW + 24, 0);
   }
 
-  typeDescription = new LFl_Box(gridTypeDescription(gridType_c::GT_BRICKS), 1, 0);
-  typeDescription->pitch(7);
-  typeDescription->align(FL_ALIGN_INSIDE | FL_ALIGN_TOP_LEFT | FL_ALIGN_WRAP);
+  (new LFl_Box(2, 1))->setMinimumSize(GAP, 0);
 
-  /* now all the parameter boxes, only the first one is visible, the others are hidden for now */
-  {
-    fr = new LFl_Frame(1, 1);
-    parameterFrame = fr;
+  /* what the selected grid is: one text, no frame of its own */
+  info = new LFl_Help_View(3, 1, 1, 1);
+  info->textfont(FL_HELVETICA);
+  info->textsize(textSize);
+  info->box(FL_FLAT_BOX);
+  info->color(FL_BACKGROUND_COLOR);
+  info->textcolor(FL_FOREGROUND_COLOR);
+  info->setMinimumSize(600, 600);
+  info->weight(1, 1);
 
-    for (unsigned int i = 0; i < gti.size(); i++) {
-      gti[i]->gui = gti[i]->ggt->getConfigurationDialog(0, 0, 1, 1);
-
-      if (i != 0)
-        gti[i]->gui->hide();
-    }
-
-    fr->end();
-    /* Bricks is selected first and has no parameter panel. */
-    parameterFrame->hide();
-  }
-
-  /* finally the 3D view that contains exactly one voxel */
-
+  (new LFl_Box(1, 2))->setMinimumSize(0, GAP);
 
   /* now the buttons */
   {
-    layouter_c * l = new layouter_c(0, 2, 3, 1);
+    layouter_c * l = new layouter_c(1, 3, 3, 1);
 
-    LFl_Button * b = new LFl_Button("OK", 0, 0);
-    b->pitch(7);
-    b->stretchVCenter();
-    b->callback(cb_gridTypeSelectorOk_stub, this);
+    struct button_c {
+      const char * text;
+      result_e result;
+      Fl_Callback * cb;
+    };
+    const button_c buttons[] = {
+      {"OK", SEL_OK, cb_gridTypeSelectorOk_stub},
+      {"Cancel", SEL_CANCEL, cb_gridTypeSelectorCancel_stub},
+      {"Open File...", SEL_OPEN, cb_gridTypeSelectorOpen_stub},
+      {"Tutorial", SEL_TUTORIAL, cb_gridTypeSelectorTutorial_stub},
+    };
+    int bw = 0, bh = 0;
+    std::vector<LFl_Button *> made;
+    int x = 0;
+    for (const button_c & b : buttons) {
+      /* a gap after Cancel: the last two do something else than choose */
+      if (b.result == SEL_OPEN)
+        (new LFl_Box(x++, 0))->setMinimumSize(3 * GAP, 0);
+      LFl_Button * btn = new LFl_Button(b.text, x++, 0);
+      btn->labelsize(textSize);
+      btn->pitch(4);
+      btn->stretchVCenter();
+      btn->callback(b.cb, this);
+      if (b.result == SEL_CANCEL)
+        btn->shortcut(FL_Escape);
+      int w = 0, h = 0;
+      btn->getMinSize(&w, &h);
+      bw = std::max(bw, w + 36);
+      bh = std::max(bh, h + 8);
+      made.push_back(btn);
+    }
+    for (LFl_Button * b : made) {
+      b->setMinimumSize((unsigned)bw, (unsigned)bh);
+      b->weight(0, 0);
+    }
 
-    LFl_Button * c = new LFl_Button("Cancel", 1, 0);
-    c->pitch(7);
-    c->stretchVCenter();
-    c->shortcut(FL_Escape);
-    c->callback(cb_WindowButton_stub, this);
-
-    int okW = 0, okH = 0, cancelW = 0, cancelH = 0;
-    b->getMinSize(&okW, &okH);
-    c->getMinSize(&cancelW, &cancelH);
-    int bw = (okW > cancelW ? okW : cancelW) + 36;
-    int bh = okH > cancelH ? okH : cancelH;
-    b->setMinimumSize((unsigned)bw, (unsigned)bh);
-    c->setMinimumSize((unsigned)bw, (unsigned)bh);
-    b->weight(0, 0);
-    c->weight(0, 0);
-
-    (new LFl_Box(2, 0))->weight(1, 0);
+    (new LFl_Box(x, 0))->weight(1, 0);
 
     l->end();
   }
 
   current = 0;
+  showInfo();
 }
 
 gridTypeSelectorWindow_c::~gridTypeSelectorWindow_c(void) = default;
 
-void gridTypeSelectorWindow_c::ok_cb(void) {
-  okPressed = true;
+void gridTypeSelectorWindow_c::finish(result_e r) {
+  res = r;
   hide();
 }
 
 std::unique_ptr<gridType_c> gridTypeSelectorWindow_c::getGridType(void) {
   return std::move(gti[current]->gt);
 }
-

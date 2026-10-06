@@ -438,7 +438,9 @@ std::string solveThread_c::slidingSummary(void) const {
     std::string msg = std::to_string(slideStartsCut) +
         (slideStartsCut == 1 ? " start layout was" : " start layouts were") +
         " not searched completely";
-    if (slideMemoryCut)
+    if (!slideDiskError.empty())
+      msg += ". " + slideDiskError.substr(0, slideDiskError.size() - 1);
+    else if (slideMemoryCut)
       msg += ": the search reached its memory limit of " +
              std::to_string(slideMemoryStates) + " arrangements";
     else if (parameters & PAR_DEEP_SEARCH)
@@ -448,7 +450,7 @@ std::string solveThread_c::slidingSummary(void) const {
     msg += ". There may be solutions the solver did not find.";
     if (slideMemoryCut && !(parameters & PAR_HIGH_MEMORY))
       msg += " Try Enable High Memory.";
-    if (!slideMemoryCut && !(parameters & PAR_FULL_SEARCH))
+    if (!slideMemoryCut && slideDiskError.empty() && !(parameters & PAR_FULL_SEARCH))
       msg += (parameters & PAR_DEEP_SEARCH)
           ? " Try the Sliding Full Solver."
           : " Try the Sliding Deep or Full Solver.";
@@ -902,15 +904,20 @@ bool solveThread_c::assembly(std::unique_ptr<assembly_c> a) {
         search.nested = (parameters & PAR_NESTED_SLIDES) != 0;
         search.stop = &stopPressed;
         search.progress = &slideProgress;
+        search.depthProgress = &searchDepth;
         std::unique_ptr<separation_c> path = sliding::findSlidePath(puzzle, *a, search);
+        searchDepth.store(0, std::memory_order_relaxed);
         /* Paused in the middle of this start's search: search it again on
          * the next run instead of counting it as one with no solution. */
         if (search.outcome == sliding::SLIDE_STOPPED) {
           puzzle.addPending(std::move(a), false);
           return true;
         }
-        if (search.outcome == sliding::SLIDE_LIMIT || search.outcome == sliding::SLIDE_MEMORY) {
+        if (search.outcome == sliding::SLIDE_LIMIT || search.outcome == sliding::SLIDE_MEMORY ||
+            search.outcome == sliding::SLIDE_DISK) {
           slideStartsCut++;
+          if (search.outcome == sliding::SLIDE_DISK)
+            slideDiskError = search.error;
           if (search.outcome == sliding::SLIDE_MEMORY) {
             slideMemoryCut = true;
             slideMemoryStates = search.memoryStates;

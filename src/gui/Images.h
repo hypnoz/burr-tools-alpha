@@ -166,6 +166,10 @@ extern const char * RenderModeSTL_xpm[];
  * once the class is freed, all images are, too
  *
  */
+/* How much larger than drawn the editing tool buttons are shown: the ones
+ * above the grid editor and those in the Size, Transform and Tools tabs. */
+const float TOOL_ICON_SCALE = 1.25f;
+
 class pixmapList_c {
 
   private:
@@ -178,7 +182,9 @@ class pixmapList_c {
 
     ~pixmapList_c(void) = default;
 
-    Fl_Pixmap * get(const char * data[]);
+    /* The pixmap, drawn scale times its size: smooth on screens with
+     * more pixels than points. */
+    Fl_Pixmap * get(const char * data[], float scale = 1.0f);
 };
 
 #endif

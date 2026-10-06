@@ -18,40 +18,11 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
-#ifndef __BLOCKLIST_GROUP_H__
-#define __BLOCKLIST_GROUP_H__
+#ifndef __EXAMPLERENDER_H__
+#define __EXAMPLERENDER_H__
 
-#include "Layouter.h"
-
-#include <FL/Fl_Group.H>
-
-class BlockList;
-
-class LBlockListGroup_c : public Fl_Group, public layoutable_c {
-
-  Fl_Slider * Slider = nullptr;
-  BlockList * List = nullptr;
-  int callbackReason = 0;
-  int minHeight = 80;
-
-  public:
-
-  LBlockListGroup_c(int x, int y, int w, int h, BlockList * l);
-
-  void cb_slider(void);
-  void cb_list(void);
-
-  int handle(int event);
-
-  int getReason(void) { return callbackReason; }
-
-  /* The height the list needs at least; the default shows a few rows. */
-  void setListMinHeight(int h) { minHeight = h; }
-
-  virtual void getMinSize(int *width, int *height) const {
-    *width = 30;
-    *height = minHeight;
-  }
-};
+/* Draw the puzzle in puzzleFile as the 3D view shows it and save it as a
+ * PNG: for making the grid selector's example pictures. 0 on success. */
+int renderExample(const char * puzzleFile, const char * pngFile, int corner = 0);
 
 #endif

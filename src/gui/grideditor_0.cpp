@@ -66,6 +66,10 @@ void gridEditor_0_c::drawTileColor(int x, int y, int, int tx, int ty, int sx, in
   fl_rectf(tx+x*sx, ty-(y+1)*sy, sx/2, sy/2);
 }
 
+void gridEditor_0_c::drawTileOutline(int x, int y, int tx, int ty, int sx, int sy) {
+  fl_rect(tx+x*sx+2, ty-(y+1)*sy+2, sx-3, sy-3);
+}
+
 void gridEditor_0_c::drawTileCursor(int x, int y, int, int tx, int ty, int sx, int sy) {
 
   bool ins = inRegion(x, y);

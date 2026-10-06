@@ -40,6 +40,8 @@
 #include <FL/Fl_Roller.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Multiline_Input.H>
+#include <FL/Fl_Multiline_Output.H>
+#include <FL/Fl_Help_View.H>
 #include <FL/Fl_Output.H>
 #include <FL/Fl_Value_Output.H>
 #include <FL/Fl_Value_Input.H>
@@ -488,6 +490,40 @@ class LFl_Output : public Fl_Output, public layoutable_c {
   virtual void getMinSize(int *width, int *height) const {
     *width = 30;
     *height = 20;
+  }
+};
+
+/* HTML text that wraps to the width it is given, for help and tutorials. */
+class LFl_Help_View : public Fl_Help_View, public layoutable_c {
+
+  public:
+
+  LFl_Help_View(int x = 0, int y = 0, int w = 1, int h = 1)
+    : Fl_Help_View(0, 0, 0, 0), layoutable_c(x, y, w, h) {}
+
+  virtual void getMinSize(int *width, int *height) const {
+    *width = 30;
+    *height = 20;
+  }
+};
+
+/* Read-only text over several lines; lines are separated by '\n'. The
+ * height is for `lines` lines, whether they are all used or not. */
+class LFl_Multiline_Output : public Fl_Multiline_Output, public layoutable_c {
+
+  int lines;
+
+  public:
+
+  LFl_Multiline_Output(int x = 0, int y = 0, int w = 1, int h = 1, int numLines = 2)
+    : Fl_Multiline_Output(0, 0, 0, 0), layoutable_c(x, y, w, h), lines(numLines) {
+    stretchTop();
+  }
+
+  virtual void getMinSize(int *width, int *height) const {
+    *width = 30;
+    /* A line of text, and the margin the box keeps above and below. */
+    *height = lines * (textsize() + 4) + 6;
   }
 };
 

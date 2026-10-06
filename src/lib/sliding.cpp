@@ -30,20 +30,35 @@
 #include "gridtype.h"
 #include "problem.h"
 #include "puzzle.h"
+#include "helperpool.h"
+#include "slidelevels.h"
 #include "sysmemory.h"
 #include "voxel.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <functional>
 #include <map>
 #include <queue>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
+
+#if defined(__APPLE__)
+#include <malloc/malloc.h>
+#elif defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 namespace sliding {
 
@@ -648,6 +663,219 @@ bool toggleCellMark(voxel_c * tray, int x, int y, unsigned int shapeId, bool goa
     tray->setColor(x, y, 0, cur == id ? 0 : id);
   }
   return true;
+}
+
+namespace {
+
+/* Top row first, as the grid editor shows it (y rises upwards), and left
+ * to right in a row: the first cell is the top-left one, where a click
+ * places a piece. */
+bool topLeftFirst(const std::pair<int, int> & a, const std::pair<int, int> & b) {
+  return a.second != b.second ? a.second > b.second : a.first < b.first;
+}
+
+/* The cells of a piece, all layers seen from above, top-left first. */
+std::vector<std::pair<int, int>> footprint(const voxel_c * piece) {
+  std::vector<std::pair<int, int>> cells;
+  for (unsigned int y = 0; y < piece->getY(); y++)
+    for (unsigned int x = 0; x < piece->getX(); x++)
+      for (unsigned int z = 0; z < piece->getZ(); z++)
+        if (piece->getState(x, y, z) != voxel_c::VX_EMPTY) {
+          cells.push_back({(int)x, (int)y});
+          break;
+        }
+  std::sort(cells.begin(), cells.end(), topLeftFirst);
+  return cells;
+}
+
+/* Cells moved so that the top-left one is at (0, 0). */
+std::vector<std::pair<int, int>> fromFirst(std::vector<std::pair<int, int>> cells) {
+  std::sort(cells.begin(), cells.end(), topLeftFirst);
+  if (!cells.empty()) {
+    const std::pair<int, int> o = cells[0];
+    for (auto & c : cells) {
+      c.first -= o.first;
+      c.second -= o.second;
+    }
+  }
+  return cells;
+}
+
+unsigned int stampOf(const voxel_c * tray, unsigned int i, bool goal) {
+  return goal ? tray->getGoalPiece(i) : tray->getColor(i);
+}
+
+} // namespace
+
+std::vector<std::pair<int, int>> stampCells(const voxel_c * piece, int x, int y) {
+  std::vector<std::pair<int, int>> cells;
+  if (!piece)
+    return cells;
+  cells = fromFirst(footprint(piece));
+  for (auto & c : cells) {
+    c.first += x;
+    c.second += y;
+  }
+  return cells;
+}
+
+std::string stampFits(const voxel_c * tray, const voxel_c * piece, unsigned int shapeId,
+                      int x, int y, bool goal) {
+  if (!tray || !piece)
+    return "No piece is chosen.";
+  const unsigned int id = shapeId + 1;
+  if (id > 63)
+    return "Only the first 63 shapes can be placed.";
+  const std::vector<std::pair<int, int>> cells = stampCells(piece, x, y);
+  if (cells.empty())
+    return "The piece has no cells.";
+  for (const auto & c : cells) {
+    const int tx = c.first;
+    const int ty = c.second;
+    if (tx < 0 || ty < 0 || tx >= (int)tray->getX() || ty >= (int)tray->getY() ||
+        tray->getState(tx, ty, 0) == voxel_c::VX_EMPTY)
+      return "The piece does not fit there: part of it would be off the floor.";
+    if (goal && tray->getState(tx, ty, 0) == voxel_c::VX_VARIABLE)
+      return "A goal cannot be on a variable cell: pieces may cross those, not stop on them.";
+    const unsigned int other = stampOf(tray, (unsigned)tray->getIndex(tx, ty, 0), goal);
+    if (other != 0 && other != id)
+      return std::string("The piece would cover the ") + (goal ? "goal" : "start") + " of S" +
+             std::to_string(other) + ".";
+  }
+  return std::string();
+}
+
+std::string stampPiece(voxel_c * tray, const voxel_c * piece, unsigned int shapeId,
+                       int x, int y, bool goal) {
+  const std::string why = stampFits(tray, piece, shapeId, x, y, goal);
+  if (!why.empty())
+    return why;
+  const unsigned int id = shapeId + 1;
+  clearStamp(tray, shapeId, goal);
+  for (const auto & c : stampCells(piece, x, y)) {
+    const unsigned int i = (unsigned)tray->getIndex(c.first, c.second, 0);
+    if (goal)
+      tray->setGoalPiece(i, id);
+    else
+      tray->setColor(i, id);
+  }
+  return std::string();
+}
+
+std::vector<unsigned int> flattenPieces(puzzle_c & puz) {
+  std::vector<unsigned int> changed;
+  for (unsigned int s = 0; s < puz.getNumberOfShapes(); s++) {
+    voxel_c * v = puz.getShape(s);
+    if (isHiddenSlidingShape(v) || v->getZ() <= 1)
+      continue;
+    v->resize(v->getX(), v->getY(), 1, voxel_c::VX_EMPTY);
+    v->setHotspot(v->getHx(), v->getHy(), 0);
+    changed.push_back(s);
+  }
+  return changed;
+}
+
+std::vector<unsigned int> dropChangedStamps(puzzle_c & puz, unsigned int shapeId) {
+  std::vector<unsigned int> trays;
+  if (shapeId >= puz.getNumberOfShapes() || shapeId >= 63)
+    return trays;
+  const voxel_c * piece = puz.getShape(shapeId);
+  if (isStartGoalShape(piece) || isHiddenSlidingShape(piece))
+    return trays;
+  const std::vector<std::pair<int, int>> shape = fromFirst(footprint(piece));
+  const unsigned int id = shapeId + 1;
+  for (unsigned int t = 0; t < puz.getNumberOfShapes(); t++) {
+    voxel_c * tray = puz.getShape(t);
+    if (!isStartGoalShape(tray))
+      continue;
+    bool dropped = false;
+    for (int goal = 0; goal < 2; goal++) {
+      std::vector<std::pair<int, int>> cells;
+      for (unsigned int y = 0; y < tray->getY(); y++)
+        for (unsigned int x = 0; x < tray->getX(); x++)
+          if (stampOf(tray, (unsigned)tray->getIndex(x, y, 0), goal != 0) == id)
+            cells.push_back({(int)x, (int)y});
+      if (!cells.empty() && fromFirst(cells) != shape)
+        dropped = clearStamp(tray, shapeId, goal != 0) || dropped;
+    }
+    if (dropped)
+      trays.push_back(t);
+  }
+  return trays;
+}
+
+bool stampIsAt(const voxel_c * tray, const voxel_c * piece, unsigned int shapeId,
+               int x, int y, bool goal) {
+  if (!tray || !piece)
+    return false;
+  const unsigned int id = shapeId + 1;
+  std::vector<std::pair<int, int>> now;
+  for (unsigned int ty = 0; ty < tray->getY(); ty++)
+    for (unsigned int tx = 0; tx < tray->getX(); tx++)
+      if (stampOf(tray, (unsigned)tray->getIndex(tx, ty, 0), goal) == id)
+        now.push_back({(int)tx, (int)ty});
+  std::vector<std::pair<int, int>> there = stampCells(piece, x, y);
+  std::sort(now.begin(), now.end());
+  std::sort(there.begin(), there.end());
+  return !now.empty() && now == there;
+}
+
+bool clearStamp(voxel_c * tray, unsigned int shapeId, bool goal) {
+  if (!tray)
+    return false;
+  const unsigned int id = shapeId + 1;
+  bool had = false;
+  for (unsigned int i = 0; i < tray->getXYZ(); i++)
+    if (stampOf(tray, i, goal) == id) {
+      had = true;
+      if (goal)
+        tray->setGoalPiece(i, 0);
+      else
+        tray->setColor(i, 0);
+    }
+  return had;
+}
+
+unsigned int stampAt(const voxel_c * tray, int x, int y, bool goal) {
+  if (!tray || x < 0 || y < 0 || x >= (int)tray->getX() || y >= (int)tray->getY())
+    return (unsigned int)-1;
+  const unsigned int id = stampOf(tray, (unsigned)tray->getIndex(x, y, 0), goal);
+  return id == 0 ? (unsigned int)-1 : id - 1;
+}
+
+std::string startGoalError(const puzzle_c & puz, unsigned int trayShape) {
+  if (trayShape >= puz.getNumberOfShapes() || !isStartGoalShape(puz.getShape(trayShape)))
+    return "Choose a start/goal shape.";
+  const voxel_c * tray = puz.getShape(trayShape);
+  bool both = false;
+  for (unsigned int s = 0; s < puz.getNumberOfShapes() && s < 63; s++) {
+    const voxel_c * piece = puz.getShape(s);
+    if (isStartGoalShape(piece) || isHiddenSlidingShape(piece))
+      continue;
+    const unsigned int id = s + 1;
+    std::vector<std::pair<int, int>> starts, goals;
+    for (unsigned int y = 0; y < tray->getY(); y++)
+      for (unsigned int x = 0; x < tray->getX(); x++) {
+        const unsigned int i = (unsigned)tray->getIndex(x, y, 0);
+        if (tray->getColor(i) == id)
+          starts.push_back({(int)x, (int)y});
+        if (tray->getGoalPiece(i) == id)
+          goals.push_back({(int)x, (int)y});
+      }
+    const std::vector<std::pair<int, int>> shape = fromFirst(footprint(piece));
+    const std::string name = "S" + std::to_string(id);
+    if (!starts.empty() && fromFirst(starts) != shape)
+      return "The start of " + name + " is not the whole piece. Place it again.";
+    if (!goals.empty() && fromFirst(goals) != shape)
+      return "The goal of " + name + " is not the whole piece. Place it again.";
+    if (!goals.empty() && starts.empty())
+      return name + " has a goal but no start.";
+    if (!starts.empty() && !goals.empty())
+      both = true;
+  }
+  if (!both)
+    return "Place at least one piece at its Start, and the same piece at its Goal.";
+  return std::string();
 }
 
 static void paintPieceLock(voxel_c * piece, unsigned int color) {
@@ -1330,36 +1558,93 @@ private:
   key_t emptyKeyParent = 0;
 };
 
-/* Memory one arrangement takes in tableSearch, in key sizes: two keys in
+/* Memory one arrangement takes in queueSearch, in key sizes: two keys in
  * parentMap_c at a load between 35% and 70%, its share of the queue, and
  * while the table doubles the old and the new table together. Measured at
  * 51 bytes at peak with 8-byte keys on the 4x4 benchmark in
  * test_sliding.cpp; 7 keys leaves some room. */
 const unsigned long TABLE_STATE_KEYS = 7;
 
-/* The slide search over position tables. An arrangement is one position
- * number per piece packed into a key_t (64 bits, or 128 for trays that need
- * more), and a move is a flood fill over the
- * piece's own positions against a bitmask of the cells the others cover.
- * It visits arrangements in the same order as legacySearch, so both find
- * the same path. False, having searched nothing, when the tables cannot
- * hold this search. */
-template <class key_t>
-bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
-                 const std::vector<cell3List_t> & outlines, bool nested,
-                 const SlideState & initial, const goalCheck_c & goals,
-                 slideSearch_c & search, std::vector<SlideState> & path) {
-  size_t words = 0;
-  std::vector<posTable_c> t;
-  if (!buildTables(tray, cells, outlines, nested, initial, goals, 8 * sizeof(key_t), words, t))
-    return false;
+/* Memory one arrangement held in memory takes in levelSearch, in key sizes:
+ * its place in a level, and its share of the sorted pieces and the merges
+ * that make the next level. Older levels go to disk. */
+const unsigned long LEVEL_STATE_KEYS = 3;
 
-  const unsigned int n = (unsigned int)initial.places.size();
-  const unsigned long maxStates = search.maxStates;
-  auto posOf = [&t](key_t key, unsigned int i) {
+/* The arrangements of one slide search over position tables. An arrangement
+ * is one position number per piece packed into a key_t (64 bits, or 128 for
+ * trays that need more). Read only once built, so every thread of a search
+ * shares one. */
+template <class key_t>
+struct slideSpace_c {
+  std::vector<posTable_c> t;
+  size_t words = 0;
+  unsigned int n = 0;
+  bool nested = false;
+  int trayW = 0;
+  int trayH = 0;
+  SlideState initial;
+  /* Groups of pieces that are copies of one another (see build). */
+  std::vector<std::vector<unsigned int>> copies;
+  key_t startKey = 0;
+  key_t startCanon = 0;
+
+  /* False, when the tables cannot hold this search. */
+  bool build(const voxel_c & tray, const std::vector<cell3List_t> & cells,
+             const std::vector<cell3List_t> & outlines, bool nest,
+             const SlideState & init, const goalCheck_c & goals) {
+    if (!buildTables(tray, cells, outlines, nest, init, goals, 8 * sizeof(key_t), words, t))
+      return false;
+    n = (unsigned int)init.places.size();
+    nested = nest;
+    initial = init;
+    trayW = (int)tray.getX();
+    trayH = (int)tray.getY();
+
+    startKey = 0;
+    for (unsigned int i = 0; i < n; i++)
+      startKey |= (key_t)t[i].at(init.places[i].x, init.places[i].y) << t[i].shift;
+
+    /* Pieces that are copies of one another -- same cells, same layer, same
+     * goal -- can swap places without changing the puzzle. Each such group is
+     * kept with its positions in rising order, so the arrangements that differ
+     * only by which copy sits where are searched as one.
+     * BURRTOOLS_NO_SLIDE_SYMMETRY=1 turns this off, for A/B runs. */
+    copies.clear();
+    if (!std::getenv("BURRTOOLS_NO_SLIDE_SYMMETRY")) {
+      auto sameCells = [](const cell3List_t & a, const cell3List_t & b) {
+        return a.size() == b.size() &&
+               std::equal(a.begin(), a.end(), b.begin(), [](const cell3_c & p, const cell3_c & q) {
+                 return p.x == q.x && p.y == q.y && p.z == q.z;
+               });
+      };
+      std::vector<std::vector<unsigned int>> groups;
+      for (unsigned int i = 0; i < n; i++) {
+        bool placed = false;
+        for (auto & g : groups) {
+          const unsigned int j = g[0];
+          if (init.places[i].z == init.places[j].z && sameCells(cells[i], cells[j]) &&
+              t[i].px == t[j].px && t[i].py == t[j].py && t[i].atGoal == t[j].atGoal) {
+            g.push_back(i);
+            placed = true;
+            break;
+          }
+        }
+        if (!placed)
+          groups.push_back({i});
+      }
+      for (auto & g : groups)
+        if (g.size() > 1)
+          copies.push_back(std::move(g));
+    }
+    startCanon = canon(startKey);
+    return true;
+  }
+
+  int posOf(key_t key, unsigned int i) const {
     return (int)((key >> t[i].shift) & t[i].bits);
-  };
-  auto decode = [&](key_t key) {
+  }
+
+  SlideState decode(key_t key) const {
     SlideState st = initial;
     for (unsigned int i = 0; i < n; i++) {
       int p = posOf(key, i);
@@ -1367,51 +1652,11 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
       st.places[i].y = t[i].py[(size_t)p];
     }
     return st;
-  };
-  auto overlaps = [words](const uint64_t * a, const std::vector<uint64_t> & b) {
-    for (size_t w = 0; w < words; w++)
-      if (a[w] & b[w])
-        return true;
-    return false;
-  };
-
-  key_t startKey = 0;
-  for (unsigned int i = 0; i < n; i++)
-    startKey |= (key_t)t[i].at(initial.places[i].x, initial.places[i].y) << t[i].shift;
-
-  /* Pieces that are copies of one another -- same cells, same layer, same
-   * goal -- can swap places without changing the puzzle. Each such group is
-   * kept with its positions in rising order, so the arrangements that differ
-   * only by which copy sits where are searched as one.
-   * BURRTOOLS_NO_SLIDE_SYMMETRY=1 turns this off, for A/B runs. */
-  std::vector<std::vector<unsigned int>> copies;
-  if (!std::getenv("BURRTOOLS_NO_SLIDE_SYMMETRY")) {
-    auto sameCells = [](const cell3List_t & a, const cell3List_t & b) {
-      return a.size() == b.size() &&
-             std::equal(a.begin(), a.end(), b.begin(), [](const cell3_c & p, const cell3_c & q) {
-               return p.x == q.x && p.y == q.y && p.z == q.z;
-             });
-    };
-    std::vector<std::vector<unsigned int>> groups;
-    for (unsigned int i = 0; i < n; i++) {
-      bool placed = false;
-      for (auto & g : groups) {
-        const unsigned int j = g[0];
-        if (initial.places[i].z == initial.places[j].z && sameCells(cells[i], cells[j]) &&
-            t[i].px == t[j].px && t[i].py == t[j].py && t[i].atGoal == t[j].atGoal) {
-          g.push_back(i);
-          placed = true;
-          break;
-        }
-      }
-      if (!placed)
-        groups.push_back({i});
-    }
-    for (auto & g : groups)
-      if (g.size() > 1)
-        copies.push_back(std::move(g));
   }
-  auto canon = [&](key_t key) {
+
+  /* The arrangement standing for key and every one that differs from it
+   * only by which copy sits where. */
+  key_t canon(key_t key) const {
     for (const std::vector<unsigned int> & g : copies) {
       /* A move changes one position, so this is nearly sorted already. */
       for (size_t a = 1; a < g.size(); a++)
@@ -1427,63 +1672,42 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
         }
     }
     return key;
-  };
-  const key_t startCanon = canon(startKey);
+  }
 
-  const unsigned long memoryLimit = search.maxMemoryStates
-      ? search.maxMemoryStates
-      : memoryStates(TABLE_STATE_KEYS * sizeof(key_t), search.highMemory);
-  search.memoryStates = memoryLimit;
+  bool isGoal(key_t key) const {
+    for (unsigned int i = 0; i < n; i++)
+      if (!t[i].atGoal[(size_t)posOf(key, i)])
+        return false;
+    return true;
+  }
+};
 
-  /* Each arrangement and the one it was reached from; the start is its own. */
-  parentMap_c<key_t> parent;
-  parent.emplace(startCanon, startCanon);
-  std::queue<key_t> q;
-  q.push(startCanon);
+/* The moves out of an arrangement. Holds the scratch space for working them
+ * out, so each thread has one of its own. */
+template <class key_t>
+class slideMover_c {
+public:
+  explicit slideMover_c(const slideSpace_c<key_t> & space)
+      : s(space), occupied(space.words), others(space.words), pos(space.n), seen(space.n),
+        shiftSeen(space.nested ? (size_t)(2 * space.trayW + 1) * (2 * space.trayH + 1) : 0, 0) {
+    for (unsigned int i = 0; i < s.n; i++)
+      seen[i].assign(s.t[i].px.size(), 0);
+  }
 
-  unsigned long visited = 0;
-  key_t goalKey = 0;
-  bool found = false;
-
-  /* A new arrangement: remember it and queue it. True when it is the goal. */
-  auto reach = [&](key_t key, key_t from) {
-    if (!parent.emplace(key, from))
-      return false;
-    bool goal = true;
-    for (unsigned int i = 0; i < n && goal; i++)
-      goal = t[i].atGoal[(size_t)posOf(key, i)] != 0;
-    if (goal) {
-      goalKey = key;
-      return true;
-    }
-    q.push(key);
-    return false;
-  };
-
-  std::vector<uint64_t> occupied(words);
-  std::vector<uint64_t> others(words);
-  std::vector<int> pos(n);
-  /* Positions this flood fill has reached: seen[i][p] == epoch. */
-  std::vector<std::vector<unsigned int>> seen(n);
-  for (unsigned int i = 0; i < n; i++)
-    seen[i].assign(t[i].px.size(), 0);
-  unsigned int epoch = 0;
-  std::vector<int> fill;
-  /* The same for the shifts of a nested group, (dx, dy) from -tray to +tray. */
-  const int trayW = (int)tray.getX();
-  const int trayH = (int)tray.getY();
-  std::vector<unsigned int> shiftSeen(nested ? (size_t)(2 * trayW + 1) * (2 * trayH + 1) : 0, 0);
-  unsigned int shiftEpoch = 0;
-  std::vector<std::pair<int, int>> shiftQueue;
-
-  /* Calls emit with every arrangement one move from cur, until emit returns
-   * true; then it returns true itself. Same order as legacySearch: each
-   * piece alone, then with what is nested in it; positions in the order a
-   * breadth-first fill finds them. */
-  auto expand = [&](const key_t cur, auto && emit) {
+  /* Calls emit(next, group) with every arrangement one move from cur, until
+   * emit returns true; then it returns true itself. group says the move
+   * carried pieces nested in the mover; while emit runs, undoable(next) says
+   * whether that same group can move back. Each piece alone, then with what
+   * is nested in it; positions in the order a breadth-first fill finds
+   * them, which is the order of legacySearch. */
+  template <class F>
+  bool expand(const key_t cur, F && emit) {
+    const std::vector<posTable_c> & t = s.t;
+    const size_t words = s.words;
+    const unsigned int n = s.n;
     std::fill(occupied.begin(), occupied.end(), 0);
     for (unsigned int i = 0; i < n; i++) {
-      pos[i] = posOf(cur, i);
+      pos[i] = s.posOf(cur, i);
       const uint64_t * m = &t[i].mask[(size_t)pos[i] * words];
       for (size_t w = 0; w < words; w++)
         occupied[w] |= m[w];
@@ -1507,40 +1731,23 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
         for (int d = 0; d < 4; d++) {
           int nb = tp.next[(size_t)fill[head]][d];
           if (nb < 0 || seen[pi][(size_t)nb] == epoch ||
-              overlaps(&tp.mask[(size_t)nb * words], others))
+              overlaps(&tp.mask[(size_t)nb * words], others.data(), words))
             continue;
           seen[pi][(size_t)nb] = epoch;
           fill.push_back(nb);
-          if (emit(clear | ((key_t)nb << tp.shift)))
+          if (emit(clear | ((key_t)nb << tp.shift), false))
             return true;
         }
 
-      if (!nested)
+      if (!s.nested)
         continue;
-      /* pi and everything nested inside it (see nestedGroup): a piece is
-       * nested in a member when its cells all lie in that member's outline. */
       unsigned int group[64];
       unsigned int members = 0;
-      uint64_t inGroup = uint64_t(1) << pi;
-      group[members++] = pi;
-      for (unsigned int k = 0; k < members; k++) {
-        const unsigned int a = group[k];
-        const uint64_t * outer = &t[a].outline[(size_t)pos[a] * words];
-        for (unsigned int b = 0; b < n; b++) {
-          if ((inGroup >> b) & 1)
-            continue;
-          const uint64_t * inner = &t[b].mask[(size_t)pos[b] * words];
-          bool all = true;
-          for (size_t w = 0; w < words && all; w++)
-            all = (inner[w] & ~outer[w]) == 0;
-          if (all) {
-            group[members++] = b;
-            inGroup |= uint64_t(1) << b;
-          }
-        }
-      }
+      const uint64_t inGroup = groupAt(pos.data(), pi, group, members);
       if (members < 2)
         continue;
+      lastOuter = pi;
+      lastGroup = inGroup;
       others = occupied;
       for (unsigned int g = 0; g < members; g++) {
         const unsigned int m = group[g];
@@ -1554,7 +1761,7 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
         for (unsigned int g = 0; g < members; g++) {
           const unsigned int m = group[g];
           int p = t[m].at(t[m].px[(size_t)pos[m]] + dx, t[m].py[(size_t)pos[m]] + dy);
-          if (p < 0 || overlaps(&t[m].mask[(size_t)p * words], others))
+          if (p < 0 || overlaps(&t[m].mask[(size_t)p * words], others.data(), words))
             return false;
           key = (key & ~((key_t)t[m].bits << t[m].shift)) | ((key_t)p << t[m].shift);
         }
@@ -1565,6 +1772,8 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
         std::fill(shiftSeen.begin(), shiftSeen.end(), 0);
         shiftEpoch = 1;
       }
+      const int trayW = s.trayW;
+      const int trayH = s.trayH;
       auto seenAt = [&](int dx, int dy) -> unsigned int & {
         return shiftSeen[(size_t)((dy + trayH) * (2 * trayW + 1) + (dx + trayW))];
       };
@@ -1582,11 +1791,136 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
             continue;
           seenAt(nb.first, nb.second) = shiftEpoch;
           shiftQueue.push_back(nb);
-          if (emit(key))
+          if (emit(key, true))
             return true;
         }
       }
     }
+    return false;
+  }
+
+  /* For the group move expand is reporting: whether the same pieces are
+   * nested in the mover at next, so that the move can be made backwards. A
+   * group can close round a piece it passes, and then would take it along. */
+  bool undoable(key_t next) {
+    for (unsigned int i = 0; i < s.n; i++)
+      backPos[i] = s.posOf(next, i);
+    unsigned int group[64];
+    unsigned int members = 0;
+    return groupAt(backPos, lastOuter, group, members) == lastGroup;
+  }
+
+private:
+  static bool overlaps(const uint64_t * a, const uint64_t * b, size_t words) {
+    for (size_t w = 0; w < words; w++)
+      if (a[w] & b[w])
+        return true;
+    return false;
+  }
+
+  /* outer and everything nested inside it (see nestedGroup) with the pieces
+   * at at[]: a piece is nested in a member when its cells all lie in that
+   * member's outline. Into group, and as a bit set. */
+  uint64_t groupAt(const int * at, unsigned int outer, unsigned int * group,
+                   unsigned int & members) const {
+    const std::vector<posTable_c> & t = s.t;
+    members = 0;
+    uint64_t inGroup = uint64_t(1) << outer;
+    group[members++] = outer;
+    for (unsigned int k = 0; k < members; k++) {
+      const unsigned int a = group[k];
+      const uint64_t * out = &t[a].outline[(size_t)at[a] * s.words];
+      for (unsigned int b = 0; b < s.n; b++) {
+        if ((inGroup >> b) & 1)
+          continue;
+        const uint64_t * inner = &t[b].mask[(size_t)at[b] * s.words];
+        bool all = true;
+        for (size_t w = 0; w < s.words && all; w++)
+          all = (inner[w] & ~out[w]) == 0;
+        if (all) {
+          group[members++] = b;
+          inGroup |= uint64_t(1) << b;
+        }
+      }
+    }
+    return inGroup;
+  }
+
+  const slideSpace_c<key_t> & s;
+  std::vector<uint64_t> occupied;
+  std::vector<uint64_t> others;
+  std::vector<int> pos;
+  int backPos[64] = {};
+  /* Positions this flood fill has reached: seen[i][p] == epoch. */
+  std::vector<std::vector<unsigned int>> seen;
+  unsigned int epoch = 0;
+  std::vector<int> fill;
+  /* The same for the shifts of a nested group, (dx, dy) from -tray to +tray. */
+  std::vector<unsigned int> shiftSeen;
+  unsigned int shiftEpoch = 0;
+  std::vector<std::pair<int, int>> shiftQueue;
+  /* The group move being reported. */
+  unsigned int lastOuter = 0;
+  uint64_t lastGroup = 0;
+};
+
+/* The path for chain, the arrangements from start to goal as the search
+ * kept them. Where copies were swapped about, each step is the move from
+ * the arrangement at hand that gives the next one kept, so every piece
+ * keeps its own identity along the path. */
+template <class key_t>
+void chainToPath(const slideSpace_c<key_t> & s, const std::vector<key_t> & chain,
+                 std::vector<SlideState> & path) {
+  slideMover_c<key_t> mover(s);
+  key_t real = s.startKey;
+  path.push_back(s.decode(real));
+  for (size_t i = 1; i < chain.size(); i++) {
+    key_t next = chain[i];
+    if (!s.copies.empty()) {
+      bt_assert2(mover.expand(real, [&](key_t key, bool) {
+        if (s.canon(key) != chain[i])
+          return false;
+        next = key;
+        return true;
+      }));
+    }
+    real = next;
+    path.push_back(s.decode(real));
+  }
+}
+
+/* The slide search for a limited number of arrangements: breadth first
+ * through a queue, every arrangement kept with the one it was reached
+ * from. It visits arrangements in the same order as legacySearch, so both
+ * find the same path. */
+template <class key_t>
+void queueSearch(const slideSpace_c<key_t> & s, slideSearch_c & search, std::vector<key_t> & chain) {
+  const unsigned long maxStates = search.maxStates;
+  const unsigned long memoryLimit = search.maxMemoryStates
+      ? search.maxMemoryStates
+      : memoryStates(TABLE_STATE_KEYS * sizeof(key_t), search.highMemory);
+  search.memoryStates = memoryLimit;
+  slideMover_c<key_t> mover(s);
+
+  /* Each arrangement and the one it was reached from; the start is its own. */
+  parentMap_c<key_t> parent;
+  parent.emplace(s.startCanon, s.startCanon);
+  std::queue<key_t> q;
+  q.push(s.startCanon);
+
+  unsigned long visited = 0;
+  key_t goalKey = 0;
+  bool found = false;
+
+  /* A new arrangement: remember it and queue it. True when it is the goal. */
+  auto reach = [&](key_t key, key_t from) {
+    if (!parent.emplace(key, from))
+      return false;
+    if (s.isGoal(key)) {
+      goalKey = key;
+      return true;
+    }
+    q.push(key);
     return false;
   };
 
@@ -1610,38 +1944,618 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
     const key_t cur = q.front();
     q.pop();
     visited++;
-    found = expand(cur, [&](key_t key) { return reach(canon(key), cur); });
+    found = mover.expand(cur, [&](key_t key, bool) { return reach(s.canon(key), cur); });
   }
 
   search.visited = visited;
   if (!found)
-    return true;
-
-  /* The arrangements from goal back to start, as the search kept them. */
-  std::vector<key_t> chain;
+    return;
   for (key_t k = goalKey; ; k = parent.parentOf(k)) {
     chain.push_back(k);
-    if (k == startCanon)
+    if (k == s.startCanon)
       break;
   }
-  /* Forward again from the real start. Where copies were swapped about,
-   * each step is the move from the arrangement at hand that gives the next
-   * one kept, so every piece keeps its own identity along the path. */
-  key_t real = startKey;
-  path.push_back(decode(real));
-  for (size_t s = chain.size() - 1; s-- > 0;) {
-    key_t next = chain[s];
-    if (!copies.empty()) {
-      bt_assert2(expand(real, [&](key_t key) {
-        if (canon(key) != chain[s])
-          return false;
-        next = key;
-        return true;
-      }));
+  std::reverse(chain.begin(), chain.end());
+}
+
+/* Drop from sorted, unique a every key that is in sorted b. Each key of a is
+ * looked for from where the last was found, in doubling steps. */
+template <class key_t>
+void subtractSorted(std::vector<key_t> & a, const std::vector<key_t> & b) {
+  if (b.empty() || a.empty())
+    return;
+  size_t w = 0;
+  auto j = b.begin();
+  for (size_t i = 0; i < a.size(); i++) {
+    const key_t x = a[i];
+    auto hi = j;
+    size_t step = 1;
+    while (hi != b.end() && *hi < x) {
+      j = hi;
+      hi += (std::ptrdiff_t)std::min<size_t>(step, (size_t)(b.end() - hi));
+      step *= 2;
     }
-    real = next;
-    path.push_back(decode(real));
+    j = std::lower_bound(j, hi, x);
+    if (j != b.end() && *j == x)
+      continue;
+    a[w++] = x;
   }
+  a.resize(w);
+}
+
+/* Runs f(t) on threads 0..n-1 and waits for all of them. */
+template <class F>
+void onThreads(unsigned int n, F f) {
+  if (n <= 1) {
+    f(0u);
+    return;
+  }
+  std::vector<std::thread> pool;
+  for (unsigned int i = 0; i < n; i++)
+    pool.emplace_back(f, i);
+  for (auto & th : pool)
+    th.join();
+}
+
+/* Sorted, unique runs merged into out, sorted and unique, and the runs
+ * freed. Each of threads threads merges a range of keys, cut where a sample
+ * of the runs says. out keeps its memory from one call to the next. */
+template <class key_t>
+void mergeRuns(std::vector<std::vector<key_t>> & runs, std::vector<key_t> & out,
+               unsigned int threads) {
+  size_t total = 0;
+  for (const std::vector<key_t> & r : runs)
+    total += r.size();
+  out.clear();
+  if (total == 0) {
+    runs.clear();
+    return;
+  }
+  std::vector<key_t> sample;
+  for (const std::vector<key_t> & r : runs)
+    for (size_t i = 0; i < r.size(); i += std::max<size_t>(1, r.size() / 64))
+      sample.push_back(r[i]);
+  std::sort(sample.begin(), sample.end());
+  const unsigned int parts = (unsigned int)std::max<size_t>(1, std::min<size_t>(threads, sample.size()));
+  std::vector<key_t> cut(parts - 1);
+  for (unsigned int p = 1; p < parts; p++)
+    cut[p - 1] = sample[sample.size() * p / parts];
+
+  /* Where each part's keys lie in each run, and where in out it may write:
+   * as many places as it has keys, before duplicates go. */
+  std::vector<std::vector<std::pair<size_t, size_t>>> span(parts,
+      std::vector<std::pair<size_t, size_t>>(runs.size()));
+  std::vector<size_t> start(parts + 1, 0);
+  for (unsigned int p = 0; p < parts; p++) {
+    start[p + 1] = start[p];
+    for (size_t r = 0; r < runs.size(); r++) {
+      const std::vector<key_t> & run = runs[r];
+      const size_t lo = p == 0 ? 0 : (size_t)(std::lower_bound(run.begin(), run.end(), cut[p - 1]) - run.begin());
+      const size_t hi = p + 1 == parts ? run.size()
+                                       : (size_t)(std::lower_bound(run.begin(), run.end(), cut[p]) - run.begin());
+      span[p][r] = {lo, hi};
+      start[p + 1] += hi - lo;
+    }
+  }
+  out.resize(total);
+  std::vector<size_t> written(parts, 0);
+  onThreads(parts, [&](unsigned int p) {
+    using item_t = std::pair<key_t, size_t>;
+    std::priority_queue<item_t, std::vector<item_t>, std::greater<item_t>> heap;
+    std::vector<size_t> at(runs.size());
+    for (size_t r = 0; r < runs.size(); r++) {
+      at[r] = span[p][r].first;
+      if (at[r] < span[p][r].second)
+        heap.push({runs[r][at[r]], r});
+    }
+    key_t * o = out.data() + start[p];
+    size_t w = 0;
+    while (!heap.empty()) {
+      const item_t top = heap.top();
+      heap.pop();
+      if (w == 0 || o[w - 1] != top.first)
+        o[w++] = top.first;
+      const size_t r = top.second;
+      if (++at[r] < span[p][r].second)
+        heap.push({runs[r][at[r]], r});
+    }
+    written[p] = w;
+  });
+  size_t w = written[0];
+  for (unsigned int p = 1; p < parts; p++) {
+    std::memmove(out.data() + w, out.data() + start[p], written[p] * sizeof(key_t));
+    w += written[p];
+  }
+  out.resize(w);
+  runs.clear();
+}
+
+/* Give memory freed by a search level back to the system: the allocator
+ * keeps large blocks for reuse otherwise, and a level is large. */
+void releaseFreeMemory(void) {
+#if defined(__APPLE__)
+  malloc_zone_pressure_relief(nullptr, 0);
+#elif defined(__GLIBC__)
+  malloc_trim(0);
+#endif
+}
+
+/* A folder of its own for one search's files, removed with everything in
+ * it when the search is done. Empty when there is nowhere to put one. */
+class searchFolder_c {
+public:
+  explicit searchFolder_c(const std::string & workDir) {
+    std::filesystem::path base;
+    if (!workDir.empty())
+      base = workDir;
+    else if (const char * e = std::getenv("BURRTOOLS_SLIDE_DIR"))
+      base = e;
+    else {
+      const std::string cache = userCacheDirectory();
+      if (cache.empty())
+        return;
+      base = std::filesystem::path(cache) / "sliding";
+    }
+    std::random_device rd;
+    const uint64_t r = ((uint64_t)rd() << 32) ^ rd() ^
+                       (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
+    char name[32];
+    snprintf(name, sizeof(name), "search-%016llx", (unsigned long long)r);
+    std::error_code ec;
+    std::filesystem::create_directories(base / name, ec);
+    if (!ec)
+      dir = base / name;
+  }
+  ~searchFolder_c(void) {
+    if (!dir.empty()) {
+      std::error_code ec;
+      std::filesystem::remove_all(dir, ec);
+    }
+  }
+  searchFolder_c(const searchFolder_c &) = delete;
+  searchFolder_c & operator=(const searchFolder_c &) = delete;
+
+  std::filesystem::path dir;
+};
+
+/* The full slide search: breadth first, one level at a time, a level being
+ * every arrangement a given number of moves from the start.
+ *
+ *  - Only the level being expanded and the one before stay in memory, as
+ *    sorted arrays. Older levels go to files, delta coded (slidelevels.h),
+ *    so the search is limited by the disk rather than by memory. A level is
+ *    written while the next one is expanded.
+ *  - A move that one piece makes can always be made backwards, and so can a
+ *    nested group's unless the group closes round a piece on its way. An
+ *    arrangement reached by a move that can be made backwards is new unless
+ *    it is in this level or the one before: had it been reached earlier,
+ *    the arrangement it came from would have been reached by now too. So
+ *    only the arrangements reached by the other moves are looked for in the
+ *    levels on disk, kept merged into a few sorted sets.
+ *  - Each level is expanded by every core at once.
+ *  - The path is traced back level by level: an arrangement one move before
+ *    is in the level before, found by moving backwards from it or, failing
+ *    that, by trying every arrangement of that level.
+ *
+ * It finds a path with the fewest moves, as queueSearch does, though not
+ * always the same one. */
+template <class key_t>
+void levelSearch(const slideSpace_c<key_t> & s, slideSearch_c & search, std::vector<key_t> & chain) {
+  using set_t = levels::keySet_c<key_t>;
+  using setPtr_t = std::shared_ptr<set_t>;
+  using vec_t = std::vector<key_t>;
+  const unsigned int threads = std::max(1u, search.threads ? search.threads : solveThreadBudget());
+  const unsigned long memoryLimit = search.maxMemoryStates
+      ? search.maxMemoryStates
+      : memoryStates(LEVEL_STATE_KEYS * sizeof(key_t), search.highMemory);
+  search.memoryStates = memoryLimit;
+  search.depth = 0;
+  search.diskBytes = 0;
+  search.oneWayRepeats = 0;
+
+  searchFolder_c folder(search.workDir);
+  unsigned long long diskBudget = search.diskBudget;
+  if (!diskBudget)
+    if (const char * e = std::getenv("BURRTOOLS_SLIDE_DISK_GB"))
+      diskBudget = (unsigned long long)(std::atof(e) * 1e9);
+  if (!diskBudget && !folder.dir.empty()) {
+    /* All the disk but a margin for everything else. */
+    std::error_code ec;
+    const std::filesystem::space_info space = std::filesystem::space(folder.dir, ec);
+    if (!ec) {
+      const unsigned long long margin =
+          std::max<unsigned long long>(2000000000ull, space.capacity / 20);
+      diskBudget = space.available > margin ? space.available - margin : 1;
+    }
+  }
+  unsigned int fileNumber = 0;
+  /* A new key set, in the folder when there is one, else in memory. */
+  auto newSet = [&]() {
+    auto set = std::make_shared<set_t>();
+    std::filesystem::path p;
+    if (!folder.dir.empty()) {
+      char name[32];
+      snprintf(name, sizeof(name), "%06u.keys", fileNumber++);
+      p = folder.dir / name;
+    }
+    return set->create(p) ? set : nullptr;
+  };
+
+  /* Every level that has left memory, stored[k] for level k, for tracing
+   * the path back; and with nested slides, the same levels merged into a
+   * few sets, largest first, to look in. */
+  std::vector<setPtr_t> stored;
+  std::vector<setPtr_t> visitedSets;
+  /* Bytes on disk, and in memory, the stored levels take. */
+  auto storedBytes = [&]() {
+    unsigned long long disk = 0;
+    unsigned long long memory = 0;
+    std::vector<const set_t *> seen;
+    for (const auto * list : {&stored, &visitedSets})
+      for (const setPtr_t & v : *list) {
+        if (std::find(seen.begin(), seen.end(), v.get()) != seen.end())
+          continue;
+        seen.push_back(v.get());
+        memory += v->indexBytes();
+        if (folder.dir.empty())
+          memory += v->bytes();
+        else
+          disk += v->bytes();
+      }
+    return std::make_pair(disk, memory);
+  };
+  auto ioFailed = [&]() {
+    search.outcome = SLIDE_DISK;
+    search.error = folder.dir.empty()
+        ? std::string("The search could not keep its levels.")
+        : "Could not write the search's files in " + folder.dir.string() + ". The disk may be full.";
+  };
+  /* Store a level that leaves memory. */
+  auto saveLevel = [&](const vec_t & level) {
+    setPtr_t set = newSet();
+    if (!set || !set->addAll(level.begin(), level.end()) || !set->finish())
+      return false;
+    stored.push_back(set);
+    if (s.nested) {
+      visitedSets.push_back(set);
+      /* Merge the newest sets while one is no more than twice the size of
+       * the one after it, so there are only a few to look in. */
+      while (visitedSets.size() >= 2 &&
+             visitedSets[visitedSets.size() - 2]->size() <= 2 * visitedSets.back()->size()) {
+        setPtr_t a = visitedSets[visitedSets.size() - 2];
+        setPtr_t b = visitedSets.back();
+        visitedSets.resize(visitedSets.size() - 2);
+        setPtr_t m = newSet();
+        if (!m)
+          return false;
+        typename set_t::cursor_c ca(*a);
+        typename set_t::cursor_c cb(*b);
+        key_t ka = 0;
+        key_t kb = 0;
+        bool ha = ca.next(ka);
+        bool hb = cb.next(kb);
+        bool ok = true;
+        while (ok && (ha || hb)) {
+          if (!hb || (ha && ka < kb)) {
+            ok = m->add(ka);
+            ha = ca.next(ka);
+          } else if (!ha || kb < ka) {
+            ok = m->add(kb);
+            hb = cb.next(kb);
+          } else {
+            ok = m->add(ka);
+            ha = ca.next(ka);
+            hb = cb.next(kb);
+          }
+        }
+        if (!ok || ca.failed() || cb.failed() || !m->finish())
+          return false;
+        visitedSets.push_back(m);
+      }
+    }
+    set.reset();
+    /* A level only kept for tracing the path needs no index till then. */
+    for (const setPtr_t & st : stored)
+      if (st.use_count() == 1)
+        st->release();
+    return true;
+  };
+
+  /* The level before the one being expanded, that one, and room for the
+   * next: three arrays that take turns, so that a level reuses the memory
+   * of the one before last. */
+  vec_t prev;
+  vec_t cur{s.startCanon};
+  vec_t next;
+  unsigned long depth = 0;
+  std::atomic<unsigned long> visited{0};
+  std::vector<std::unique_ptr<slideMover_c<key_t>>> movers;
+  for (unsigned int i = 0; i < threads; i++)
+    movers.push_back(std::make_unique<slideMover_c<key_t>>(s));
+
+  /* Sorted pieces of the next level, from each thread: those reached by
+   * moves that can be made backwards, and the others. */
+  struct work_c {
+    vec_t back, oneWay;
+    std::vector<vec_t> backRuns, oneWayRuns;
+  };
+  const size_t PIECE = 1u << 18;
+  /* Sort a piece, drop what is in this level or the one before. */
+  auto settle = [&](vec_t & piece, std::vector<vec_t> & runs) {
+    if (piece.empty())
+      return;
+    std::sort(piece.begin(), piece.end());
+    piece.erase(std::unique(piece.begin(), piece.end()), piece.end());
+    subtractSorted(piece, cur);
+    subtractSorted(piece, prev);
+    runs.emplace_back(piece.begin(), piece.end());
+    piece.clear();
+  };
+
+  /* BURRTOOLS_SLIDE_TRACE=1 prints each level as it is done, to stderr. */
+  const bool trace = std::getenv("BURRTOOLS_SLIDE_TRACE") != nullptr;
+  const auto started = std::chrono::steady_clock::now();
+
+  bool goalNext = false;
+  while (!cur.empty()) {
+    search.depth = depth;
+    if (search.depthProgress)
+      search.depthProgress->store(depth, std::memory_order_relaxed);
+
+    /* The level before goes to disk while this one is expanded. */
+    bool saved = true;
+    std::thread saver;
+    if (depth > 0)
+      saver = std::thread([&]() { saved = saveLevel(prev); });
+
+    std::vector<work_c> work(threads);
+    std::atomic<size_t> nextIndex{0};
+    std::atomic<bool> hit{false};
+    std::atomic<bool> halt{false};
+    const size_t BATCH = 1024;
+    onThreads(threads, [&](unsigned int th) {
+      work_c & w = work[th];
+      slideMover_c<key_t> & mover = *movers[th];
+      auto emit = [&](key_t raw, bool group) {
+        const key_t k = s.canon(raw);
+        if (s.isGoal(k))
+          return true;
+        if (group && !mover.undoable(raw)) {
+          w.oneWay.push_back(k);
+          if (w.oneWay.size() >= PIECE)
+            settle(w.oneWay, w.oneWayRuns);
+        } else {
+          w.back.push_back(k);
+          if (w.back.size() >= PIECE)
+            settle(w.back, w.backRuns);
+        }
+        return false;
+      };
+      while (!hit.load(std::memory_order_relaxed) && !halt.load(std::memory_order_relaxed)) {
+        const size_t b = nextIndex.fetch_add(BATCH);
+        if (b >= cur.size())
+          break;
+        const size_t e = std::min(b + BATCH, cur.size());
+        for (size_t i = b; i < e; i++)
+          if (mover.expand(cur[i], emit)) {
+            hit.store(true, std::memory_order_relaxed);
+            break;
+          }
+        const unsigned long v = visited.fetch_add(e - b) + (e - b);
+        if (search.progress)
+          search.progress->store(v, std::memory_order_relaxed);
+        if (search.stop && search.stop->load(std::memory_order_relaxed))
+          halt.store(true, std::memory_order_relaxed);
+      }
+      settle(w.back, w.backRuns);
+      settle(w.oneWay, w.oneWayRuns);
+    });
+    search.visited = visited.load();
+    if (saver.joinable())
+      saver.join();
+    if (!saved) {
+      ioFailed();
+      return;
+    }
+    if (hit.load()) {
+      goalNext = true;
+      break;
+    }
+    if (halt.load()) {
+      search.outcome = SLIDE_STOPPED;
+      return;
+    }
+
+    std::vector<vec_t> runs;
+    std::vector<vec_t> oneWayRuns;
+    size_t pieces = 0;
+    for (work_c & w : work) {
+      for (vec_t & r : w.backRuns) {
+        pieces += r.size();
+        runs.push_back(std::move(r));
+      }
+      for (vec_t & r : w.oneWayRuns) {
+        pieces += r.size();
+        oneWayRuns.push_back(std::move(r));
+      }
+    }
+    work.clear();
+    vec_t oneWay;
+    mergeRuns(oneWayRuns, oneWay, threads);
+    const size_t oneWayReached = oneWay.size();
+
+    /* The arrangements reached only by moves that cannot be made backwards
+     * may be anywhere in the levels on disk. */
+    if (!oneWay.empty() && !visitedSets.empty()) {
+      std::vector<char> found(oneWay.size(), 0);
+      std::atomic<bool> readFailed{false};
+      const size_t part = (oneWay.size() + threads - 1) / threads;
+      onThreads(threads, [&](unsigned int th) {
+        const size_t b = std::min(oneWay.size(), th * part);
+        const size_t e = std::min(oneWay.size(), b + part);
+        if (b >= e)
+          return;
+        for (const setPtr_t & v : visitedSets) {
+          typename set_t::reader_c reader(*v);
+          if (!reader.ok() || !v->find(oneWay.data() + b, e - b, found.data() + b, reader))
+            readFailed.store(true);
+        }
+      });
+      if (readFailed.load()) {
+        ioFailed();
+        return;
+      }
+      size_t w = 0;
+      for (size_t i = 0; i < oneWay.size(); i++)
+        if (!found[i])
+          oneWay[w++] = oneWay[i];
+      oneWay.resize(w);
+    }
+    const size_t oneWayNew = oneWay.size();
+    search.oneWayRepeats += oneWayReached - oneWayNew;
+    if (!oneWay.empty())
+      runs.push_back(std::move(oneWay));
+    mergeRuns(runs, next, threads);
+
+    const std::pair<unsigned long long, unsigned long long> bytes = storedBytes();
+    search.diskBytes = std::max(search.diskBytes, bytes.first);
+    if (trace)
+      fprintf(stderr, "level %lu: %zu arrangements (%zu in pieces), one-way %zu, %zu new, %zu sets, "
+              "disk %.1f MB, index %.1f MB, %.1f s\n",
+              depth + 1, next.size(), pieces, oneWayReached, oneWayNew, visitedSets.size(),
+              bytes.first / 1e6, bytes.second / 1e6,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+    if (bytes.first > diskBudget && !folder.dir.empty()) {
+      search.outcome = SLIDE_DISK;
+      search.error = "The search filled the disk space it may use (" +
+                     std::to_string(diskBudget / 1000000000ull) + " GB in " + folder.dir.string() + ").";
+      return;
+    }
+
+    /* Whether the next level fits in memory: this one, the new one, and
+     * the pieces and merge of the one after, which grows as this one did. */
+    const double grows = std::clamp(cur.empty() ? 1.0 : (double)next.size() / (double)cur.size(), 1.0, 4.0);
+    const double piecesEach = next.empty() ? 1.0 : std::max(1.0, (double)pieces / (double)next.size());
+    const double after = (double)next.size() * grows;
+    const double held = (double)cur.size() + (double)next.size() + 2 * piecesEach * after +
+                        (double)bytes.second / sizeof(key_t);
+    if (held * (double)sizeof(key_t) > (double)memoryLimit * (double)(LEVEL_STATE_KEYS * sizeof(key_t))) {
+      search.outcome = SLIDE_MEMORY;
+      return;
+    }
+
+    /* prev <- cur <- next, and the old prev is room for the next level. */
+    prev.swap(cur);
+    cur.swap(next);
+    next.clear();
+    depth++;
+    releaseFreeMemory();
+  }
+  search.depth = depth;
+  if (!goalNext)
+    return;
+
+  /* The goal, and the arrangement of cur it is one move from: the first
+   * there is, so that every run finds the same path. */
+  slideMover_c<key_t> & mover = *movers[0];
+  key_t goalKey = 0;
+  key_t from = 0;
+  for (const key_t c : cur) {
+    if (mover.expand(c, [&](key_t raw, bool) {
+          const key_t k = s.canon(raw);
+          if (!s.isGoal(k))
+            return false;
+          goalKey = k;
+          return true;
+        })) {
+      from = c;
+      break;
+    }
+  }
+  chain.push_back(goalKey);
+  chain.push_back(from);
+
+  /* Back level by level: x is at level k, find one of level k - 1 that
+   * reaches it in one move. */
+  vec_t level;
+  for (unsigned long k = depth; k > 0; k--) {
+    const key_t x = chain.back();
+    const vec_t * before = &prev;
+    if (k - 1 < depth - 1) {
+      if (!stored[k - 1]->load(level)) {
+        chain.clear();
+        ioFailed();
+        return;
+      }
+      before = &level;
+    }
+    bool have = false;
+    key_t y = 0;
+    mover.expand(x, [&](key_t raw, bool group) {
+      if (group && !mover.undoable(raw))
+        return false;
+      const key_t c = s.canon(raw);
+      if (!std::binary_search(before->begin(), before->end(), c))
+        return false;
+      y = c;
+      have = true;
+      return true;
+    });
+    if (!have) {
+      /* x is reached only by moves that cannot be made backwards: try
+       * every arrangement of the level before, keeping the first. */
+      std::atomic<size_t> best{before->size()};
+      std::atomic<size_t> nextIndex{0};
+      onThreads(threads, [&](unsigned int th) {
+        slideMover_c<key_t> & m = *movers[th];
+        for (;;) {
+          const size_t b = nextIndex.fetch_add(1024);
+          if (b >= before->size() || b >= best.load())
+            break;
+          const size_t e = std::min(b + 1024, before->size());
+          for (size_t i = b; i < e && i < best.load(); i++)
+            if (m.expand((*before)[i], [&](key_t raw, bool) { return s.canon(raw) == x; })) {
+              size_t had = best.load();
+              while (i < had && !best.compare_exchange_weak(had, i)) {
+              }
+              break;
+            }
+        }
+      });
+      /* There always is one; without it there is no path to give. */
+      bt_assert(best.load() < before->size());
+      if (best.load() >= before->size()) {
+        chain.clear();
+        return;
+      }
+      y = (*before)[best.load()];
+    }
+    chain.push_back(y);
+  }
+  std::reverse(chain.begin(), chain.end());
+}
+
+/* The slide search over position tables: a move is a flood fill over the
+ * piece's own positions against a bitmask of the cells the others cover. A
+ * full search goes level by level (levelSearch), a limited one through a
+ * queue (queueSearch); BURRTOOLS_SLIDE_QUEUE=1 makes a full search use the
+ * queue too, for A/B runs. False, having searched nothing, when the tables
+ * cannot hold this search. */
+template <class key_t>
+bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
+                 const std::vector<cell3List_t> & outlines, bool nested,
+                 const SlideState & initial, const goalCheck_c & goals,
+                 slideSearch_c & search, std::vector<SlideState> & path) {
+  slideSpace_c<key_t> space;
+  if (!space.build(tray, cells, outlines, nested, initial, goals))
+    return false;
+  std::vector<key_t> chain;
+  if (search.maxStates == FULL_SEARCH && !std::getenv("BURRTOOLS_SLIDE_QUEUE"))
+    levelSearch(space, search, chain);
+  else
+    queueSearch(space, search, chain);
+  if (!chain.empty())
+    chainToPath(space, chain, path);
   return true;
 }
 

@@ -224,6 +224,7 @@ public:
   /* Sliding starts whose search stopped at its limit, not at its end. */
   unsigned int slideStartsCut = 0;
   bool slideMemoryCut = false;
+  std::string slideDiskError;
 
   bool hasBest;
   char bestDotlevel[200];
@@ -276,10 +277,13 @@ public:
         search.nested = nestedSlides;
         search.highMemory = highMemory;
         da = sliding::findSlidePath(*puzzle, *a, search);
-        if (search.outcome == sliding::SLIDE_LIMIT || search.outcome == sliding::SLIDE_MEMORY)
+        if (search.outcome == sliding::SLIDE_LIMIT || search.outcome == sliding::SLIDE_MEMORY ||
+            search.outcome == sliding::SLIDE_DISK)
           slideStartsCut++;
         if (search.outcome == sliding::SLIDE_MEMORY)
           slideMemoryCut = true;
+        if (search.outcome == sliding::SLIDE_DISK)
+          slideDiskError = search.error;
       } else {
         da = d->disassemble(a.get());
       }
@@ -481,7 +485,8 @@ void usage(puzzleKind_e kind = PK_ANY) {
     cout << "            \"BurrTools 2\"        Classic take-apart + dancing-cells assembly (also: bt2)\n";
   } else if (kind == PK_SLIDING) {
     cout << "  -r      reduce the placements before finding the start layouts\n";
-    cout << "  -t n    set number of worker threads for finding start layouts (0 = auto)\n";
+    cout << "  -t n    set number of worker threads for finding start layouts and for the\n";
+    cout << "          Sliding Full Solver (0 = auto)\n";
     cout << "  --nested-slides\n";
     cout << "          a piece may carry the pieces nested inside its outline, such as a\n";
     cout << "          piece in another piece's pocket. Pieces that only touch never move\n";
@@ -489,13 +494,17 @@ void usage(puzzleKind_e kind = PK_ANY) {
     cout << "  --high-memory\n";
     cout << "          let the search hold up to half of this computer's memory in\n";
     cout << "          arrangements, instead of stopping at about 2 GB\n";
-    cout << "  --solver TYPE   (default: Sliding Deep Solver)\n";
+    cout << "  --solver TYPE   (default: Sliding Full Solver)\n";
     cout << "            \"Sliding Fast Solver\"  search up to 250,000 arrangements (also: fast)\n";
     cout << "            \"Sliding Deep Solver\"  search up to 1,000,000 arrangements (also: deep)\n";
     cout << "            \"Sliding Full Solver\"  no limit: finds the fewest moves or proves there is\n";
-    cout << "                                   no solution; stops when the arrangements held\n";
-    cout << "                                   fill about 2 GB, or half of memory\n";
-    cout << "                                   with --high-memory (also: full)\n";
+    cout << "                                   no solution, on every core (-t n to limit);\n";
+    cout << "                                   keeps only the newest moves in memory and the\n";
+    cout << "                                   rest on disk, so free disk space limits it\n";
+    cout << "                                   (also: full)\n";
+    cout << "  The Sliding Full Solver writes to $BURRTOOLS_SLIDE_DIR, or the user's cache\n";
+    cout << "  folder, and deletes its files when done. BURRTOOLS_SLIDE_DISK_GB limits the\n";
+    cout << "  disk it may take (default: all but 2 GB or a twentieth of the disk).\n";
   } else {
     cout << "  The start and goal stacks come from the file. A move is one disc going\n";
     cout << "  from the top of one rod to the top of another. With Panex columns a\n";
@@ -824,9 +833,9 @@ int main(int argv, char* args[]) {
     fprintf(stderr, "burrTxt: -R and -C are for brick puzzles; this is a %s puzzle\n", kindName(kind));
     return 2;
   }
-  /* Sliding defaults to the deep search, as in the GUI. */
-  deepSearch = (kind == PK_SLIDING);
-  fullSearch = false;
+  /* Sliding defaults to the full search, as in the GUI. */
+  deepSearch = false;
+  fullSearch = (kind == PK_SLIDING);
   if (solverName && !pickSolver(kind, solverName))
     return 2;
 
@@ -1154,8 +1163,10 @@ int main(int argv, char* args[]) {
         /* Whether "0 solutions" is proven, or the search gave up. */
         if (disassemble && sliding::isSliding(*problem)) {
           if (a.slideStartsCut > 0)
-            cout << a.slideStartsCut << " start layout(s) not searched completely: the search"
-                 << " limit was reached, so solutions may be missing"
+            cout << a.slideStartsCut << " start layout(s) not searched completely: "
+                 << (a.slideDiskError.empty() ? std::string("the search limit was reached")
+                                              : a.slideDiskError.substr(0, a.slideDiskError.size() - 1))
+                 << ", so solutions may be missing"
                  << (a.slideMemoryCut ? (highMemory ? "" : " (try --high-memory)")
                                       : (fullSearch ? "" : " (try --solver full)")) << endl;
           else if (a.Solutions == 0 && a.Assemblies > 0)

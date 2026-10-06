@@ -223,6 +223,7 @@ void cb_DiskList_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)
 void cb_StackMode_stub(Fl_Widget* o, void* v) { static_cast<mainWindow_c*>(v)->cb_StackMode(o); }
 void cb_StackRod_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_StackRod(); }
 void cb_StackValidRelayout_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->relayoutProblemTab(); }
+void cb_SlideValidRelayout_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->relayoutViewStack(); }
 void cb_StackListSel_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_StackListSel(); }
 void cb_ProblemRod_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_ProblemRod(); }
 
@@ -670,6 +671,31 @@ void mainWindow_c::refreshStackValid(void) {
     relayoutProblemTab();
 }
 
+void mainWindow_c::refreshSlideValid(void) {
+  if (!slideValidBar || !puzzle || !TaskSelectionTab)
+    return;
+  const unsigned int shape = PcSel ? PcSel->getSelection() : (unsigned int)-1;
+  const bool show = sliding::isSliding(*puzzle) && TaskSelectionTab->value() == TabPieces &&
+                    shape < puzzle->getNumberOfShapes() &&
+                    sliding::isStartGoalShape(puzzle->getShape(shape));
+  bool relayout = false;
+  if (show) {
+    const std::string err = sliding::startGoalError(*puzzle, shape);
+    const std::string text = err.empty()
+        ? std::string("Valid Start/Goal positions for pieces in Start and Goal of this shape")
+        : "Invalid Start/Goal positions - " + err;
+    relayout = slideValidBar->setMessage(text, err.empty() ? fl_rgb_color(46, 139, 87)
+                                                           : fl_rgb_color(192, 40, 40), FL_WHITE);
+  }
+  if ((slideValidBar->visible() != 0) != show) {
+    if (show) slideValidBar->show();
+    else slideValidBar->hide();
+    relayout = true;
+  }
+  if (relayout)
+    relayoutViewStack();
+}
+
 void mainWindow_c::relayoutProblemTab(void) {
   relayoutTab(TabProblems);
 }
@@ -759,9 +785,10 @@ void mainWindow_c::syncSolverTypeMenu(void) {
     solverTypeChoice->add("Sliding Fast Solver (250k depth)");
     solverTypeChoice->add("Sliding Deep Solver (1mil depth)");
     solverTypeChoice->add("Sliding Full Solver (full depth)");
-    /* Deep by default: larger puzzles such as Panex Jr need it, and a
-     * puzzle the fast search can solve takes no longer on the deep one. */
-    solverTypeChoice->value(1);
+    /* Full by default: it keeps older moves on disk, so it does not run
+     * out of memory, and a puzzle the limited searches can solve takes no
+     * longer on it. Fast and Deep stay for puzzles with many starts. */
+    solverTypeChoice->value(2);
     solverTypeChoice->tooltip(" How far the slide search may go before it gives up. Click ? for more. ");
   } else {
     solverTypeChoice->tooltip(solverTypeTooltip());
@@ -840,7 +867,10 @@ void mainWindow_c::syncStackingChrome(void) {
   if (setVis(pieceSelGroup, !on)) relayoutEdit = true;
   if (setVis(diskList, on)) relayoutEdit = true;
   if (setVis(rodsPanel, on)) relayoutEdit = true;
-  if (setVis(colorsGroup, !on)) relayoutEdit = true;
+  /* Colours constrain where pieces go in a brick-like puzzle only. Decided
+   * here alone: hidden elsewhere without a new layout, the space it took
+   * stayed empty under the shape editor. */
+  if (setVis(colorsGroup, !on && !sliding::isSliding(*puzzle))) relayoutEdit = true;
   if (relayoutEdit)
     relayoutTab(TabPieces);
   if (on)

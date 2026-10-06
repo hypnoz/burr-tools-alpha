@@ -71,6 +71,7 @@ public:
   int getMouseZ(void) { return sqedit->getMouseZ(); }
 
   int getCursorX(void) { return sqedit->getCursorX(); }
+  int getClickButton(void) { return sqedit->getClickButton(); }
   int getCursorY(void) { return sqedit->getCursorY(); }
   int getCursorZ(void) { return sqedit->getCursorZ(); }
 

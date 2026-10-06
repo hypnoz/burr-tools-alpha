@@ -84,29 +84,8 @@ bool gridEditor_c::setRecursive(unsigned char tools, int x, int y, int z) {
     if (space->validCoordinate(x, y, z)) {
 
       if (slidingLabel != 0) {
-        /* Start/Goal tab: the voxel itself stays put. Left click paints the
-         * selected piece onto a cell that already exists. Right click clears
-         * that cell's label. Empty cells are ignored. */
-        if (space->getState(x, y, z) != voxel_c::VX_EMPTY) {
-          const bool erase = state != 1;
-          if (slidingLabel == 1) {
-            unsigned int next = erase ? 0 : slidingPiece;
-            if (!erase && (slidingPiece == 0 || slidingPiece > 63))
-              next = space->getColor(x, y, z);
-            if (space->getColor(x, y, z) != next) {
-              changed = true;
-              space->setColor(x, y, z, next);
-            }
-          } else {
-            unsigned int next = erase ? 0 : slidingPiece;
-            if (!erase && (slidingPiece == 0 || slidingPiece > 63))
-              next = space->getGoalPiece(x, y, z);
-            if (space->getGoalPiece(x, y, z) != next) {
-              changed = true;
-              space->setGoalPiece((unsigned)space->getIndex(x, y, z), next);
-            }
-          }
-        }
+        /* Start/Goal tab: a click places the whole piece (RS_SLIDING_CLICK);
+         * nothing is painted cell by cell. */
       } else {
 
       voxel_type v = voxel_c::VX_EMPTY;
@@ -290,13 +269,16 @@ int gridEditor_c::handle(int event) {
       callbackReason = RS_STROKEBEGIN;
       do_callback();
 
-      if (task == TSK_SLIDING_CLICK) {
+      /* Start/Goal tab: a click places or removes a whole piece, which the
+       * main window does; dragging paints nothing. */
+      if (task == TSK_SLIDING_CLICK || slidingLabel != 0) {
         int cx, cy;
         if (calcGridPosition(Fl::event_x(), Fl::event_y(), currentZ, &cx, &cy)) {
           if (0 <= cx && cx < (long)space->getX() && 0 <= cy && cy < (long)space->getY()) {
             mX = startX = cx;
             mY = startY = cy;
             mZ = currentZ;
+            clickButton = Fl::event_button();
             callbackReason = RS_SLIDING_CLICK;
             do_callback();
           }
@@ -508,7 +490,11 @@ void gridEditor_c::draw() {
     }
 
   // if the cursor is inside the widget, we do need to draw the cursor
-  if (inside && active()) {
+  if (inside && active() && slidingLabel != 0) {
+
+    drawStampPreview(tx, ty, sx, sy);
+
+  } else if (inside && active()) {
 
     int x1, x2, y1, y2;
 
@@ -555,6 +541,33 @@ void gridEditor_c::draw() {
             drawTileCursor(x, y, currentZ, tx, ty, sx, sy);
     }
   }
+}
+
+void gridEditor_c::drawStampPreview(int tx, int ty, int sx, int sy) {
+
+  if (slidingPiece == 0 || slidingPiece > puzzle->getNumberOfShapes())
+    return;
+  const voxel_c * tray = puzzle->getShape(piecenumber);
+  const unsigned int shapeId = slidingPiece - 1;
+  const voxel_c * piece = puzzle->getShape(shapeId);
+  const bool goal = slidingLabel == 2;
+
+  /* The piece always follows the mouse, so a placed piece can be moved by
+   * a cell. Orange when it would land exactly where it is: a click there
+   * takes it away. */
+  const std::vector<std::pair<int, int>> cells = sliding::stampCells(piece, mX, mY);
+  if (sliding::stampIsAt(tray, piece, shapeId, mX, mY, goal))
+    fl_color(fl_rgb_color(245, 150, 30));
+  else if (sliding::stampFits(tray, piece, shapeId, mX, mY, goal).empty())
+    fl_color(fl_rgb_color(60, 210, 80));
+  else
+    fl_color(fl_rgb_color(230, 40, 40));
+
+  fl_line_style(FL_SOLID, 3);
+  for (const auto & c : cells)
+    if (c.first >= 0 && c.second >= 0 && c.first < (int)tray->getX() && c.second < (int)tray->getY())
+      drawTileOutline(c.first, c.second, tx, ty, sx, sy);
+  fl_line_style(0);
 }
 
 // this function finds out if a given square is inside the selected region

@@ -64,17 +64,29 @@ public:
     setState(true, "");
   }
   ~StackValidBar_c(void) { Fl::remove_timeout(cb_relayout, this); }
+  /* Any text, on any colours; true when it changed. */
+  bool setMessage(const std::string & t, Fl_Color bg, Fl_Color fg) {
+    if (t == text && bg == color() && fg == labelcolor())
+      return false;
+    text = t;
+    label(text.c_str());
+    color(bg);
+    labelcolor(fg);
+    redraw();
+    return true;
+  }
   /* True when the text changed. */
   bool setState(bool valid, const std::string & reason) {
     std::string t = valid ? "Valid" : "Invalid";
     if (!reason.empty())
       t += " - " + reason;
     Fl_Color c = valid ? fl_rgb_color(46, 139, 87) : fl_rgb_color(192, 40, 40);
-    if (t == text && c == color())
+    if (t == text && c == color() && labelcolor() == FL_WHITE)
       return false;
     text = t;
     label(text.c_str());
     color(c);
+    labelcolor(FL_WHITE);
     redraw();
     return true;
   }

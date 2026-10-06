@@ -83,6 +83,16 @@ class gridTypeInfos_c;
 
 class gridTypeSelectorWindow_c : public LFl_Double_Window {
 
+  public:
+
+    /* how the window was closed */
+    typedef enum {
+      SEL_CANCEL,     ///< Cancel, Escape or the close box
+      SEL_OK,         ///< OK: a new puzzle of the selected grid
+      SEL_OPEN,       ///< Open File...: open a puzzle instead
+      SEL_TUTORIAL    ///< Tutorial: a new puzzle of the selected grid, and its tutorial
+    } result_e;
+
   private:
 
     std::vector<std::unique_ptr<gridTypeInfos_c>> gti;
@@ -90,26 +100,27 @@ class gridTypeSelectorWindow_c : public LFl_Double_Window {
     /* currently selected grid type from the vector above */
     unsigned int current;
 
-    LFl_Box * typeDescription;
-    LFl_Frame * parameterFrame;
+    /* description, warnings and example of the selected grid */
+    LFl_Help_View * info;
 
-    /* true only when the user confirms with OK */
-    bool okPressed;
+    result_e res;
+
+    void showInfo(void);
 
   public:
 
     gridTypeSelectorWindow_c(void);
     ~gridTypeSelectorWindow_c(void);
 
-    /* after the window has been closed with OK, the created grid type */
+    /* after the window has been closed with OK or Tutorial, the created grid type */
     std::unique_ptr<gridType_c> getGridType(void);
 
-    /* false when the window was closed with Cancel or the window close box */
-    bool accepted(void) const { return okPressed; }
-
+    /* how the window was closed; SEL_CANCEL until it is */
+    result_e result(void) const { return res; }
 
     void select_cb(void);
-    void ok_cb(void);
+    /* close the window with the given result */
+    void finish(result_e r);
 };
 
 #endif

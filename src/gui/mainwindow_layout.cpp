@@ -21,6 +21,7 @@
 
 /* mainWindow_c, part: building the window: the tabs, the debug pane, the constructor and destructor. */
 #include "mainwindow.h"
+#include "tutorials.h"
 #include "mainwindow_internal.h"
 
 #include "configuration.h"
@@ -146,7 +147,8 @@ static int leftBarWidth(void) {
     total += (int)fl_width(lab) + 8;
   if (total < 360)
     total = 360;
-  return total + 25;
+  /* 10% wider than the tab headers need, for the controls below them. */
+  return (total + 25) * 11 / 10;
 }
 
 /* Vertical scroll around a tab's left-bar tile. The content keeps its
@@ -214,22 +216,25 @@ void mainWindow_c::CreateShapeTab(void) {
 
     o = new layouter_c(0, 3);
 
-    BtnWeightInc =  new LFlatButton_c(0, 0, 1, 1, "W+", " Increase Weight of the selected shape ",cb_WeightInc_stub, this);
-    static_cast<LFlatButton_c*>(BtnWeightInc)->weight(1, 0);
+    BtnShapeColor = new LFlatButton_c(0, 0, 1, 1, "Color", " Choose the colour of the selected shape ", cb_ShapeColor_stub, this);
+    static_cast<LFlatButton_c*>(BtnShapeColor)->weight(1, 0);
     (new LFl_Box(1, 0))->setMinimumSize(SZ_GAP, 0);
-    BtnWeightDec =  new LFlatButton_c(2, 0, 1, 1, "W-", " Decrease Weight of the selected shape ",cb_WeightDec_stub, this);
-    static_cast<LFlatButton_c*>(BtnWeightDec)->weight(1, 0);
+    BtnWeightInc =  new LFlatButton_c(2, 0, 1, 1, "W+", " Increase Weight of the selected shape ",cb_WeightInc_stub, this);
+    static_cast<LFlatButton_c*>(BtnWeightInc)->weight(1, 0);
     (new LFl_Box(3, 0))->setMinimumSize(SZ_GAP, 0);
-    BtnShapeLeft =  new LFlatButton_c(4, 0, 1, 1, "@-14->", " Exchange current shape with previous shape ", cb_ShapeLeft_stub, this);
-    static_cast<LFlatButton_c*>(BtnShapeLeft)->weight(1, 0);
+    BtnWeightDec =  new LFlatButton_c(4, 0, 1, 1, "W-", " Decrease Weight of the selected shape ",cb_WeightDec_stub, this);
+    static_cast<LFlatButton_c*>(BtnWeightDec)->weight(1, 0);
     (new LFl_Box(5, 0))->setMinimumSize(SZ_GAP, 0);
-    BtnShapeRight = new LFlatButton_c(6, 0, 1, 1, "@-16->", " Exchange current shape with next shape ", cb_ShapeRight_stub, this);
-    static_cast<LFlatButton_c*>(BtnShapeRight)->weight(1, 0);
+    BtnShapeLeft =  new LFlatButton_c(6, 0, 1, 1, "@-14->", " Exchange current shape with previous shape ", cb_ShapeLeft_stub, this);
+    static_cast<LFlatButton_c*>(BtnShapeLeft)->weight(1, 0);
     (new LFl_Box(7, 0))->setMinimumSize(SZ_GAP, 0);
-    BtnDetails = new LFlatButton_c(8, 0, 1, 1, "Details", " Show shape details ", cb_StatusWindow_stub, this);
-    static_cast<LFlatButton_c*>(BtnDetails)->weight(1, 0);
+    BtnShapeRight = new LFlatButton_c(8, 0, 1, 1, "@-16->", " Exchange current shape with next shape ", cb_ShapeRight_stub, this);
+    static_cast<LFlatButton_c*>(BtnShapeRight)->weight(1, 0);
     (new LFl_Box(9, 0))->setMinimumSize(SZ_GAP, 0);
-    BtnRedo =    new LFlatButton_c(10, 0, 1, 1, "Redo",
+    BtnDetails = new LFlatButton_c(10, 0, 1, 1, "Details", " Show shape details ", cb_StatusWindow_stub, this);
+    static_cast<LFlatButton_c*>(BtnDetails)->weight(1, 0);
+    (new LFl_Box(11, 0))->setMinimumSize(SZ_GAP, 0);
+    BtnRedo =    new LFlatButton_c(12, 0, 1, 1, "Redo",
 #ifdef __APPLE__
                                    " Redo the last undone shape change Cmd+Shift+Z ",
 #else
@@ -415,19 +420,19 @@ void mainWindow_c::CreateShapeTab(void) {
 
     Fl_Button * b;
     b = editChoice->addButton();
-    b->image(pm.get(TB_Color_Pen_Fixed_xpm));
+    b->image(pm.get(TB_Color_Pen_Fixed_xpm, TOOL_ICON_SCALE));
     b->tooltip(" Add normal voxels to the shape F5 ");
 
     b = editChoice->addButton();
-    b->image(pm.get(TB_Color_Pen_Variable_xpm));
+    b->image(pm.get(TB_Color_Pen_Variable_xpm, TOOL_ICON_SCALE));
     b->tooltip(" Add variable voxels to the shape F6 ");
 
     b = editChoice->addButton();
-    b->image(pm.get(TB_Color_Eraser_xpm));
+    b->image(pm.get(TB_Color_Eraser_xpm, TOOL_ICON_SCALE));
     b->tooltip(" Remove voxels from the shape F7 ");
 
     b = editChoice->addButton();
-    b->image(pm.get(TB_Color_Brush_xpm));
+    b->image(pm.get(TB_Color_Brush_xpm, TOOL_ICON_SCALE));
     b->tooltip(" Change the constrain colour of voxels in the shape F8 ");
 
     editChoice->callback(cb_EditChoice_stub, this);
@@ -437,11 +442,11 @@ void mainWindow_c::CreateShapeTab(void) {
     editMode = new ButtonGroup_c(2, 0, 1, 1);
 
     b = editMode->addButton();
-    b->image(pm.get(TB_Color_Mouse_Rubber_Band_xpm));
+    b->image(pm.get(TB_Color_Mouse_Rubber_Band_xpm, TOOL_ICON_SCALE));
     b->tooltip(" Make changes by dragging rectangular areas in the grid editor ");
 
     b = editMode->addButton();
-    b->image(pm.get(TB_Color_Mouse_Drag_xpm));
+    b->image(pm.get(TB_Color_Mouse_Drag_xpm, TOOL_ICON_SCALE));
     b->tooltip(" Make changes by painting in the grid editor ");
 
     editMode->callback(cb_EditMode_stub, this);
@@ -451,29 +456,29 @@ void mainWindow_c::CreateShapeTab(void) {
     LToggleButton_c * btn;
 
     btn = new LToggleButton_c(4, 0, 1, 1, cb_EditSym_stub, this, gridEditor_c::TOOL_MIRROR_X);
-    btn->image(pm.get(TB_Color_Symmetrical_X_xpm));
+    btn->image(pm.get(TB_Color_Symmetrical_X_xpm, TOOL_ICON_SCALE));
     btn->tooltip(" Toggle mirroring along the y-z-plane ");
 
     btn = new LToggleButton_c(5, 0, 1, 1, cb_EditSym_stub, this, gridEditor_c::TOOL_MIRROR_Y);
-    btn->image(pm.get(TB_Color_Symmetrical_Y_xpm));
+    btn->image(pm.get(TB_Color_Symmetrical_Y_xpm, TOOL_ICON_SCALE));
     btn->tooltip(" Toggle mirroring along the x-z-plane ");
 
     btn = new LToggleButton_c(6, 0, 1, 1, cb_EditSym_stub, this, gridEditor_c::TOOL_MIRROR_Z);
-    btn->image(pm.get(TB_Color_Symmetrical_Z_xpm));
+    btn->image(pm.get(TB_Color_Symmetrical_Z_xpm, TOOL_ICON_SCALE));
     btn->tooltip(" Toggle mirroring along the x-y-plane ");
 
     (new LFl_Box(7, 0, 1, 1))->setMinimumSize(5, 0);
 
     btn = new LToggleButton_c(8, 0, 1, 1, cb_EditSym_stub, this, gridEditor_c::TOOL_STACK_X);
-    btn->image(pm.get(TB_Color_Columns_X_xpm));
+    btn->image(pm.get(TB_Color_Columns_X_xpm, TOOL_ICON_SCALE));
     btn->tooltip(" Toggle drawing in all x layers ");
 
     btn = new LToggleButton_c(9, 0, 1, 1, cb_EditSym_stub, this, gridEditor_c::TOOL_STACK_Y);
-    btn->image(pm.get(TB_Color_Columns_Y_xpm));
+    btn->image(pm.get(TB_Color_Columns_Y_xpm, TOOL_ICON_SCALE));
     btn->tooltip(" Toggle drawing in all y layers ");
 
     btn = new LToggleButton_c(10, 0, 1, 1, cb_EditSym_stub, this, gridEditor_c::TOOL_STACK_Z);
-    btn->image(pm.get(TB_Color_Columns_Z_xpm));
+    btn->image(pm.get(TB_Color_Columns_Z_xpm, TOOL_ICON_SCALE));
     btn->tooltip(" Toggle drawing in all z layers ");
 
     (new LFl_Box(11, 0, 1, 1))->weight(1, 0);
@@ -521,7 +526,7 @@ void mainWindow_c::CreateShapeTab(void) {
     colorsGroup = new layouter_c(0, 2);
     colorsGroup->box(FL_FLAT_BOX);
 
-    new LSeparator_c(0, 0, 1, 1, "Colors", true);
+    new LSeparator_c(0, 0, 1, 1, "Color Restrictions", true);
 
     layouter_c * o = new layouter_c(0, 1);
 
@@ -925,7 +930,7 @@ void mainWindow_c::CreateSolveTab(void) {
     NestedSlides->hide();
 
     HighMemory = new LFl_Check_Button("Enable High Memory", 1, 0, 1, 1);
-    HighMemory->tooltip(" Let a sliding or stacking search hold up to half of this computer's memory in arrangements, instead of stopping at about 2 GB. Matters mostly for the Sliding Full Solver and for large stacking puzzles. ");
+    HighMemory->tooltip(" Let a sliding or stacking search hold up to half of this computer's memory in arrangements, instead of stopping at about 2 GB. The Sliding Full Solver keeps older moves on disk and needs memory only for the widest move. ");
     HighMemory->clear_visible_focus();
     HighMemory->callback(cb_SolverOptions_stub, this);
     HighMemory->hide();
@@ -1076,8 +1081,12 @@ void mainWindow_c::CreateSolveTab(void) {
 
     o = new layouter_c(0, 13);
 
-    (new LFl_Box("Activity: ", 0, 0, 1, 1))->stretchRight();
-    OutputActivity = new LFl_Output(1, 0, 3, 1);
+    /* Two lines, always: "slide search: 192 moves deep" over "2,916,869,760
+     * arrangements". Nothing below moves when only one is used. */
+    LFl_Box * activityLabel = new LFl_Box("Activity: ", 0, 0, 1, 1);
+    activityLabel->stretchRight();
+    activityLabel->stretchTop();
+    OutputActivity = new LFl_Multiline_Output(1, 0, 3, 1, 2);
     OutputActivity->box(FL_FLAT_BOX);
     OutputActivity->color(FL_BACKGROUND_COLOR);
     OutputActivity->tooltip(" What is currently done ");
@@ -1340,6 +1349,8 @@ void mainWindow_c::CreateSolveTab(void) {
 
     PcVis = new PieceVisibility(0, 0, 100, 100);
     LBlockListGroup_c * shapeGroup = new LBlockListGroup_c(0, 16, 1, 1, PcVis);
+    /* Smaller than other lists: the Activity line above takes two lines. */
+    shapeGroup->setListMinHeight(40);
     shapeGroup->callback(cb_PcVis_stub, this);
     shapeGroup->tooltip(" Change appearance of the pieces between normal, grid and invisible ");
     shapeGroup->weight(1, 1);
@@ -1361,6 +1372,106 @@ void mainWindow_c::CreateDebugTab(void) {
   TabDebug->hide();
   TabDebug->clear_visible_focus();
   TabDebug->end();
+}
+
+static void cb_CloseTutorial_stub(Fl_Widget * /*o*/, void * v) { static_cast<mainWindow_c*>(v)->closeTutorial(); }
+
+void mainWindow_c::CreateTutorialTab(void) {
+
+  TabTutorial = new layouter_c();
+  TabTutorial->label("  Tutorial  ");
+  TabTutorial->labelsize(MAIN_TAB_LABELSIZE);
+  TabTutorial->tooltip("The tutorial for this kind of puzzle");
+  TabTutorial->clear_visible_focus();
+
+  (new LFl_Box(0, 0))->setMinimumSize(0, SZ_GAP);
+  new LSeparator_c(0, 1, 1, 1, "Tutorial", false);
+
+  /* wraps to the width of the tab, which the tab headers set */
+  tutorialNote = new LFl_Help_View(0, 2, 1, 1);
+  tutorialNote->textfont(FL_HELVETICA);
+  tutorialNote->textsize(FL_NORMAL_SIZE + 2);
+  tutorialNote->box(FL_FLAT_BOX);
+  tutorialNote->color(FL_BACKGROUND_COLOR);
+  tutorialNote->textcolor(FL_FOREGROUND_COLOR);
+  tutorialNote->setMinimumSize(0, 200);
+  tutorialNote->weight(1, 0);
+
+  LFl_Button * close = new LFl_Button("Close Tutorial", 0, 3, 1, 1);
+  close->pitch(8);
+  close->stretchLeft();
+  close->tooltip(" Close the tutorial and go back to the tab you were on ");
+  close->callback(cb_CloseTutorial_stub, this);
+
+  (new LFl_Box(0, 4))->weight(0, 1);
+
+  TabTutorial->hide();
+  TabTutorial->end();
+}
+
+void mainWindow_c::showTutorialRightPane(void) {
+
+  if (View3D)
+    View3D->hide();
+  if (debugPanel)
+    debugPanel->hide();
+  if (tutorialPanel)
+    tutorialPanel->show();
+  relayoutViewStack();
+}
+
+void mainWindow_c::openTutorial(int gridType) {
+
+  if (!TabTutorial || !TaskSelectionTab || !tutorialPanel)
+    return;
+
+  const gridType_c::gridType type = (gridType_c::gridType)gridType;
+  const std::string html = tutorials::tutorialHtml(type);
+  tutorialPanel->value(html.c_str());
+  tutorialPanel->topline(0);
+  const std::string note = std::string("<p>The tutorial for the <b>") + tutorials::gridName(type) +
+      "</b> space grid is on the right.</p><p>Help, Tutorial opens the tutorial for the kind of "
+      "puzzle that is open. File, New has the others: choose a space grid there and press "
+      "Tutorial.</p>";
+  tutorialNote->value(note.c_str());
+
+  if (TabTutorial->parent() != TaskSelectionTab) {
+    /* right after Solver, before Debug */
+    const int at = TaskSelectionTab->find(TabSolve) + 1;
+    TaskSelectionTab->insert(*TabTutorial, at);
+    TabTutorial->hide();
+  }
+  if (TaskSelectionTab->value() != TabTutorial)
+    tabBeforeTutorial = TaskSelectionTab->value();
+
+  TaskSelectionTab->value(TabTutorial);
+  cb_TaskSelectionTab(TaskSelectionTab);
+  TaskSelectionTab->redraw();
+  TaskSelectionTab->resize(TaskSelectionTab->x(), TaskSelectionTab->y(),
+                           TaskSelectionTab->w(), TaskSelectionTab->h());
+}
+
+void mainWindow_c::closeTutorial(void) {
+
+  if (!TabTutorial || !TaskSelectionTab || TabTutorial->parent() != TaskSelectionTab)
+    return;
+
+  Fl_Widget * back = tabBeforeTutorial;
+  if (!back || back == TabTutorial || back->parent() != TaskSelectionTab)
+    back = TabPieces;
+  const bool wasShown = TaskSelectionTab->value() == TabTutorial;
+
+  TaskSelectionTab->remove(TabTutorial);
+  TabTutorial->hide();
+  tabBeforeTutorial = 0;
+
+  if (wasShown) {
+    TaskSelectionTab->value(back);
+    cb_TaskSelectionTab(TaskSelectionTab);
+  }
+  TaskSelectionTab->redraw();
+  TaskSelectionTab->resize(TaskSelectionTab->x(), TaskSelectionTab->y(),
+                           TaskSelectionTab->w(), TaskSelectionTab->h());
 }
 
 void mainWindow_c::attachSolverPane(Fl_Group *tab) {
@@ -1385,6 +1496,9 @@ void mainWindow_c::showDebugRightPane(void) {
 
   if (View3D)
     View3D->hide();
+  if (tutorialPanel)
+    tutorialPanel->hide();
+
   if (debugPanel) {
     debugPanel->show();
     updateDebugStats();
@@ -1397,6 +1511,8 @@ void mainWindow_c::hideDebugRightPane(void) {
 
   if (debugPanel)
     debugPanel->hide();
+  if (tutorialPanel)
+    tutorialPanel->hide();
   if (View3D)
     View3D->show();
   relayoutViewStack();
@@ -1471,6 +1587,11 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   detailsPanel = 0;
   debugPanel = 0;
   TabDebug = 0;
+  TabTutorial = 0;
+  tutorialPanel = 0;
+  tutorialNote = 0;
+  tabBeforeTutorial = 0;
+  gridSelector = 0;
   solverPane = 0;
   notesUpdate = 0;
   notesRevert = 0;
@@ -1535,6 +1656,7 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   problemButtonRule = 0;
   stackValidRow = 0;
   stackValidBar = 0;
+  slideValidBar = 0;
   NestedSlides = 0;
   HighMemory = 0;
   Autosave = 0;
@@ -1629,6 +1751,21 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   debugPanel->weight(1, 1);
   debugPanel->hide();
 
+  tutorialPanel = new LFl_Help_View(0, 0, 1, 1);
+  tutorialPanel->weight(1, 1);
+  tutorialPanel->textfont(FL_HELVETICA);
+  tutorialPanel->textsize(18);
+  tutorialPanel->box(FL_FLAT_BOX);
+  tutorialPanel->color(FL_BACKGROUND_COLOR);
+  tutorialPanel->textcolor(FL_FOREGROUND_COLOR);
+  tutorialPanel->hide();
+
+  slideValidBar = new StackValidBar_c(0, 1, 1, 1);
+  slideValidBar->weight(1, 0);
+  slideValidBar->tooltip(" Whether the starts and goals of this start/goal shape can be solved ");
+  slideValidBar->callback(cb_SlideValidRelayout_stub, this);
+  slideValidBar->hide();
+
   view3DStack->end();
 
   detailsPanel = new statusWindow_c(0, 1, 1, 1);
@@ -1660,8 +1797,11 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   CreateProblemTab();
   CreateSolveTab();
   CreateDebugTab();
+  CreateTutorialTab();
 
   TaskSelectionTab->end();
+  /* The Tutorial tab is only there while a tutorial is open. */
+  TaskSelectionTab->remove(TabTutorial);
   applyDebugTabVisibility();
   mainTile->end();
 
@@ -1780,6 +1920,10 @@ mainWindow_c::~mainWindow_c() {
   if (ggt)
     delete ggt;
 
+  if (TabTutorial && TabTutorial->parent() != TaskSelectionTab) {
+    delete TabTutorial;
+    TabTutorial = 0;
+  }
   if (TabDebug && TabDebug->parent() != TaskSelectionTab) {
     delete TabDebug;
     TabDebug = 0;

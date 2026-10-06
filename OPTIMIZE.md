@@ -874,6 +874,38 @@ sets (test "Vector and plain search find the same assemblies").
     hide it; the transform preview overlay; fit to content. The fork's own
     versions stay.
 
+## Round 6 — the Sliding Full Solver on disk (2026-10-05)
+
+The Sliding Full Solver kept every arrangement with its parent in one hash
+table (about 112 bytes each for a 20x15 tray), and stopped at half the
+memory: "Trap Nested Sliding" (12 pieces, nested slides) stopped after 4
+minutes and about 143 million arrangements with no answer.
+
+- [x] R6.1 A full search goes level by level (sliding.cpp levelSearch):
+  only the level being expanded and the one before stay in memory as
+  sorted arrays; older levels go to delta-coded files (slidelevels.h,
+  keySet_c) in the user's cache folder, removed when the search ends.
+  Every core expands a level; a level is written while the next one is
+  expanded. Limited searches (Fast, Deep) keep the queue search.
+  - A one-piece move can always be made backwards, a nested group's not
+    always: the group can close round a piece it passes. Only arrangements
+    reached by such one-way moves are looked for on disk (in a few merged
+    sets); the rest are new unless in the last two levels. slideMover_c
+    ::undoable tells them apart.
+  - Trap Nested Sliding now finishes: 2,916,869,760 arrangements, 192
+    moves deep, no solution, in 28.6 min on 10 cores; peak memory 7.1 GB,
+    33 GB on disk at the end.
+  - Klotski told apart (10 million arrangements): 1.3 s.
+  - Checked against the queue search: the test "full search counts the
+    same arrangements with one-way moves", and the hidden fuzz test
+    "[.fuzz][sliding]" (1,052 random nested trays, every count and move
+    number the same, 103 with one-way repeats).
+  - Switches: BURRTOOLS_SLIDE_QUEUE=1 (old queue search for full searches),
+    BURRTOOLS_SLIDE_TRACE=1 (a line per level), BURRTOOLS_SLIDE_DIR,
+    BURRTOOLS_SLIDE_DISK_GB.
+- [ ] R6.2 Not done: pause and resume across quits, as the Panex Solver
+  has; a level larger than memory (the widest here was 43 million).
+
 ## Open items found while working
 
 - [x] **8.1 One unexplained test-regression failure** — on 2026-10-03,

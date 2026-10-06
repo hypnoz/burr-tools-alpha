@@ -38,6 +38,7 @@
 #include "../lib/bt_assert.h"
 #include "../lib/gridtype.h"
 #include "../lib/puzzle.h"
+#include "examplerender.h"
 
 #include "../tools/xml.h"
 #include "../tools/gzstream.h"
@@ -63,11 +64,19 @@ static int runWithUpdates(mainWindow_c * ui) {
 
   const auto period = std::chrono::milliseconds(500);
   auto next = std::chrono::steady_clock::now() + period;
+  /* On the first update, File, New's grid selector, as if it had been the
+   * first thing done: by then a puzzle opened from the command line or by
+   * double-clicking it is loaded, and then the selector is not wanted. */
+  bool startedUp = false;
 
   while (Fl::first_window()) {
     const auto now = std::chrono::steady_clock::now();
     if (now >= next) {
       ui->update();
+      if (!startedUp) {
+        startedUp = true;
+        ui->startupChooseGrid();
+      }
       next = std::chrono::steady_clock::now() + period;
       continue;
     }
@@ -89,6 +98,13 @@ int main(int argc, char ** argv) {
   }
 
   bt_assert_init();
+
+  /* A developer tool: draw a puzzle to a PNG, for the example pictures of
+   * the grid selector. */
+  if ((argc == 4 || argc == 5) && strcmp(argv[1], "--render-example") == 0) {
+    platform::applyLookAndFeel();
+    return renderExample(argv[2], argv[3], argc == 5 ? atoi(argv[4]) : 0);
+  }
 
   /* And again on the normal path, so that simply running the program is
    * enough to catch menu-table drift -- the --self-check entry point above

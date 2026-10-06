@@ -154,8 +154,11 @@
 #include "images/RenderModeEdges.xpm"
 #include "images/RenderModeSTL.xpm"
 
-Fl_Pixmap * pixmapList_c::get(const char * data[]) {
+Fl_Pixmap * pixmapList_c::get(const char * data[], float scale) {
   list.push_back(std::make_unique<Fl_Pixmap>(data));
-  return list.back().get();
+  Fl_Pixmap * p = list.back().get();
+  if (scale != 1.0f)
+    p->scale((int)(p->w() * scale + 0.5f), (int)(p->h() * scale + 0.5f), 1, 1);
+  return p;
 }
 

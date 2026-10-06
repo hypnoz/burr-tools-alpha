@@ -21,6 +21,7 @@
 
 /* mainWindow_c, part: About, the tutorial and the solver help texts. */
 #include "mainwindow.h"
+#include "tutorials.h"
 #include "mainwindow_internal.h"
 
 #include "configuration.h"
@@ -172,136 +173,17 @@ void mainWindow_c::cb_About(void) {
             );
 }
 
-static const char tutorialText[] = R"TUTORIAL(This tutorial will be a brief overview of how to make and solve a puzzle with BurrTools. It will only cover the "Brick" type since that is the most basic, and the others should be clear once you know that one.
 
--- Creating shapes:
-The first step on the Entities tab is to create a new shape. This is done by clicking the "New" button. Below the shapes list, you will see options to set the X/Y/Z size and a grid to draw the piece. The "Colors" section at the bottom is more advanced, and allows restrictions for where pieces can go in the final solution. Once the correct X/Y/Z size is set, make sure the solid red square is selected. This is the normal "static" voxel, shapes can only use this. The green square next to it is the "variable" voxel, which can only be used in the "solution" shape to allow either a shape or empty space to occupy that position. There are other buttons here to play with, the next most useful are the 3 at the right which allow filling an entire row of X/Y/Z at a time. There are also tabs at the top to let you rotate or move shapes in the grid.
-
-The grid below has a slider on the left to change the Z layer. You can think of this grid and slider like you have a puzzle directly in front of you, the grid is the voxels you see and the slider is the layers going back away from you. When the slider is at the bottom, it is the "back" layer of the puzzle, the furthest away. The top of the slider is the "front" layer, the closest to you. As you draw voxels in the grid they are always relative to this view.
-
-If the puzzle has a box, tray, or frame, this object needs to also be mapped as a shape. BurrTools considers this as a piece of the puzzle that needs to be considered during the solving process.
-
-The final shape to create is the "solution" shape. This is the shape that matches the final assembled shape of the puzzle. This shape can use both static and variable voxels. Static requires that a piece be present in that spot. Variable can be occupied by either a shape or empty space.
-
-After all shapes, frame/box/tray, and the solution shape are created, we will move on to building the puzzle.
-
--- Creating the puzzle:
-The Puzzle tab is where we combine the shapes and solution to analyze as a puzzle. There may be many more shapes than you want to use in a single puzzle, so we will select a subset of pieces here. Press the "New" button to create a new puzzle, and you will be given the full list of shapes to choose from. First, select the final solution shape and then press the "Set Result" button. After that, we need to add all the shapes that will be used to make the puzzle. For each shape you want you can click it, then press the +1 button to add, or -1 to remove it. If you press +1 multiple times it will add multiple copies of the same shape. The "min=0" button will set the shape to be optional, that either 0 or 1+ copies can be used. You can create multiple puzzles with different sets of shapes. It's helpful to "Label" each puzzle with a name so you can easily tell them apart.
-
--- Solving the puzzle:
-The Solver tab is where we solve the puzzle. You will see a list of puzzles you have created on the top left. There are many check boxes to change the puzzle is solved. Each one has a hover tool tip to explain what it does. The primary one is "Disassemble" which will try to show only assemblies which can be disassembled. There are options for checking for rotations, and limiting to just a count or level without the solving animations. Level is the number of moves to remove the first piece from an assembled puzzle. Other checks will reduce or keep symmetric/mirrored/rotated solutions.
-
-After choosing the solve options, press the "Solve" button. If everything was set up correctly, you will see a progress bar at the bottom of the screen. When the solving is complete, you will see a list of solutions. If something wasn't set up correctly, there will be an error about voxels missing from the final shape or too many, etc. Once the solve is completed, the number of Assemblies and Solutions will be displayed. The "Assemblies" count is the number of unique assemblies that can be made from the puzzle. The "Solutions" count is the number of those assemblies which can actually be disassembled.
-
-Only the top 100 solutions are kept, and there is a "Solution" slider to scroll through them. For each solution, you will see a "Move" slider. There is a list of numbers like 12 (5.3.2.1.1) which represents the total moves to disassemble the puzzle, and then inside the parentheses are the number of moves to remove each piece from the puzzle. If you drag the slider, you will see an animation of the puzzle being disassembled step by step, along with the step number on the left of the slider.
-
-For now ignore the "Advanced Filters" buttons, but the list of pieces at the bottom is useful. Each one can be selected to turn that piece either into a wire frame, or totally invisble. It's very helpful to see other pieces that are obstructed from view.
-
--- More Advanced Topics:
-The main things to learn from here are color constraints and groups. Color constraints are a way to restrict where pieces can go in the final solution. Groups are a way to group pieces together so they can be treated as a single piece. Color constraints are set in the Entities tab, by creating a new color at the bottom. When you add a voxel to a piece, it will have a small color indicator on it showing that color constraint is part of the voxel. Add the color to all the voxels in the piece, and then in the solution shape, add that same color constraint to where the piece must go.
-Groups are set in the Puzzle tab, using the "Set Groups" button. If you want 2 pieces to be treated as a single piece, choose the "Add Group" button, then next to the two pieces put a number like 1 or 2 that is the same for both pieces. Back in the list of pieces, you will see a label like "G1(2)" which is the main group number and sub group number within that group.
-
-For even more advanced topics or learning, visit the BurrTools documentation website at https://burrtools.sourceforge.net/gui-doc/toc.html
-The documentation was written for an older version of BurrTools, but the concepts are still valid.
-)TUTORIAL";
-
-static void cb_TutorialClose_stub(Fl_Widget* /*o*/, void* v) { static_cast<Fl_Double_Window*>(v)->hide(); }
 void cb_Tutorial_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_Tutorial(); }
 void cb_SolverTypeHelp_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_SolverTypeHelp(); }
 void cb_SolverType_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_SolverType(); }
 void cb_SortByHelp_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_SortByHelp(); }
 static void cb_SolverTypeHelpClose_stub(Fl_Widget* /*o*/, void* v) { static_cast<Fl_Double_Window*>(v)->hide(); }
 
-class LFl_Help_View : public Fl_Help_View, public layoutable_c {
-  public:
-  LFl_Help_View(int x = 0, int y = 0, int w = 1, int h = 1)
-    : Fl_Help_View(0, 0, 0, 0), layoutable_c(x, y, w, h) {}
-  virtual void getMinSize(int *width, int *height) const {
-    *width = 30;
-    *height = 20;
-  }
-};
-
-static void htmlAppendEscaped(std::string &out, const char *s, size_t n) {
-  for (size_t i = 0; i < n; i++) {
-    switch (s[i]) {
-      case '&': out += "&amp;"; break;
-      case '<': out += "&lt;"; break;
-      case '>': out += "&gt;"; break;
-      default:  out += s[i]; break;
-    }
-  }
-}
-
-static std::string tutorialToHtml() {
-  std::string html;
-  html += "<html><body>";
-  html += "<p><font size=\"6\"><b><u>BurrTools Basics Tutorial</u></b></font></p>";
-
-  const char *p = tutorialText;
-  while (*p) {
-    const char *eol = strchr(p, '\n');
-    size_t len = eol ? (size_t)(eol - p) : strlen(p);
-
-    if (len >= 3 && p[0] == '-' && p[1] == '-' && p[2] == ' ') {
-      html += "<p><font size=\"5\"><b>";
-      htmlAppendEscaped(html, p + 3, len - 3);
-      html += "</b></font></p>";
-    } else if (len > 0) {
-      html += "<p>";
-      htmlAppendEscaped(html, p, len);
-      html += "</p>";
-    }
-
-    if (!eol)
-      break;
-    p = eol + 1;
-  }
-
-  html += "</body></html>";
-  return html;
-}
-
 void mainWindow_c::cb_Tutorial(void) {
 
-  LFl_Double_Window win(true);
-  win.label("Tutorial");
-
-  layouter_c *body = new layouter_c(0, 0, 1, 1);
-  body->pitch(16);
-  body->weight(1, 1);
-
-  LFl_Help_View *txt = new LFl_Help_View(0, 0, 1, 1);
-  txt->textfont(FL_HELVETICA);
-  txt->textsize(18);
-  txt->box(FL_FLAT_BOX);
-  txt->color(FL_BACKGROUND_COLOR);
-  txt->textcolor(FL_FOREGROUND_COLOR);
-  std::string html = tutorialToHtml();
-  txt->value(html.c_str());
-  txt->weight(1, 1);
-  txt->setMinimumSize(720, 520);
-  body->end();
-
-  layouter_c *btns = new layouter_c(0, 1, 1, 1);
-  btns->pitch(8);
-  (new LFl_Box(0, 0))->weight(1, 0);
-
-  int tw = 0, th = 0;
-  fl_font(FL_HELVETICA, FL_NORMAL_SIZE);
-  fl_measure("Close", tw, th);
-
-  LFl_Button * closeBtn = new LFl_Button("Close", 1, 0, 1, 1);
-  closeBtn->callback(cb_TutorialClose_stub, &win);
-  closeBtn->setMinimumSize(3 * (tw + 4), th + 16);
-
-  (new LFl_Box(2, 0))->weight(1, 0);
-  btns->end();
-
-  win.show();
-  txt->topline(0);
-  while (win.visible())
-    Fl::wait();
+  /* The tutorial for the kind of puzzle that is open, in the Tutorial tab. */
+  openTutorial(puzzle->getGridType()->getType());
 }
 
 static void addSolverHelpHeading(int row, const char *name) {
@@ -378,23 +260,23 @@ void mainWindow_c::cb_SolverTypeHelp(void) {
     addSolverHelpBody(row++,
         "•  Searches for the fewest moves from the start to the goal. One move is one piece going anywhere it can reach while the others stay put, corners included.\n"
         "•  Looks at up to 250,000 arrangements of the pieces for each start.\n"
-        "•  Gives up sooner on a puzzle with no solution, or on one with many starts to try.");
+        "•  Gives up sooner on a puzzle with no solution, or on one with many starts to try. Most starts that cannot reach the goal are dropped quickly, at the risk of missing a solution that needs a long search.");
     (new LFl_Box(0, row++))->setMinimumSize(0, 16);
 
     addSolverHelpHeading(row++, "Sliding Deep Solver (1mil depth)");
     addSolverHelpBody(row++,
-        "•  The default. The same search, allowed up to 1,000,000 arrangements for each start.\n"
+        "•  The same search, allowed up to 1,000,000 arrangements for each start.\n"
         "•  Solves larger puzzles, such as Panex Jr, that the fast solver runs out on. A puzzle the fast solver can solve takes no longer here.\n"
         "•  A search that runs out of arrangements cannot tell you the puzzle is impossible; this one runs out later.");
     (new LFl_Box(0, row++))->setMinimumSize(0, 16);
 
     addSolverHelpHeading(row++, "Sliding Full Solver (full depth)");
     addSolverHelpBody(row++,
-        "•  The same search with no limit on arrangements. It either finds the fewest moves or proves there is no solution.\n"
-        "•  Can take a long time and a lot of memory. It stops when the arrangements it holds fill about 2 GB, roughly 30 million of them, rather than run the computer out of memory.\n"
-        "•  Enable High Memory raises that limit to half of this computer's memory, so the search can go much further before it stops.\n"
-        "•  The Solver tab shows how many arrangements it has searched, and Stop ends the search at any time.\n"
-        "•  Best for puzzles with one start layout. Each start that can reach the goal is searched in full.");
+        "•  The default. No limit on arrangements. It either finds the fewest moves or proves there is no solution. When a solution exists it takes no longer than the Fast or Deep Solver.\n"
+        "•  Searches one move at a time, on every core. Only the newest moves stay in memory; everything older is written to a folder in this computer's cache, compressed, and deleted when the search ends. So it is limited by free disk space, not by memory: billions of arrangements are possible.\n"
+        "•  It keeps 2 GB of the disk free, or a twentieth of it if that is more. Memory is needed only for the widest move: it stops if that would not fit in about 2 GB, or in half of this computer's memory with Enable High Memory.\n"
+        "•  The Solver tab shows how many moves deep it is and how many arrangements it has searched, and Stop ends the search at any time.\n"
+        "•  With many start layouts, every start that cannot reach the goal is searched to the end to prove it. The Fast or Deep Solver can finish such a puzzle sooner.");
   } else if (puzzle && stacking::isStacking(*puzzle)) {
     addSolverHelpHeading(row++, "Stacking Solver");
     addSolverHelpBody(row++,

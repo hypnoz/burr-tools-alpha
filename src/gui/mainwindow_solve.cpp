@@ -229,6 +229,14 @@ void mainWindow_c::cb_BtnCont(bool prep_only, int forProblem) {
   }
 
   if (puzzle && sliding::isSliding(*puzzle)) {
+    const problem_c * pr = puzzle->getProblem(prob);
+    if (pr->resultValid() && sliding::isStartGoalShape(getResultShape(*pr))) {
+      const std::string err = sliding::startGoalError(*puzzle, pr->getResultId());
+      if (!err.empty()) {
+        fl_message("%s", err.c_str());
+        return;
+      }
+    }
     std::string overflow = sliding::stampOverflowMessage(*puzzle->getProblem(prob));
     if (!overflow.empty()) {
       fl_message("%s", overflow.c_str());

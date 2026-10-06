@@ -30,6 +30,11 @@
 #include "guigridtype.h"
 #include "grideditor.h"
 #include "gridtypegui.h"
+#include "piececolor.h"
+#include <FL/Fl_Button.H>
+#include <FL/Fl_Box.H>
+#include <FL/Fl_Double_Window.H>
+#include <FL/Fl_Return_Button.H>
 #include "statuswindow.h"
 #include "debugstatspanel.h"
 #include "tooltabs.h"
@@ -128,6 +133,18 @@
 #include <string>
 
 
+/* 1234567 as "1,234,567", for the Activity line. */
+static std::string withCommas(unsigned long n) {
+  std::string digits = std::to_string(n);
+  std::string out;
+  for (size_t i = 0; i < digits.size(); i++) {
+    if (i > 0 && (digits.size() - i) % 3 == 0)
+      out += ',';
+    out += digits[i];
+  }
+  return out;
+}
+
 static int liveMenuIndex(const Fl_Menu_ * m, Fl_Callback * cb) {
   const Fl_Menu_Item * items = m->menu();
   if (!items) return -1;
@@ -162,17 +179,93 @@ bool fileExists(const char *n) {
     return false;
 }
 
+/* A colour dialog: FLTK's colour chooser with OK, Cancel and, with
+ * withReset, Reset (for a shape: the colour that goes with its number).
+ * It starts at r, g, b; the bar on the left shows beforeRGB (0xRRGGBB), or
+ * that same colour when it is -1. 1 for OK, with the colour in r, g, b; 2
+ * for Reset; 0 for Cancel. */
+static int colorDialog(const char * title, unsigned char & r, unsigned char & g, unsigned char & b,
+                       bool withReset, int beforeRGB = -1) {
+
+  Fl_Double_Window win(300, 245, title);
+  Fl_Color_Chooser chooser(10, 10, 280, 160);
+  chooser.rgb(r / 255.0, g / 255.0, b / 255.0);
+
+  /* before and after, as fl_color_chooser shows them; a click on before
+   * takes that colour */
+  class swatch_c : public Fl_Box {
+  public:
+    swatch_c(int X, int Y, int W, int H) : Fl_Box(X, Y, W, H) {}
+    int handle(int event) override {
+      if (event == FL_PUSH) {
+        do_callback();
+        return 1;
+      }
+      return Fl_Box::handle(event);
+    }
+  };
+  swatch_c before(10, 176, 137, 24);
+  before.box(FL_DOWN_BOX);
+  before.color(beforeRGB < 0 ? fl_rgb_color(r, g, b)
+                             : fl_rgb_color((unsigned char)(beforeRGB >> 16), (unsigned char)(beforeRGB >> 8),
+                                            (unsigned char)beforeRGB));
+  before.tooltip(" Click to take this colour ");
+  before.callback([](Fl_Widget * w, void * a) {
+    unsigned char cr, cg, cb;
+    Fl::get_color(w->color(), cr, cg, cb);
+    Fl_Color_Chooser * c = static_cast<Fl_Color_Chooser *>(a);
+    c->rgb(cr / 255.0, cg / 255.0, cb / 255.0);
+    c->do_callback();
+  }, &chooser);
+  Fl_Box after(153, 176, 137, 24);
+  after.box(FL_DOWN_BOX);
+  after.color(fl_rgb_color(r, g, b));
+  chooser.callback([](Fl_Widget * w, void * a) {
+    const Fl_Color_Chooser * c = static_cast<Fl_Color_Chooser *>(w);
+    Fl_Box * box = static_cast<Fl_Box *>(a);
+    box->color(fl_rgb_color((unsigned char)(c->r() * 255 + 0.5), (unsigned char)(c->g() * 255 + 0.5),
+                            (unsigned char)(c->b() * 255 + 0.5)));
+    box->redraw();
+  }, &after);
+
+  int result = -1;
+  Fl_Return_Button ok(10, 210, 88, 26, "OK");
+  Fl_Button cancel(106, 210, 88, 26, "Cancel");
+  Fl_Button reset(202, 210, 88, 26, "Reset");
+  reset.tooltip(" Back to the colour BurrTools gives this shape ");
+  if (!withReset)
+    reset.hide();
+  /* argument() is kept where the callback's data is, so the result goes
+   * through the window's user data */
+  win.user_data(&result);
+  auto pick = [](Fl_Widget * w, long which) {
+    *static_cast<int *>(w->window()->user_data()) = (int)which;
+    w->window()->hide();
+  };
+  ok.callback(pick, 1);
+  cancel.callback(pick, 0);
+  reset.callback(pick, 2);
+  win.end();
+  win.set_modal();
+  win.show();
+  while (win.shown())
+    Fl::wait();
+
+  if (result == 1) {
+    r = (unsigned char)(chooser.r() * 255 + 0.5);
+    g = (unsigned char)(chooser.g() * 255 + 0.5);
+    b = (unsigned char)(chooser.b() * 255 + 0.5);
+  }
+  return result < 0 ? 0 : result;
+}
+
 void cb_AddColor_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_AddColor(); }
 void mainWindow_c::cb_AddColor(void) {
 
-  unsigned char r, g, b;
+  /* A new colour starts from white. */
+  unsigned char r = 255, g = 255, b = 255;
 
-  if (colorSelector->getSelection() == 0)
-    r = g = b = 128;
-  else
-    puzzle->getColor(colorSelector->getSelection()-1, &r, &g, &b);
-
-  if (fl_color_chooser("New colour", r, g, b)) {
+  if (colorDialog("New colour", r, g, b, false) == 1) {
     puzzle->addColor(r, g, b);
 
     // add this color as a default to the matrix, so that
@@ -186,6 +279,40 @@ void mainWindow_c::cb_AddColor(void) {
     View3D->getView()->showColors(puzzle, StatusLine->getColorMode());
     updateInterface();
   }
+}
+
+void cb_ShapeColor_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_ShapeColor(); }
+void mainWindow_c::cb_ShapeColor(void) {
+
+  const unsigned int shape = PcSel->getSelection();
+  if (shape >= puzzle->getNumberOfShapes())
+    return;
+  voxel_c * v = puzzle->getShape(shape);
+  /* A start/goal shape is the tray: its cells show the pieces' colours. */
+  if (sliding::isSliding(*puzzle) && sliding::isStartGoalShape(v))
+    return;
+
+  /* Starts at white, full brightness, as Add does; the bar on the left
+   * shows the colour the shape has now. */
+  unsigned char r = 255, g = 255, b = 255;
+  const int now = (int)((pieceColorRi(shape) << 16) | (pieceColorGi(shape) << 8) | pieceColorBi(shape));
+
+  const int choice = colorDialog("Shape colour", r, g, b, true, now);
+  if (choice != 0) {
+    v->setShapeColor(choice == 2 ? -1 : (r << 16) | (g << 8) | b);
+    changed = true;
+    syncPieceColors();
+    activateShape(shape);
+    updateInterface();
+    redraw();
+  }
+}
+
+void mainWindow_c::syncPieceColors(void) {
+  std::vector<int> own(puzzle ? puzzle->getNumberOfShapes() : 0, -1);
+  for (unsigned int s = 0; s < own.size(); s++)
+    own[s] = puzzle->getShape(s)->getShapeColor();
+  setOwnPieceColors(own);
 }
 
 void cb_RemoveColor_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_RemoveColor(); }
@@ -219,7 +346,7 @@ void mainWindow_c::cb_ChangeColor(void) {
   else {
     unsigned char r, g, b;
     puzzle->getColor(colorSelector->getSelection()-1, &r, &g, &b);
-    if (fl_color_chooser("Change colour", r, g, b)) {
+    if (colorDialog("Change colour", r, g, b, false) == 1) {
       puzzle->changeColor(colorSelector->getSelection()-1, r, g, b);
       changed = true;
       View3D->getView()->showColors(puzzle, StatusLine->getColorMode());
@@ -417,6 +544,10 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
     if (ViewSizes[2] >= 0)
       View3D->setZoom(ViewSizes[2]);
     currentTab = 2;
+  } else if (o->value() == TabTutorial) {
+
+    StatusLine->setText("");
+    showTutorialRightPane();
   } else if (o->value() == TabDebug) {
 
     attachSolverPane(TabDebug);
@@ -431,6 +562,15 @@ void mainWindow_c::cb_TaskSelectionTab(Fl_Tabs* o) {
   }
 
   updateInterface();
+
+  /* The tab's controls may have been shown, hidden or resized while it was
+   * not on screen, and the 3D view beside it may have changed: lay out the
+   * whole window again, then the tab's content at the size it has now,
+   * as a resize of the window would. */
+  relayoutViewStack();
+  if (layouter_c * shown = dynamic_cast<layouter_c *>(o->value()))
+    relayoutTab(shown);
+  refreshSlideValid();
 }
 
 void cb_TransformPiece_stub(Fl_Widget* /*o*/, void* v) { static_cast<mainWindow_c*>(v)->cb_TransformPiece(); }
@@ -616,16 +756,37 @@ void mainWindow_c::cb_pieceEdit(VoxelEditGroup_c* o) {
       ToolTab_0 * tab = dynamic_cast<ToolTab_0*>(pieceTools->getToolTab());
       unsigned int shapeId = tab ? tab->selectedPiece() : (unsigned int)-1;
       voxel_c * tray = puzzle->getShape(PcSel->getSelection());
-      if (shapeId < puzzle->getNumberOfShapes() &&
-          !sliding::isStartGoalShape(puzzle->getShape(shapeId))) {
-        if (sliding::toggleCellMark(tray, o->getCursorX(), o->getCursorY(), shapeId, slidingEditMode != 0)) {
-          sliding::syncSlidingProblems(*puzzle);
-          changed = true;
-          for (unsigned int p = 0; p < puzzle->getNumberOfProblems(); p++)
-            if (puzzle->getProblem(p)->resultValid() &&
-                puzzle->getProblem(p)->getResultId() == PcSel->getSelection())
-              changeProblem(p);
+      const bool goal = slidingEditMode != 0;
+      const int cx = o->getCursorX();
+      const int cy = o->getCursorY();
+      const unsigned int under = sliding::stampAt(tray, cx, cy, goal);
+      /* A whole piece at a time: a left click places the chosen piece with
+       * its top-left cell there, moving it if it was elsewhere, or takes it
+       * away when it would land exactly where it is; a right click takes
+       * away the piece that is there. */
+      bool did = false;
+      std::string why;
+      if (o->getClickButton() != 1) {
+        if (under != (unsigned int)-1)
+          did = sliding::clearStamp(tray, under, goal);
+      } else if (shapeId < puzzle->getNumberOfShapes() &&
+                 !sliding::isStartGoalShape(puzzle->getShape(shapeId))) {
+        if (sliding::stampIsAt(tray, puzzle->getShape(shapeId), shapeId, cx, cy, goal)) {
+          did = sliding::clearStamp(tray, shapeId, goal);
+        } else {
+          why = sliding::stampPiece(tray, puzzle->getShape(shapeId), shapeId, cx, cy, goal);
+          did = why.empty();
         }
+      }
+      if (!why.empty())
+        StatusLine->setText(why.c_str());
+      if (did) {
+        sliding::syncSlidingProblems(*puzzle);
+        changed = true;
+        for (unsigned int p = 0; p < puzzle->getNumberOfProblems(); p++)
+          if (puzzle->getProblem(p)->resultValid() &&
+              puzzle->getProblem(p)->getResultId() == PcSel->getSelection())
+            changeProblem(p);
       }
       activateShape(PcSel->getSelection());
       applySlidingGridMode();
@@ -1648,6 +1809,23 @@ void mainWindow_c::changeShape(unsigned int nr) {
   for (unsigned int i = 0; i < puzzle->getNumberOfProblems(); i++)
     if (puzzle->getProblem(i)->usesShape(nr))
       puzzle->getProblem(i)->removeAllSolutions();
+
+  /* A sliding piece whose shape changed no longer fits its starts and
+   * goals: they come off every start/goal shape. */
+  if (sliding::isSliding(*puzzle)) {
+    const std::vector<unsigned int> trays = sliding::dropChangedStamps(*puzzle, nr);
+    if (!trays.empty()) {
+      sliding::syncSlidingProblems(*puzzle);
+      std::string where;
+      for (unsigned int t : trays)
+        where += (where.empty() ? "S" : ", S") + std::to_string(t + 1);
+      const std::string msg = "S" + std::to_string(nr + 1) +
+          " changed shape: its start and goal were removed from " + where + ".";
+      StatusLine->setText(msg.c_str());
+      refreshSlideValid();
+      changed = true;
+    }
+  }
 }
 
 void mainWindow_c::updateUndoRedoButtons(void) {
@@ -1788,6 +1966,11 @@ bool mainWindow_c::tryToLoad(const char * f, bool * reportedError) {
 
   setFileName(f);
 
+  /* Sliding pieces are one layer deep: keep the first of any more. */
+  std::vector<unsigned int> flattened;
+  if (sliding::isSliding(*newPuzzle))
+    flattened = sliding::flattenPieces(*newPuzzle);
+
   ReplacePuzzle(newPuzzle);
 
   selectEntitiesTab(true);
@@ -1797,6 +1980,15 @@ bool mainWindow_c::tryToLoad(const char * f, bool * reportedError) {
 
   /* A restored solve is not in the file yet. */
   changed = restored;
+
+  if (!flattened.empty()) {
+    std::string names;
+    for (unsigned int s : flattened)
+      names += (names.empty() ? "S" : ", S") + std::to_string(s + 1);
+    fl_message("Sliding shapes are one layer deep. %s had more than one layer: only the "
+               "first layer was kept. Save the puzzle to keep this change.", names.c_str());
+    changed = true;
+  }
 
   // check for a started assemblies, and warn user about it
   bool containsStarted = false;
@@ -1830,6 +2022,10 @@ void mainWindow_c::openFromSystem(const char * filename) {
     return;
 
   ReentrancyGuard guard(handlingSystemOpen);
+
+  /* Opening a puzzle answers File, New's question: close it unchosen. */
+  if (gridSelector)
+    gridSelector->finish(gridTypeSelectorWindow_c::SEL_CANCEL);
 
   if (!filename || !filename[0])
     return;
@@ -1971,6 +2167,7 @@ void mainWindow_c::activateShape(unsigned int number) {
   }
 
   SolutionEmpty = true;
+  refreshSlideValid();
 }
 
 void mainWindow_c::activateProblem(unsigned int prob) {
@@ -2206,6 +2403,8 @@ void mainWindow_c::selectEntitiesTab(bool resetZoom) {
 
 void mainWindow_c::updateInterface(void) {
 
+  syncPieceColors();
+
   /* The selected problem may want another solver: stacking rod sets decide. */
   syncSolverTypeMenu();
 
@@ -2240,10 +2439,6 @@ void mainWindow_c::updateInterface(void) {
   const bool slidingPuzzle = sliding::isSliding(*puzzle);
   const bool stackingPuzzle = stacking::isStacking(*puzzle);
   syncStackingChrome();
-  if (colorsGroup) {
-    if (slidingPuzzle || stackingPuzzle) colorsGroup->hide();
-    else colorsGroup->show();
-  }
   if (colourAssignmentGroup) {
     if (slidingPuzzle || stackingPuzzle) colourAssignmentGroup->hide();
     else colourAssignmentGroup->show();
@@ -2553,6 +2748,15 @@ void mainWindow_c::updateEntitiesTab(bool slidingPuzzle) {
     BtnChnColor->activate();
   else
     BtnChnColor->deactivate();
+
+  // a shape's own colour; not the tray of a sliding puzzle, which shows the pieces'
+  if (BtnShapeColor) {
+    if (PcSel->getSelection() < puzzle->getNumberOfShapes() &&
+        !(slidingPuzzle && sliding::isStartGoalShape(puzzle->getShape(PcSel->getSelection()))))
+      BtnShapeColor->activate();
+    else
+      BtnShapeColor->deactivate();
+  }
 
   // we can only edit and copy shapes, when something valid is selected
   if (PcSel->getSelection() < puzzle->getNumberOfShapes()) {
@@ -2944,8 +3148,14 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
     case solveThread_c::ACT_ASSEMBLING:
       if (sliding::isSliding(*puzzle) && assmThread->disassemblyEnabled()) {
         /* A long sliding search should not look frozen. */
-        char tmp[64];
-        snprintf(tmp, 64, "slide search: %lu arrangements", assmThread->getSlideProgress());
+        char tmp[96];
+        if (assmThread->getSearchDepth() > 0)
+          snprintf(tmp, 96, "slide search: %s moves deep\n%s arrangements",
+                   withCommas(assmThread->getSearchDepth()).c_str(),
+                   withCommas(assmThread->getSlideProgress()).c_str());
+        else
+          snprintf(tmp, 96, "slide search: %s arrangements",
+                   withCommas(assmThread->getSlideProgress()).c_str());
         OutputActivity->value(tmp);
       } else if (stacking::isStacking(*puzzle) && assmThread->panexSearch()) {
         /* Short enough for the Activity line: 3.7M, 12.4B. */
@@ -2959,15 +3169,16 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
           snprintf(count, sizeof(count), "%.0f", n);
         char tmp[96];
         if (assmThread->getSearchTraced() > 0)
-          snprintf(tmp, 96, "panex: tracing the path, %lu of %lu moves",
+          snprintf(tmp, 96, "panex: tracing the path\n%lu of %lu moves",
                    assmThread->getSearchTraced(), assmThread->getSearchDepth());
         else
-          snprintf(tmp, 96, "panex: %lu moves deep, %s found",
+          snprintf(tmp, 96, "panex: %lu moves deep\n%s found",
                    assmThread->getSearchDepth(), count);
         OutputActivity->value(tmp);
       } else if (stacking::isStacking(*puzzle)) {
         char tmp[64];
-        snprintf(tmp, 64, "stack search: %lu stackings", assmThread->getSlideProgress());
+        snprintf(tmp, 64, "stack search\n%s stackings",
+                 withCommas(assmThread->getSlideProgress()).c_str());
         OutputActivity->value(tmp);
       } else {
         /* with what each take-apart under way is doing */
@@ -3079,6 +3290,14 @@ void mainWindow_c::updateSolverTab(bool stackingPuzzle, unsigned int prob) {
       bool hasResult = stacking::isStacking(*puzzle) ? pr->rodSetValid() : pr->resultValid();
       /* A stacking the Puzzle tab's bar marks Invalid cannot be solved. */
       bool stackOk = true;
+      /* Nor can a sliding puzzle whose Start/Goal tab says Invalid. */
+      if (sliding::isSliding(*puzzle) && pr->resultValid() &&
+          sliding::isStartGoalShape(getResultShape(*pr))) {
+        const std::string why = sliding::startGoalError(*puzzle, pr->getResultId());
+        stackOk = why.empty();
+        BtnStart->copy_tooltip(stackOk ? " Start new solving process, removing old result "
+                                       : (" Fix the start and goal on the Entities tab first: " + why + " ").c_str());
+      }
       if (stacking::isStacking(*puzzle)) {
         std::string why = stacking::setupError(*pr);
         stackOk = why.empty();

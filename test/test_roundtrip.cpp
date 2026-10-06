@@ -205,6 +205,27 @@ TEST_CASE("puzzle: an in-memory puzzle survives a save and reload", "[roundtrip]
   REQUIRE(bttest::puzzlesRoundtripEqual(original, restored));
 }
 
+/* A shape's own colour is saved; a shape without one stays without. */
+TEST_CASE("puzzle: a shape's own colour survives a save and reload", "[roundtrip]") {
+  puzzle_c original(new gridType_c(gridType_c::GT_BRICKS));
+  original.addShape(2, 1, 1);
+  original.addShape(1, 1, 1);
+  original.getShape(0)->setShapeColor(0x12AB7F);
+
+  std::ostringstream saved;
+  {
+    xmlWriter_c xml(saved);
+    original.save(xml);
+  }
+  CHECK(saved.str().find("color=\"#12AB7F\"") != std::string::npos);
+
+  std::istringstream reloaded(saved.str());
+  xmlParser_c pars(reloaded);
+  puzzle_c restored(pars);
+  CHECK(restored.getShape(0)->getShapeColor() == 0x12AB7F);
+  CHECK(restored.getShape(1)->getShapeColor() == -1);
+}
+
 TEST_CASE("problem: Solver tab settings are saved per problem", "[roundtrip]") {
   gridType_c gt(gridType_c::GT_BRICKS);
   puzzle_c original(new gridType_c(gridType_c::GT_BRICKS));

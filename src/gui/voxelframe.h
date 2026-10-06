@@ -167,6 +167,8 @@ class voxelFrame_c : public Fl_Gl_Window {
     void getNearFar(double * nearPlane, double * farPlane) const;
 
     void setCallback(VoxelViewCallbacks *c = 0) { cb = c; }
+    /* Whether the view cube is drawn in the corner; off for a picture. */
+    void setDrawViewCube(bool on) { drawViewCube = on; }
     bool pickShape(int x, int y, unsigned int *shape, unsigned long *voxel, unsigned int *face);
 
     typedef enum {
@@ -191,6 +193,9 @@ class voxelFrame_c : public Fl_Gl_Window {
     void lookFront(void);
     /** Stacking opens on the viewcube edge between Top and Front. */
     void setStackingView(bool on);
+    /** Look from a corner of the view cube, 0 to 7 in viewCube_c's order of
+     * corners; 0 is Front, Top and Right. For a picture. */
+    void lookFromCorner(int corner = 0);
 
   private:
 

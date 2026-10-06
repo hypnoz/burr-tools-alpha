@@ -439,6 +439,9 @@ debugStatsPanel_c::debugStatsPanel_c(int x, int y, int w, int h)
 
   body = new debugStatsBody_c(0, 1);
 
+  /* Widgets made after the panel are not its children. */
+  end();
+
   setShrinkMinSize(120, 0);
 
   solveStats_c empty = {};

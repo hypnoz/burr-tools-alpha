@@ -29,6 +29,29 @@ class puzzle_c;
 class guiGridType_c;
 class voxel_c;
 class Fl_Hold_Browser;
+class StackValidBar_c;
+
+/* A sliding piece drawn flat, its cells as squares in its colour, scaled to
+ * fit: so the piece chosen in the Start/Goal list can be told by its shape. */
+class slidePiecePreview_c : public Fl_Widget, public layoutable_c {
+
+  const puzzle_c * puzzle = nullptr;
+  unsigned int shape = (unsigned int)-1;
+
+  public:
+
+  slidePiecePreview_c(int x, int y, int w, int h);
+
+  /* the piece to show, read again each time it is drawn; ~0u for none */
+  void setPiece(const puzzle_c * puz, unsigned int shapeId);
+
+  void draw(void);
+
+  virtual void getMinSize(int * width, int * height) const {
+    *width = 40;
+    *height = 40;
+  }
+};
 
 // the class that contains the tool tab
 class ToolTab : public LFl_Tabs {
@@ -56,6 +79,15 @@ class ToolTab_0 : public ToolTab {
   pixmapList_c pm;
   layouter_c * startGoalTab;
   Fl_Hold_Browser * pieceList;
+  slidePiecePreview_c * piecePreview;
+  /* The Start/Goal tab's controls, and what the tab is for when another
+   * shape is chosen. */
+  layouter_c * sgControls;
+  StackValidBar_c * sgInfo;
+  /* The Start/Goal tab's colour: green when valid, red when not. */
+  Fl_Color sgTabColor;
+  Fl_Color plainTabColor;
+  Fl_Color plainGroupColor;
   LFl_Radio_Button * modeStart;
   LFl_Radio_Button * modeGoal;
   unsigned int selectedSgPiece;
@@ -65,6 +97,7 @@ class ToolTab_0 : public ToolTab {
 public:
 
   ToolTab_0(int x, int y, int w, int h);
+  ~ToolTab_0(void);
 
   void setVoxelSpace(puzzle_c * puz, unsigned int sh);
 
@@ -85,6 +118,12 @@ public:
   /** True once after a Start/Goal radio or piece-list callback. */
   bool takeModeCallback(void);
   void refreshPieceList(void);
+  /* Disable everything that changes a shape's depth: for sliding puzzles. */
+  void lockZ(bool lock);
+  /* Valid or not, the tab's colour, and the text for other shapes. */
+  void refreshStartGoalState(void);
+
+  void draw(void);
 };
 
 // the class that contains the tool tab

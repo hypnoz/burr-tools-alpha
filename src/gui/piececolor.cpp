@@ -20,6 +20,8 @@
  */
 #include "piececolor.h"
 
+#include <vector>
+
 #include <math.h>
 
 #define COLS 18
@@ -69,7 +71,20 @@ static float jb[JITTERS] = {
    0.4f, -0.4f,  0.4f, -0.4f,  0.0f,  0.0f,  0.0f,  0.0f
 };
 
+/* Shapes that have a colour of their own, by shape number: -1 for none. */
+static std::vector<int> ownColors;
+
+void setOwnPieceColors(const std::vector<int> & colors) {
+  ownColors = colors;
+}
+
+static int ownColor(int x) {
+  return (x >= 0 && (size_t)x < ownColors.size()) ? ownColors[(size_t)x] : -1;
+}
+
 float pieceColorR(int x) {
+  if (const int own = ownColor(x); own >= 0)
+    return float((own >> 16) & 0xFF) / 255.0f;
   if (x < COLS)
     return r[x];
   else
@@ -77,6 +92,8 @@ float pieceColorR(int x) {
 }
 
 float pieceColorG(int x) {
+  if (const int own = ownColor(x); own >= 0)
+    return float((own >> 8) & 0xFF) / 255.0f;
   if (x < COLS)
     return g[x];
   else
@@ -84,6 +101,8 @@ float pieceColorG(int x) {
 }
 
 float pieceColorB(int x) {
+  if (const int own = ownColor(x); own >= 0)
+    return float((own >> 0) & 0xFF) / 255.0f;
   if (x < COLS)
     return b[x];
   else
@@ -91,6 +110,8 @@ float pieceColorB(int x) {
 }
 
 unsigned int pieceColorRi(int x) {
+  if (const int own = ownColor(x); own >= 0)
+    return (unsigned int)((own >> 16) & 0xFF);
   if (x < COLS)
     return (unsigned int)(r[x]*255);
   else
@@ -98,6 +119,8 @@ unsigned int pieceColorRi(int x) {
 }
 
 unsigned int pieceColorGi(int x) {
+  if (const int own = ownColor(x); own >= 0)
+    return (unsigned int)((own >> 8) & 0xFF);
   if (x < COLS)
     return (unsigned int)(g[x]*255);
   else
@@ -105,6 +128,8 @@ unsigned int pieceColorGi(int x) {
 }
 
 unsigned int pieceColorBi(int x) {
+  if (const int own = ownColor(x); own >= 0)
+    return (unsigned int)((own >> 0) & 0xFF);
   if (x < COLS)
     return (unsigned int)(b[x]*255);
   else

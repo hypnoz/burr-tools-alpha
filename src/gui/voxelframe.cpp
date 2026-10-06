@@ -1898,6 +1898,14 @@ void voxelFrame_c::applyDefaultRotation(void) {
     rotater->resetRotation();
 }
 
+void voxelFrame_c::lookFromCorner(int corner) {
+  if (!rotater || !viewCube || corner < 0 || corner > 7)
+    return;
+  viewCube->snapToPart(viewCube_c::Part(viewCube_c::CORNER_PPP + corner), rotater.get());
+  userRotated = true;
+  redraw();
+}
+
 void voxelFrame_c::lookFront(void) {
   userRotated = false;
   applyDefaultRotation();

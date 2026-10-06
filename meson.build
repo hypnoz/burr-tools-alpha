@@ -155,6 +155,7 @@ gui_src = [
   'src/gui/assertwindow.cpp',
   'src/gui/assmimportwindow.cpp',
   'src/gui/blocklistgroup.cpp',
+  'src/gui/examplerender.cpp',
   'src/gui/bulkrangewindow.cpp',
   'src/gui/buttongroup.cpp',
   'src/gui/configuration.cpp',
@@ -196,6 +197,7 @@ gui_src = [
   'src/gui/stlexportsolution.cpp',
   'src/gui/togglebutton.cpp',
   'src/gui/tooltabs.cpp',
+  'src/gui/tutorials.cpp',
   'src/gui/vectorexportwindow.cpp',
   'src/gui/view3dgroup.cpp',
   'src/gui/viewcube.cpp',
@@ -404,7 +406,23 @@ vendored_lua_lib = static_library('vendored_lua', lua_src,
           override_options: ['werror=false'],
 	  )
 
-executable('burrtools', gui_src,
+# The grid selector's example pictures, built into the program.
+example_pictures = files(
+  'src/gui/images/examples/brick.png',
+  'src/gui/images/examples/prism.png',
+  'src/gui/images/examples/spheres.png',
+  'src/gui/images/examples/rhombic.png',
+  'src/gui/images/examples/tetraocta.png',
+  'src/gui/images/examples/sliding.png',
+  'src/gui/images/examples/stacking.png',
+)
+example_images_cpp = custom_target('exampleimages',
+  input: ['src/gui/images/examples/embed.py'] + example_pictures,
+  output: 'exampleimages.cpp',
+  command: [import('python').find_installation(), '@INPUT0@', '@OUTPUT@', example_pictures],
+)
+
+executable('burrtools', gui_src + [example_images_cpp],
           include_directories: inc,
           link_with: [libburr_core, vendored_gui_lib, vendored_lua_lib],
           dependencies: [manifold_dep, thread_dep, zlib_dep, gl_dep, glu_dep, gdiplus_dep, fltk_dep, fltkgl_dep, fltkimages_dep, fltkpng_dep, fltkz_dep, libpng_dep, cocoa_dep],

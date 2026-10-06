@@ -3,6 +3,7 @@
 
 #include "lib/bt_assert.h"
 #include "lib/sliding.h"
+#include "lib/slidelevels.h"
 #include "lib/assembler.h"
 #include "lib/assembly.h"
 #include "lib/disassembly.h"
@@ -20,6 +21,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -421,7 +424,7 @@ TEST_CASE("sliding: removing a labelled cell clears start and goal", "[sliding]"
   REQUIRE(tray->getGoalPiece(0, 0, 0) == 0);
 }
 
-TEST_CASE("sliding: One Way or Another solves to one 16-move path", "[sliding][solver]") {
+TEST_CASE("sliding: the test sliding puzzle solves to one 81-move path", "[sliding][solver]") {
   std::unique_ptr<puzzle_c> puzzle = puzzle_c::load("test/test_sliding_solver.xmpuzzle");
   REQUIRE(puzzle != nullptr);
   REQUIRE(puzzle->getGridType()->getType() == gridType_c::GT_SLIDING);
@@ -449,8 +452,7 @@ TEST_CASE("sliding: One Way or Another solves to one 16-move path", "[sliding][s
   REQUIRE(pr->getNumberOfSavedSolutions() == 1);
   const separation_c * path = pr->getSavedSolution(0)->getDisassembly();
   REQUIRE(path != nullptr);
-  /* 18 when a move was one straight run; two pieces turn a corner in one go. */
-  CHECK(path->getMoves() == 16);
+  CHECK(path->getMoves() == 81);
 }
 
 /* test/test_sliding_nested.xmpuzzle is a 12x8 tray with four 3x3 blocks, a
@@ -857,7 +859,7 @@ TEST_CASE("sliding: a tray too big for 64-bit keys is searched with 128-bit ones
   CHECK(oneMoverPerStep(*path));
   CHECK(path->getMoves() == 3);
   if (!legacyAsked)
-    CHECK(search.memoryStates == sliding::memoryStates(7 * 16, false));
+    CHECK(search.memoryStates == sliding::memoryStates(3 * 16, false));
 
   slideFixture_c g = slideFixture(8, 4, blocks);
   slideEnv("BURRTOOLS_SLIDE_LEGACY", true);
@@ -868,4 +870,423 @@ TEST_CASE("sliding: a tray too big for 64-bit keys is searched with 128-bit ones
     slideEnv("BURRTOOLS_SLIDE_LEGACY", false);
   REQUIRE(old != nullptr);
   CHECK(old->getMoves() == path->getMoves());
+}
+
+TEST_CASE("sliding: a key set finds what was put in it, on disk and in memory", "[sliding]") {
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "burrtools_test_keyset";
+  std::filesystem::create_directories(dir);
+  for (int onDisk = 0; onDisk < 2; onDisk++) {
+    /* Keys spread over all 128 bits, a few close together, sorted. */
+    std::vector<unsigned __int128> keys;
+    uint64_t x = 88172645463325252ull;
+    auto rnd = [&x]() {
+      x ^= x << 13;
+      x ^= x >> 7;
+      x ^= x << 17;
+      return x;
+    };
+    for (int i = 0; i < 5000; i++) {
+      unsigned __int128 k = ((unsigned __int128)rnd() << 64) | rnd();
+      if (i % 3 == 0)
+        k = keys.empty() ? 0 : keys.back() + 1 + rnd() % 300;
+      keys.push_back(k);
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+
+    sliding::levels::keySet_c<unsigned __int128> set;
+    REQUIRE(set.create(onDisk ? dir / "keys" : std::filesystem::path()));
+    std::vector<unsigned __int128> in;
+    std::vector<unsigned __int128> out;
+    for (size_t i = 0; i < keys.size(); i++)
+      (i % 2 ? out : in).push_back(keys[i]);
+    REQUIRE(set.addAll(in.begin(), in.end()));
+    REQUIRE(set.finish());
+    CHECK(set.size() == in.size());
+
+    std::vector<unsigned __int128> back;
+    REQUIRE(set.load(back));
+    CHECK(back == in);
+
+    /* Every key looked up at once: those put in are found, the others not. */
+    std::vector<char> found(keys.size(), 0);
+    sliding::levels::keySet_c<unsigned __int128>::reader_c reader(set);
+    REQUIRE(set.find(keys.data(), keys.size(), found.data(), reader));
+    for (size_t i = 0; i < keys.size(); i++)
+      CHECK((found[i] != 0) == (i % 2 == 0));
+  }
+  std::filesystem::remove_all(dir);
+}
+
+namespace {
+
+/* A 5x5 tray with a C-shaped piece open to the right, a unit piece A in
+ * its pocket, three more unit pieces and two 2x2 blocks:
+ *   CCCu.
+ *   CA..u
+ *   CCC..
+ *   BBDDu
+ *   BBDD.
+ * Carrying A, the C can close round a unit piece it passes, and then the
+ * three move together: the C cannot move back without it. The C's goal
+ * takes in the variable bottom right cell, where no piece may stop, so no
+ * search finds a path and every one searches all there is. */
+std::unique_ptr<puzzle_c> oneWayPuzzle(problem_c *& pr, std::unique_ptr<assembly_c> & start) {
+  auto puz = std::make_unique<puzzle_c>(new gridType_c(gridType_c::GT_SLIDING));
+  voxel_c * tray = puz->getShape(sliding::addStartGoalShape(*puz, 5, 5));
+  start = std::make_unique<assembly_c>(puz->getGridType());
+  struct piece_c {
+    std::vector<std::pair<int, int>> cells;
+    int x, y;
+  };
+  const std::vector<std::pair<int, int>> unit = {{0, 0}};
+  const std::vector<std::pair<int, int>> block = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+  const std::vector<piece_c> pieces = {
+    {{{0, 0}, {1, 0}, {2, 0}, {0, 1}, {0, 2}, {1, 2}, {2, 2}}, 0, 0},
+    {unit, 1, 1}, {unit, 4, 1}, {block, 2, 3}, {unit, 3, 0}, {unit, 4, 3}, {block, 0, 3},
+  };
+  for (const piece_c & pc : pieces) {
+    unsigned int id = puz->addShape(3, 3, 1);
+    for (auto c : pc.cells) {
+      puz->getShape(id)->setState(c.first, c.second, 0, voxel_c::VX_FILLED);
+      tray->setColor(pc.x + c.first, pc.y + c.second, 0, id + 1);
+      /* The C's goal: the bottom right corner. */
+      if (&pc == &pieces[0])
+        tray->setGoalPiece((unsigned)tray->getIndex(2 + c.first, 2 + c.second, 0), id + 1);
+    }
+    start->addPlacement(0, pc.x, pc.y, 0);
+  }
+  tray->setState(4, 4, 0, voxel_c::VX_VARIABLE);
+  sliding::syncSlidingProblems(*puz);
+  pr = puz->getProblem(0);
+  return puz;
+}
+
+} // namespace
+
+/* The full search looks for an arrangement reached by a move that cannot be
+ * made backwards in every level before, the others only in the last two.
+ * It must find exactly the arrangements the queue search does, which keeps
+ * them all. */
+TEST_CASE("sliding: the full search counts the same arrangements with one-way moves", "[sliding]") {
+  problem_c * pr = nullptr;
+  std::unique_ptr<assembly_c> start;
+  std::unique_ptr<puzzle_c> puz = oneWayPuzzle(pr, start);
+  const bool queueAsked = std::getenv("BURRTOOLS_SLIDE_QUEUE") != nullptr;
+
+  unsigned long visited[2] = {0, 0};
+  for (int nested = 0; nested < 2; nested++)
+    for (int k = 0; k < 2; k++) {
+      if (k == 1)
+        slideEnv("BURRTOOLS_SLIDE_QUEUE", true);
+      sliding::slideSearch_c search;
+      search.maxStates = sliding::FULL_SEARCH;
+      search.nested = nested != 0;
+      CHECK(sliding::findSlidePath(*pr, *start, search) == nullptr);
+      if (k == 1 && !queueAsked)
+        slideEnv("BURRTOOLS_SLIDE_QUEUE", false);
+      CHECK(search.outcome == sliding::SLIDE_NO_PATH);
+      visited[k] = search.visited;
+      /* With nested slides the puzzle has one-way moves that lead back to
+       * arrangements reached two or more moves before. */
+      if (k == 0 && nested && !queueAsked)
+        CHECK(search.oneWayRepeats > 0);
+      if (k == 1) {
+        CHECK(visited[0] == visited[1]);
+        CHECK(visited[0] > 100);
+      }
+    }
+}
+
+/* With nowhere to write, the levels stay in memory; with no disk to spare,
+ * the search says so. */
+TEST_CASE("sliding: the full search keeps its levels where it can", "[sliding]") {
+  problem_c * pr = nullptr;
+  std::unique_ptr<assembly_c> start;
+  std::unique_ptr<puzzle_c> puz = oneWayPuzzle(pr, start);
+  if (std::getenv("BURRTOOLS_SLIDE_QUEUE"))
+    return;
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "burrtools_test_slidedir";
+  std::filesystem::remove_all(dir);
+
+  sliding::slideSearch_c onDisk;
+  onDisk.maxStates = sliding::FULL_SEARCH;
+  onDisk.nested = true;
+  onDisk.workDir = dir.string();
+  CHECK(sliding::findSlidePath(*pr, *start, onDisk) == nullptr);
+  CHECK(onDisk.outcome == sliding::SLIDE_NO_PATH);
+  CHECK(onDisk.diskBytes > 0);
+  CHECK(onDisk.depth > 2);
+  /* The search's own folder goes when it ends. */
+  CHECK(std::filesystem::is_empty(dir));
+
+  /* A file where the folder should be: nowhere to write. */
+  std::filesystem::remove_all(dir);
+  { std::ofstream(dir.string()) << "x"; }
+  sliding::slideSearch_c inMemory;
+  inMemory.maxStates = sliding::FULL_SEARCH;
+  inMemory.nested = true;
+  inMemory.workDir = dir.string();
+  CHECK(sliding::findSlidePath(*pr, *start, inMemory) == nullptr);
+  CHECK(inMemory.outcome == sliding::SLIDE_NO_PATH);
+  CHECK(inMemory.diskBytes == 0);
+  CHECK(inMemory.visited == onDisk.visited);
+  std::filesystem::remove_all(dir);
+
+  sliding::slideSearch_c full;
+  full.maxStates = sliding::FULL_SEARCH;
+  full.nested = true;
+  full.workDir = dir.string();
+  full.diskBudget = 1;
+  CHECK(sliding::findSlidePath(*pr, *start, full) == nullptr);
+  CHECK(full.outcome == sliding::SLIDE_DISK);
+  CHECK(!full.error.empty());
+  std::filesystem::remove_all(dir);
+}
+
+/* The full search runs on every core, but finds the same path each time:
+ * as many moves as the queue search, through the same arrangements. */
+TEST_CASE("sliding: the full search finds the same path on any number of threads", "[sliding]") {
+  std::vector<std::vector<int>> paths;
+  for (unsigned int threads : {1u, 3u, 8u}) {
+    slideFixture_c f = slideFixture(4, 5, KLOTSKI);
+    sliding::slideSearch_c search;
+    search.maxStates = sliding::FULL_SEARCH;
+    search.threads = threads;
+    std::unique_ptr<separation_c> path = sliding::findSlidePath(*f.pr, *f.start, search);
+    REQUIRE(path != nullptr);
+    CHECK(path->getMoves() == 81);
+    CHECK(oneMoverPerStep(*path));
+    std::vector<int> places;
+    for (unsigned int s = 0; s <= path->getMoves(); s++)
+      for (unsigned int i = 0; i < path->getPieceNumber(); i++) {
+        places.push_back(path->getState(s)->getX(i));
+        places.push_back(path->getState(s)->getY(i));
+      }
+    paths.push_back(places);
+  }
+  CHECK(paths[0] == paths[1]);
+  CHECK(paths[0] == paths[2]);
+}
+
+
+/* Hidden: random trays with a C-shaped piece that can close round others,
+ * each searched to the end, or to the goal, by the queue search and the
+ * full search. They must agree on every arrangement there is, or on the
+ * moves to the goal. Run with ./build/test_burrtools "[.fuzz][sliding]";
+ * BT_SLIDE_FUZZ_TRIALS sets how many. */
+TEST_CASE("sliding: fuzz, the full search agrees with the queue search", "[.fuzz][sliding]") {
+  const char * e = std::getenv("BT_SLIDE_FUZZ_TRIALS");
+  const int trials = e ? std::atoi(e) : 300;
+  uint64_t x = 1234567;
+  auto rnd = [&x](int n) {
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    return (int)(x % (uint64_t)n);
+  };
+  const bool queueAsked = std::getenv("BURRTOOLS_SLIDE_QUEUE") != nullptr;
+  int compared = 0, found = 0, repeats = 0;
+  for (int trial = 0; trial < trials; trial++) {
+    const int W = 5 + rnd(3), H = 4 + rnd(3);
+    const bool reachable = rnd(2) == 0;
+    auto puz = std::make_unique<puzzle_c>(new gridType_c(gridType_c::GT_SLIDING));
+    voxel_c * tray = puz->getShape(sliding::addStartGoalShape(*puz, W, H));
+    auto start = std::make_unique<assembly_c>(puz->getGridType());
+    std::vector<std::vector<int>> occ((size_t)W, std::vector<int>((size_t)H, 0));
+    struct piece_c {
+      std::vector<std::pair<int, int>> cells;
+      int x, y;
+    };
+    std::vector<piece_c> pieces = {
+      {{{0, 0}, {1, 0}, {2, 0}, {0, 1}, {0, 2}, {1, 2}, {2, 2}}, 0, 0},
+      {{{0, 0}}, 1, 1},
+    };
+    for (const piece_c & pc : pieces)
+      for (auto c : pc.cells)
+        occ[(size_t)(pc.x + c.first)][(size_t)(pc.y + c.second)] = 1;
+    const std::vector<std::vector<std::pair<int, int>>> shapes = {
+      {{0, 0}}, {{0, 0}, {1, 0}}, {{0, 0}, {0, 1}}, {{0, 0}, {1, 0}, {0, 1}, {1, 1}}};
+    for (int extra = 2 + rnd(5); extra > 0; extra--) {
+      const auto & shape = shapes[(size_t)rnd(4)];
+      for (int tries = 0; tries < 50; tries++) {
+        const int px = rnd(W), py = rnd(H);
+        bool fits = true;
+        for (auto c : shape)
+          if (px + c.first >= W || py + c.second >= H || occ[(size_t)(px + c.first)][(size_t)(py + c.second)])
+            fits = false;
+        if (!fits)
+          continue;
+        for (auto c : shape)
+          occ[(size_t)(px + c.first)][(size_t)(py + c.second)] = 1;
+        pieces.push_back({shape, px, py});
+        break;
+      }
+    }
+    for (size_t i = 0; i < pieces.size(); i++) {
+      unsigned int id = puz->addShape(3, 3, 1);
+      for (auto c : pieces[i].cells) {
+        puz->getShape(id)->setState(c.first, c.second, 0, voxel_c::VX_FILLED);
+        tray->setColor(pieces[i].x + c.first, pieces[i].y + c.second, 0, id + 1);
+        if (i == 0)
+          tray->setGoalPiece((unsigned)tray->getIndex(W - 3 + c.first, H - 3 + c.second, 0), id + 1);
+      }
+      start->addPlacement(0, pieces[i].x, pieces[i].y, 0);
+    }
+    /* A variable cell in the C's goal: no path, and both search it all. */
+    if (!reachable) {
+      if (occ[(size_t)(W - 1)][(size_t)(H - 1)])
+        continue;
+      tray->setState(W - 1, H - 1, 0, voxel_c::VX_VARIABLE);
+    }
+    sliding::syncSlidingProblems(*puz);
+    problem_c * pr = puz->getProblem(0);
+
+    sliding::slideSearch_c level;
+    level.maxStates = sliding::FULL_SEARCH;
+    level.nested = true;
+    level.threads = 1 + (unsigned)rnd(4);
+    level.maxMemoryStates = 3000000;
+    std::unique_ptr<separation_c> levelPath = sliding::findSlidePath(*pr, *start, level);
+    if (level.outcome == sliding::SLIDE_MEMORY)
+      continue;
+
+    slideEnv("BURRTOOLS_SLIDE_QUEUE", true);
+    sliding::slideSearch_c queue;
+    queue.maxStates = sliding::FULL_SEARCH;
+    queue.nested = true;
+    queue.maxMemoryStates = 3000000;
+    std::unique_ptr<separation_c> queuePath = sliding::findSlidePath(*pr, *start, queue);
+    if (!queueAsked)
+      slideEnv("BURRTOOLS_SLIDE_QUEUE", false);
+    if (queue.outcome == sliding::SLIDE_MEMORY)
+      continue;
+
+    INFO("trial " << trial);
+    CHECK(level.outcome == queue.outcome);
+    if (level.outcome == sliding::SLIDE_NO_PATH)
+      CHECK(level.visited == queue.visited);
+    if (levelPath && queuePath) {
+      CHECK(levelPath->getMoves() == queuePath->getMoves());
+      found++;
+    }
+    compared++;
+    if (level.oneWayRepeats > 0)
+      repeats++;
+  }
+  printf("slide fuzz: %d compared, %d with a path, %d with one-way repeats\n", compared, found, repeats);
+}
+
+/* The Start/Goal tab places a whole piece at a time, and says the shape is
+ * valid once a piece has both a start and a goal, each the whole piece. */
+TEST_CASE("sliding: a whole piece is placed as a start or a goal", "[sliding]") {
+  /* A 5x3 tray, an L of three cells and a unit piece, no stamps yet. */
+  slideFixture_c f = slideFixture(5, 3, {});
+  voxel_c * tray = f.puz->getShape(0);
+  REQUIRE(sliding::isStartGoalShape(tray));
+  const unsigned int L = f.puz->addShape(2, 2, 1);
+  f.puz->getShape(L)->setState(0, 0, 0, voxel_c::VX_FILLED);
+  f.puz->getShape(L)->setState(1, 0, 0, voxel_c::VX_FILLED);
+  f.puz->getShape(L)->setState(0, 1, 0, voxel_c::VX_FILLED);
+  const unsigned int U = f.puz->addShape(1, 1, 1);
+  f.puz->getShape(U)->setState(0, 0, 0, voxel_c::VX_FILLED);
+  const voxel_c * l = f.puz->getShape(L);
+  const voxel_c * u = f.puz->getShape(U);
+
+  CHECK(!sliding::startGoalError(*f.puz, 0).empty());
+
+  /* The L's top-left cell goes where it is put: the cell above its corner. */
+  CHECK(sliding::stampPiece(tray, l, L, 1, 1, false).empty());
+  CHECK(sliding::stampAt(tray, 1, 0, false) == L);
+  CHECK(sliding::stampAt(tray, 2, 0, false) == L);
+  CHECK(sliding::stampAt(tray, 1, 1, false) == L);
+  CHECK(sliding::stampAt(tray, 2, 1, false) == (unsigned int)-1);
+  /* A start alone is not enough. */
+  CHECK(!sliding::startGoalError(*f.puz, 0).empty());
+
+  /* It is exactly there; one cell along it is not, and placing it there
+   * moves it, over cells it covered itself. */
+  CHECK(sliding::stampIsAt(tray, l, L, 1, 1, false));
+  CHECK(!sliding::stampIsAt(tray, l, L, 2, 1, false));
+  CHECK(sliding::stampFits(tray, l, L, 2, 1, false).empty());
+  CHECK(sliding::stampPiece(tray, l, L, 2, 1, false).empty());
+  CHECK(sliding::stampAt(tray, 1, 0, false) == (unsigned int)-1);
+  CHECK(sliding::stampAt(tray, 3, 0, false) == L);
+
+  /* Placing it again moves it. */
+  CHECK(sliding::stampPiece(tray, l, L, 0, 2, false).empty());
+  CHECK(sliding::stampAt(tray, 1, 0, false) == (unsigned int)-1);
+  CHECK(sliding::stampAt(tray, 0, 2, false) == L);
+
+  /* Off the tray, or onto another piece's start: nothing changes. */
+  CHECK(!sliding::stampPiece(tray, l, L, 4, 0, false).empty());
+  CHECK(sliding::stampPiece(tray, u, U, 4, 1, false).empty());
+  CHECK(!sliding::stampPiece(tray, l, L, 3, 2, false).empty());
+  CHECK(sliding::stampAt(tray, 0, 1, false) == L);
+
+  /* A goal on a variable cell is refused: no piece may stop there. */
+  tray->setState(4, 0, 0, voxel_c::VX_VARIABLE);
+  CHECK(!sliding::stampPiece(tray, u, U, 4, 0, true).empty());
+
+  /* A goal without a start, then both: valid. */
+  CHECK(sliding::clearStamp(tray, U, false));
+  CHECK(sliding::stampPiece(tray, u, U, 3, 0, true).empty());
+  CHECK(sliding::startGoalError(*f.puz, 0).find("no start") != std::string::npos);
+  CHECK(sliding::stampPiece(tray, u, U, 4, 2, false).empty());
+  CHECK(sliding::startGoalError(*f.puz, 0).empty());
+
+  /* A start that is only part of the piece is not valid. */
+  tray->setColor(1, 1, 0, 0);
+  CHECK(sliding::startGoalError(*f.puz, 0).find("not the whole piece") != std::string::npos);
+}
+
+/* Sliding shapes lie flat: a piece or a tray with more layers keeps only
+ * the first. */
+TEST_CASE("sliding: a piece of more than one layer is made flat", "[sliding]") {
+  slideFixture_c f = slideFixture(4, 3, {{1, 1, 0, 0, 3, 2}});
+  voxel_c * tray = f.puz->getShape(0);
+  tray->resize(4, 3, 2, voxel_c::VX_FILLED);
+  const unsigned int deep = f.puz->addShape(2, 1, 3);
+  voxel_c * v = f.puz->getShape(deep);
+  v->setState(0, 0, 0, voxel_c::VX_FILLED);
+  v->setState(1, 0, 2, voxel_c::VX_FILLED);
+
+  const std::vector<unsigned int> changed = sliding::flattenPieces(*f.puz);
+  CHECK(changed == std::vector<unsigned int>{0, deep});
+  CHECK(v->getZ() == 1);
+  CHECK(v->getState(0, 0, 0) == voxel_c::VX_FILLED);
+  CHECK(v->getState(1, 0, 0) == voxel_c::VX_EMPTY);
+  CHECK(tray->getZ() == 1);
+  CHECK(sliding::isStartGoalShape(tray));
+  CHECK(f.puz->getShape(1)->getZ() == 1);
+  CHECK(sliding::flattenPieces(*f.puz).empty());
+}
+
+/* A piece whose shape changes loses its start and goal; one that is only
+ * moved in its grid keeps them. */
+TEST_CASE("sliding: a piece that changes shape loses its start and goal", "[sliding]") {
+  slideFixture_c f = slideFixture(4, 3, {});
+  voxel_c * tray = f.puz->getShape(0);
+  const unsigned int bar = f.puz->addShape(3, 2, 1);
+  voxel_c * v = f.puz->getShape(bar);
+  v->setState(0, 0, 0, voxel_c::VX_FILLED);
+  v->setState(1, 0, 0, voxel_c::VX_FILLED);
+  REQUIRE(sliding::stampPiece(tray, v, bar, 0, 0, false).empty());
+  REQUIRE(sliding::stampPiece(tray, v, bar, 2, 2, true).empty());
+
+  /* moved one row up in its own grid: still the same shape */
+  v->setState(0, 0, 0, voxel_c::VX_EMPTY);
+  v->setState(1, 0, 0, voxel_c::VX_EMPTY);
+  v->setState(0, 1, 0, voxel_c::VX_FILLED);
+  v->setState(1, 1, 0, voxel_c::VX_FILLED);
+  CHECK(sliding::dropChangedStamps(*f.puz, bar).empty());
+  CHECK(sliding::stampAt(tray, 0, 0, false) == bar);
+
+  /* a cell longer: both go */
+  v->setState(2, 1, 0, voxel_c::VX_FILLED);
+  CHECK(sliding::dropChangedStamps(*f.puz, bar) == std::vector<unsigned int>{0});
+  CHECK(sliding::stampAt(tray, 0, 0, false) == (unsigned int)-1);
+  CHECK(sliding::stampAt(tray, 2, 2, true) == (unsigned int)-1);
 }

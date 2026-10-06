@@ -379,3 +379,40 @@ void image_c::minimizeWidth(unsigned int border, unsigned int multiple) {
   bitmap = std::move(nb);
   width = nw;
 }
+
+void image_c::minimizeHeight(unsigned int border, unsigned int multiple) {
+
+  auto rowUsed = [this](unsigned int y) {
+    for (unsigned int x = 0; x < width; x++)
+      if (bitmap[(y*width+x)*4+3] != 0)
+        return true;
+    return false;
+  };
+
+  unsigned int ymin = 0;
+  while (ymin < height && !rowUsed(ymin))
+    ymin++;
+  if (ymin == height)
+    return;
+  unsigned int ymax = height-1;
+  while (ymax > ymin && !rowUsed(ymax))
+    ymax--;
+
+  ymin = ymin > border ? ymin - border : 0;
+  ymax = ymax + border + 1 < height ? ymax + border : height-1;
+
+  /* make the height a multiple of the given multiplier, below and above */
+  unsigned int nh = ymax-ymin+1;
+  while (nh % multiple != 0 && (ymax + 1 < height || ymin > 0)) {
+    if (ymax + 1 < height)
+      ymax++;
+    else
+      ymin--;
+    nh = ymax-ymin+1;
+  }
+
+  std::vector<unsigned char> nb(bitmap.begin() + (std::ptrdiff_t)(ymin*width*4),
+                                bitmap.begin() + (std::ptrdiff_t)((ymax+1)*width*4));
+  bitmap = std::move(nb);
+  height = nh;
+}

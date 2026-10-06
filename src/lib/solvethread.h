@@ -404,7 +404,8 @@ public:
     return solverNote;
   }
 
-  /** Moves the Panex Solver has searched from both ends together. */
+  /** Moves the Panex Solver has searched from both ends together, or the
+   * Sliding Full Solver from the start. */
   unsigned long getSearchDepth(void) const {
     return searchDepth.load(std::memory_order_relaxed);
   }
@@ -438,6 +439,7 @@ private:
   unsigned int slideStartsCut = 0;    // starts whose search hit a limit
   bool slideMemoryCut = false;        // one of those hit the memory ceiling
   unsigned long slideMemoryStates = 0; // that ceiling, in arrangements
+  std::string slideDiskError;         // a full search that could not keep its levels
 
 private:
 

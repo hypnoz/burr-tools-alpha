@@ -150,6 +150,12 @@ protected:
   unsigned int diskSize;
 
   /**
+   * The colour the shape is drawn in, 0xRRGGBB, or -1 for the colour that
+   * goes with its number.
+   */
+  int shapeColor = -1;
+
+  /**
    * Per-voxel goal piece id (shape index + 1) used by Sliding start/goal
    * trays. Empty when the shape has no goal marks. Start marks use the
    * normal colour channel.
@@ -740,6 +746,10 @@ public:
   /** Stacking disc radius. 0 when this shape is not a generated disc. */
   unsigned int getDiskSize(void) const { return diskSize; }
   void setDiskSize(unsigned int s) { diskSize = s; }
+
+  /** The shape's own colour, 0xRRGGBB, or -1 for the colour of its number. */
+  int getShapeColor(void) const { return shapeColor; }
+  void setShapeColor(int c) { shapeColor = c; }
 
   /**
    * Return if a given coordinate is valid to use.

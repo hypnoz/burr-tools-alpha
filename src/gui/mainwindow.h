@@ -66,6 +66,7 @@ class LFl_Text_Editor;
 class LFl_Button;
 class statusWindow_c;
 class debugStatsPanel_c;
+class gridTypeSelectorWindow_c;
 class LFl_Tile;
 class voxel_c;
 
@@ -134,6 +135,15 @@ class mainWindow_c : public LFl_Double_Window {
 
   layouter_c *TabSolve;
   layouter_c *TabDebug;
+  /* The Tutorial tab, after Solver while a tutorial is open, and the
+   * tutorial text that takes the 3D view's place on the right. */
+  layouter_c *TabTutorial;
+  LFl_Help_View *tutorialPanel;
+  LFl_Help_View *tutorialNote;
+  /* The tab to go back to when the tutorial is closed. */
+  Fl_Widget *tabBeforeTutorial;
+  /* File, New's grid selector while it is open. */
+  gridTypeSelectorWindow_c *gridSelector;
   Fl_Group *solverPane;
   debugStatsPanel_c *debugPanel;
   solveStats_c lastSolveStats;
@@ -159,7 +169,7 @@ class mainWindow_c : public LFl_Double_Window {
 
   FlatButton *BtnPrepare, *BtnStart, *BtnCont, *BtnStop, *BtnPlacement, *BtnStep, *BtnMovement;
   FlatButton *BtnAbort = nullptr;
-  FlatButton *BtnNewShape, *BtnDelShape, *BtnCpyShape, *BtnRenShape, *BtnUndo, *BtnRedo, *BtnShapeLeft, *BtnShapeRight, *BtnWeightInc, *BtnWeightDec, *BtnDetails;
+  FlatButton *BtnNewShape, *BtnDelShape, *BtnCpyShape, *BtnRenShape, *BtnUndo, *BtnRedo, *BtnShapeLeft, *BtnShapeRight, *BtnWeightInc, *BtnWeightDec, *BtnDetails, *BtnShapeColor;
   FlatButton *BtnNewStartGoal, *BtnDelStartGoal;
   Fl_Widget *startGoalRow, *startGoalGap;
   FlatButton *BtnNewColor, *BtnDelColor, *BtnChnColor;
@@ -253,6 +263,12 @@ class mainWindow_c : public LFl_Double_Window {
   /* Green or red bar under min=0: whether the start and goal obey the rod set. */
   layouter_c * stackValidRow;
   StackValidBar_c * stackValidBar;
+  /* Under the 3D view, while a sliding puzzle's start/goal shape is chosen
+   * on the Entities tab: whether its starts and goals can be solved. */
+  StackValidBar_c * slideValidBar;
+public:
+  void refreshSlideValid(void);
+private:
   /* Gaps beside the shape order arrows in their stacking (left) and
    * classic (right end) places. Only one pair is shown at a time. */
   Fl_Widget * probArrowGapL[2];
@@ -324,7 +340,10 @@ class mainWindow_c : public LFl_Double_Window {
   void applyDebugTabVisibility(void);
   void updateDebugStats(void);
   void showDebugRightPane(void);
+  /* Back to the 3D view on the right, from the debug panel or the tutorial. */
   void hideDebugRightPane(void);
+  void CreateTutorialTab(void);
+  void showTutorialRightPane(void);
 
 
   bool is3DViewBig;
@@ -371,6 +390,15 @@ public:
   void show(int argn, char ** argv);
 
   void openFromSystem(const char * filename);
+
+  /* The tutorial of a grid type in the Tutorial tab, which opens after
+   * Solver if it is not open, and is selected. */
+  void openTutorial(int gridType);
+  void closeTutorial(void);
+
+  /* Shortly after start: File, New's grid selector, unless a puzzle was
+   * opened from the command line or the system. */
+  void startupChooseGrid(void);
 
   // overwrite hide to check for changes in all possible exit situations
   void hide(void);
@@ -503,6 +531,9 @@ public:
   void cb_Quit(void);
   void cb_About(void);
   void cb_Tutorial(void);
+  void cb_ShapeColor(void);
+  /* Give the piece colours the shapes' own colours, where they have one. */
+  void syncPieceColors(void);
   void cb_SolverTypeHelp(void);
   void cb_SolverType(void) {
     updateSolverOptionCheckboxes();

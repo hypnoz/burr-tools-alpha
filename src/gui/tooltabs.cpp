@@ -27,6 +27,10 @@
 #include "../lib/sliding.h"
 
 #include <FL/Fl_Hold_Browser.H>
+#include <FL/fl_draw.H>
+#include "rodbars.h"
+#include "piececolor.h"
+#include <algorithm>
 #include <cstdint>
 
 /* Scrolling piece list that participates in the tool-tab grid. */
@@ -119,6 +123,14 @@ public:
   int getZ(void) const { return (int)SizeZ->value(); }
 
   void setXYZ(long x, long y, long z);
+
+  /* Keep the Z size as it is: no box, roller or link to change it. */
+  void lockZ(bool lock) {
+    for (Fl_Widget * w : {(Fl_Widget *)SizeZ, (Fl_Widget *)SizeOutZ, (Fl_Widget *)ConnectZ}) {
+      if (lock) w->deactivate();
+      else w->activate();
+    }
+  }
 };
 
 
@@ -179,11 +191,11 @@ TransformButtons::TransformButtons(int x, int y, int w, int h, int type) : layou
 
   layouter_c * o = new layouter_c(1, 3, 1, 1);
 
-  new TransformPreviewButton(0, 0, 1, 1, pm.get(Transform_Color_Flip_X_xpm)        , pm.get(Transform_Disabled_Flip_X_xpm)        ,
+  new TransformPreviewButton(0, 0, 1, 1, pm.get(Transform_Color_Flip_X_xpm, TOOL_ICON_SCALE)        , pm.get(Transform_Disabled_Flip_X_xpm, TOOL_ICON_SCALE)        ,
       " Flip along Y-Z Plane ",              this, 12);
-  new TransformPreviewButton(0, 1, 1, 1, pm.get(Transform_Color_Flip_Y_xpm)        , pm.get(Transform_Disabled_Flip_Y_xpm)        ,
+  new TransformPreviewButton(0, 1, 1, 1, pm.get(Transform_Color_Flip_Y_xpm, TOOL_ICON_SCALE)        , pm.get(Transform_Disabled_Flip_Y_xpm, TOOL_ICON_SCALE)        ,
       " Flip along X-Z Plane ",              this, 13);
-  new TransformPreviewButton(0, 2, 1, 1, pm.get(Transform_Color_Flip_Z_xpm)        , pm.get(Transform_Disabled_Flip_Z_xpm)        ,
+  new TransformPreviewButton(0, 2, 1, 1, pm.get(Transform_Color_Flip_Z_xpm, TOOL_ICON_SCALE)        , pm.get(Transform_Disabled_Flip_Z_xpm, TOOL_ICON_SCALE)        ,
       " Flip along X-Y Plane ",              this, 14);
 
   o->end();
@@ -191,17 +203,17 @@ TransformButtons::TransformButtons(int x, int y, int w, int h, int type) : layou
   o = new layouter_c(3, 3, 1, 1);
 
   if (type == 0) {
-    new TransformPreviewButton(0, 0, 1, 1, pm.get(Transform_Color_Nudge_X_Left_xpm)  , pm.get(Transform_Disabled_Nudge_X_Left_xpm)  ,
+    new TransformPreviewButton(0, 0, 1, 1, pm.get(Transform_Color_Nudge_X_Left_xpm, TOOL_ICON_SCALE)  , pm.get(Transform_Disabled_Nudge_X_Left_xpm, TOOL_ICON_SCALE)  ,
         " Shift down along X ",                this,  1);
-    new TransformPreviewButton(1, 0, 1, 1, pm.get(Transform_Color_Nudge_X_Right_xpm) , pm.get(Transform_Disabled_Nudge_X_Right_xpm) ,
+    new TransformPreviewButton(1, 0, 1, 1, pm.get(Transform_Color_Nudge_X_Right_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Nudge_X_Right_xpm, TOOL_ICON_SCALE) ,
         " Shift up along X ",                  this,  0);
-    new TransformPreviewButton(0, 1, 1, 1, pm.get(Transform_Color_Nudge_Y_Left_xpm)  , pm.get(Transform_Disabled_Nudge_Y_Left_xpm)  ,
+    new TransformPreviewButton(0, 1, 1, 1, pm.get(Transform_Color_Nudge_Y_Left_xpm, TOOL_ICON_SCALE)  , pm.get(Transform_Disabled_Nudge_Y_Left_xpm, TOOL_ICON_SCALE)  ,
         " Shift down along Y ",                this,  3);
-    new TransformPreviewButton(1, 1, 1, 1, pm.get(Transform_Color_Nudge_Y_Right_xpm) , pm.get(Transform_Disabled_Nudge_Y_Right_xpm) ,
+    new TransformPreviewButton(1, 1, 1, 1, pm.get(Transform_Color_Nudge_Y_Right_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Nudge_Y_Right_xpm, TOOL_ICON_SCALE) ,
         " Shift up along Y ",                  this,  2);
-    new TransformPreviewButton(0, 2, 1, 1, pm.get(Transform_Color_Nudge_Z_Left_xpm)  , pm.get(Transform_Disabled_Nudge_Z_Left_xpm)  ,
+    new TransformPreviewButton(0, 2, 1, 1, pm.get(Transform_Color_Nudge_Z_Left_xpm, TOOL_ICON_SCALE)  , pm.get(Transform_Disabled_Nudge_Z_Left_xpm, TOOL_ICON_SCALE)  ,
         " Shift down along Z ",                this,  5);
-    new TransformPreviewButton(1, 2, 1, 1, pm.get(Transform_Color_Nudge_Z_Right_xpm) , pm.get(Transform_Disabled_Nudge_Z_Right_xpm) ,
+    new TransformPreviewButton(1, 2, 1, 1, pm.get(Transform_Color_Nudge_Z_Right_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Nudge_Z_Right_xpm, TOOL_ICON_SCALE) ,
         " Shift up along Z ",                  this,  4);
 
   } else if (type == 1) {
@@ -219,9 +231,9 @@ TransformButtons::TransformButtons(int x, int y, int w, int h, int type) : layou
     new TransformPreviewButton(1, 2, 1, 1, "@3->",
         " Shift down right XY plane ",     this,  27);
 
-    new TransformPreviewButton(0, 3, 1, 1, pm.get(Transform_Color_Nudge_Z_Left_xpm)  , pm.get(Transform_Disabled_Nudge_Z_Left_xpm)  ,
+    new TransformPreviewButton(0, 3, 1, 1, pm.get(Transform_Color_Nudge_Z_Left_xpm, TOOL_ICON_SCALE)  , pm.get(Transform_Disabled_Nudge_Z_Left_xpm, TOOL_ICON_SCALE)  ,
         " Shift down along Z ",            this,  5);
-    new TransformPreviewButton(1, 3, 1, 1, pm.get(Transform_Color_Nudge_Z_Right_xpm) , pm.get(Transform_Disabled_Nudge_Z_Right_xpm) ,
+    new TransformPreviewButton(1, 3, 1, 1, pm.get(Transform_Color_Nudge_Z_Right_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Nudge_Z_Right_xpm, TOOL_ICON_SCALE) ,
         " Shift up along Z ",              this,  4);
 
   } else if (type == 2) {
@@ -262,28 +274,28 @@ TransformButtons::TransformButtons(int x, int y, int w, int h, int type) : layou
 
   if (type == 1) {
 
-    new TransformPreviewButton(6, 0, 2, 1, pm.get(Transform_Color_Rotate_X_Left_xpm) , pm.get(Transform_Disabled_Rotate_X_Left_xpm) ,
+    new TransformPreviewButton(6, 0, 2, 1, pm.get(Transform_Color_Rotate_X_Left_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Rotate_X_Left_xpm, TOOL_ICON_SCALE) ,
         " Rotate 180° along X-Axis ",     this,  6);
-    new TransformPreviewButton(6, 1, 2, 1, pm.get(Transform_Color_Rotate_Y_Left_xpm) , pm.get(Transform_Disabled_Rotate_Y_Left_xpm) ,
+    new TransformPreviewButton(6, 1, 2, 1, pm.get(Transform_Color_Rotate_Y_Left_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Rotate_Y_Left_xpm, TOOL_ICON_SCALE) ,
         " Rotate 180° along Y-Axis ",     this,  9);
-    new TransformPreviewButton(6, 2, 1, 1, pm.get(Transform_Color_Rotate_Z_Left_xpm) , pm.get(Transform_Disabled_Rotate_Z_Left_xpm) ,
+    new TransformPreviewButton(6, 2, 1, 1, pm.get(Transform_Color_Rotate_Z_Left_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Rotate_Z_Left_xpm, TOOL_ICON_SCALE) ,
         " Rotate 60° clockwise along Z-Axis ",     this, 10);
-    new TransformPreviewButton(7, 2, 1, 1, pm.get(Transform_Color_Rotate_Z_Right_xpm), pm.get(Transform_Disabled_Rotate_Z_Right_xpm),
+    new TransformPreviewButton(7, 2, 1, 1, pm.get(Transform_Color_Rotate_Z_Right_xpm, TOOL_ICON_SCALE), pm.get(Transform_Disabled_Rotate_Z_Right_xpm, TOOL_ICON_SCALE),
         " Rotate 60° anticlockwise along Z-Axis ", this, 11);
 
   } else {
 
-    new TransformPreviewButton(6, 0, 1, 1, pm.get(Transform_Color_Rotate_X_Left_xpm) , pm.get(Transform_Disabled_Rotate_X_Left_xpm) ,
+    new TransformPreviewButton(6, 0, 1, 1, pm.get(Transform_Color_Rotate_X_Left_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Rotate_X_Left_xpm, TOOL_ICON_SCALE) ,
         " Rotate 90° clockwise along X-Axis ",     this,  6);
-    new TransformPreviewButton(7, 0, 1, 1, pm.get(Transform_Color_Rotate_X_Right_xpm), pm.get(Transform_Disabled_Rotate_X_Right_xpm),
+    new TransformPreviewButton(7, 0, 1, 1, pm.get(Transform_Color_Rotate_X_Right_xpm, TOOL_ICON_SCALE), pm.get(Transform_Disabled_Rotate_X_Right_xpm, TOOL_ICON_SCALE),
         " Rotate 90° anticlockwise along X-Axis ", this,  7);
-    new TransformPreviewButton(6, 1, 1, 1, pm.get(Transform_Color_Rotate_Y_Left_xpm) , pm.get(Transform_Disabled_Rotate_Y_Left_xpm) ,
+    new TransformPreviewButton(6, 1, 1, 1, pm.get(Transform_Color_Rotate_Y_Left_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Rotate_Y_Left_xpm, TOOL_ICON_SCALE) ,
         " Rotate 90° clockwise along Y-Axis ",     this,  9);
-    new TransformPreviewButton(7, 1, 1, 1, pm.get(Transform_Color_Rotate_Y_Right_xpm), pm.get(Transform_Disabled_Rotate_Y_Right_xpm),
+    new TransformPreviewButton(7, 1, 1, 1, pm.get(Transform_Color_Rotate_Y_Right_xpm, TOOL_ICON_SCALE), pm.get(Transform_Disabled_Rotate_Y_Right_xpm, TOOL_ICON_SCALE),
         " Rotate 90° anticlockwise along Y-Axis ", this,  8);
-    new TransformPreviewButton(6, 2, 1, 1, pm.get(Transform_Color_Rotate_Z_Left_xpm) , pm.get(Transform_Disabled_Rotate_Z_Left_xpm) ,
+    new TransformPreviewButton(6, 2, 1, 1, pm.get(Transform_Color_Rotate_Z_Left_xpm, TOOL_ICON_SCALE) , pm.get(Transform_Disabled_Rotate_Z_Left_xpm, TOOL_ICON_SCALE) ,
         " Rotate 90° clockwise along Z-Axis ",     this, 10);
-    new TransformPreviewButton(7, 2, 1, 1, pm.get(Transform_Color_Rotate_Z_Right_xpm), pm.get(Transform_Disabled_Rotate_Z_Right_xpm),
+    new TransformPreviewButton(7, 2, 1, 1, pm.get(Transform_Color_Rotate_Z_Right_xpm, TOOL_ICON_SCALE), pm.get(Transform_Disabled_Rotate_Z_Right_xpm, TOOL_ICON_SCALE),
         " Rotate 90° anticlockwise along Z-Axis ", this, 11);
   }
 
@@ -311,18 +323,18 @@ ToolsButtons::ToolsButtons(int x, int y, int w, int h) : layouter_c(x, y, w, h) 
 
   (new LFl_Box("Constrain", 3, 1, 2, 1))->labelsize(LABEL_FONT_SIZE);
 
-  new LFlatButton_c(3, 3, 1, 1, pm.get(InOut_Color_Fixed_In_xpm), pm.get(InOut_Disabled_Fixed_In_xpm),
+  new LFlatButton_c(3, 3, 1, 1, pm.get(InOut_Color_Fixed_In_xpm, TOOL_ICON_SCALE), pm.get(InOut_Disabled_Fixed_In_xpm, TOOL_ICON_SCALE),
       " Make inside fixed ", cb_ToolsButtons_stub, 16);
-  new LFlatButton_c(3, 5, 1, 1, pm.get(InOut_Color_Variable_In_xpm), pm.get(InOut_Disabled_Variable_In_xpm),
+  new LFlatButton_c(3, 5, 1, 1, pm.get(InOut_Color_Variable_In_xpm, TOOL_ICON_SCALE), pm.get(InOut_Disabled_Variable_In_xpm, TOOL_ICON_SCALE),
       " Make inside variable ", cb_ToolsButtons_stub, 18);
-  new LFlatButton_c(3, 7, 1, 1, pm.get(InOut_Color_RemoveColor_In_xpm), pm.get(InOut_Disabled_RemoveColor_In_xpm),
+  new LFlatButton_c(3, 7, 1, 1, pm.get(InOut_Color_RemoveColor_In_xpm, TOOL_ICON_SCALE), pm.get(InOut_Disabled_RemoveColor_In_xpm, TOOL_ICON_SCALE),
       " Remove Colours from inside voxels ", cb_ToolsButtons_stub, 20);
 
-  new LFlatButton_c(4, 3, 1, 1, pm.get(InOut_Color_Fixed_Out_xpm), pm.get(InOut_Disabled_Fixed_Out_xpm),
+  new LFlatButton_c(4, 3, 1, 1, pm.get(InOut_Color_Fixed_Out_xpm, TOOL_ICON_SCALE), pm.get(InOut_Disabled_Fixed_Out_xpm, TOOL_ICON_SCALE),
       " Make outside fixed ", cb_ToolsButtons_stub, 17);
-  new LFlatButton_c(4, 5, 1, 1, pm.get(InOut_Color_Variable_Out_xpm), pm.get(InOut_Disabled_Variable_Out_xpm),
+  new LFlatButton_c(4, 5, 1, 1, pm.get(InOut_Color_Variable_Out_xpm, TOOL_ICON_SCALE), pm.get(InOut_Disabled_Variable_Out_xpm, TOOL_ICON_SCALE),
       " Make outside variable ", cb_ToolsButtons_stub, 19);
-  new LFlatButton_c(4, 7, 1, 1, pm.get(InOut_Color_RemoveColor_Out_xpm), pm.get(InOut_Disabled_RemoveColor_Out_xpm),
+  new LFlatButton_c(4, 7, 1, 1, pm.get(InOut_Color_RemoveColor_Out_xpm, TOOL_ICON_SCALE), pm.get(InOut_Disabled_RemoveColor_Out_xpm, TOOL_ICON_SCALE),
       " Remove Colours from outside voxels ", cb_ToolsButtons_stub, 21);
 
   (new LFl_Box(0, 2, 1, 1))->setMinimumSize(0, 5);
@@ -346,11 +358,11 @@ SizeButtons::SizeButtons(int x, int y, int w, int h, bool addScale) : layouter_c
 
   (new LFl_Box("Grid", 0, 1, 1, 1))->labelsize(LABEL_FONT_SIZE);
 
-  new LFlatButton_c(0, 3, 1, 1, pm.get(Grid_Color_Minimize_xpm), pm.get(Grid_Disabled_Minimize_xpm),
+  new LFlatButton_c(0, 3, 1, 1, pm.get(Grid_Color_Minimize_xpm, TOOL_ICON_SCALE), pm.get(Grid_Disabled_Minimize_xpm, TOOL_ICON_SCALE),
       " Minimize size of grid ", cb_SizeButtons_stub, 15);
-  new LFlatButton_c(0, 5, 1, 1, pm.get(Grid_Color_Center_xpm), pm.get(Grid_Disabled_Center_xpm),
+  new LFlatButton_c(0, 5, 1, 1, pm.get(Grid_Color_Center_xpm, TOOL_ICON_SCALE), pm.get(Grid_Disabled_Center_xpm, TOOL_ICON_SCALE),
       " Centre shape inside the grid ", cb_SizeButtons_stub, 25);
-  new LFlatButton_c(0, 7, 1, 1, pm.get(Grid_Color_Origin_xpm), pm.get(Grid_Disabled_Origin_xpm),
+  new LFlatButton_c(0, 7, 1, 1, pm.get(Grid_Color_Origin_xpm, TOOL_ICON_SCALE), pm.get(Grid_Disabled_Origin_xpm, TOOL_ICON_SCALE),
       " Move shape to origin of grid ", cb_SizeButtons_stub, 24);
 
 
@@ -600,9 +612,27 @@ void ToolTab_0::setVoxelSpace(puzzle_c * puz, unsigned int sh) {
     changeSize->setXYZ(0, 0, 0);
 
   bool sliding = puzzle && puzzle->getGridType()->getType() == gridType_c::GT_SLIDING;
+  /* Sliding shapes lie flat, pieces and start/goal shapes alike: one
+   * layer, and nothing that adds more. */
+  lockZ(sliding);
+
+  /* Fl_Tabs draws a header for every child, shown or not: the Start/Goal
+   * tab is only a child while the puzzle is a sliding one. */
   if (startGoalTab) {
-    if (sliding) startGoalTab->show();
-    else startGoalTab->hide();
+    const bool present = startGoalTab->parent() == this;
+    if (sliding && !present) {
+      Fl_Widget * cur = value();
+      add(startGoalTab);
+      startGoalTab->hide();
+      if (cur)
+        value(cur);
+    } else if (!sliding && present) {
+      if (value() == startGoalTab && children() > 0)
+        value(child(0));
+      remove(startGoalTab);
+      startGoalTab->hide();
+    }
+    redraw();
   }
   refreshPieceList();
 }
@@ -626,7 +656,85 @@ static void cb_ToolTab0SgPiece_stub(Fl_Widget* o, long) {
     static_cast<ToolTab_0*>(p)->selectPiece((unsigned int)(uintptr_t)b->data(b->value()));
 }
 
-ToolTab_0::ToolTab_0(int x, int y, int w, int h) : ToolTab(x, y, w, h), pieceList(0), selectedSgPiece((unsigned int)-1), modeCallbackPending(false), shownTab(0) {
+slidePiecePreview_c::slidePiecePreview_c(int x, int y, int w, int h)
+  : Fl_Widget(0, 0, 0, 0), layoutable_c(x, y, w, h) {
+  box(FL_DOWN_BOX);
+  color(FL_BACKGROUND2_COLOR);
+}
+
+void slidePiecePreview_c::setPiece(const puzzle_c * puz, unsigned int shapeId) {
+  puzzle = puz;
+  shape = shapeId;
+  redraw();
+}
+
+void slidePiecePreview_c::draw(void) {
+  draw_box();
+  if (!puzzle || shape >= puzzle->getNumberOfShapes())
+    return;
+  const voxel_c * v = puzzle->getShape(shape);
+
+  /* The cells in use, all layers seen from above. */
+  int x0 = INT32_MAX, y0 = INT32_MAX, x1 = -1, y1 = -1;
+  for (unsigned int z = 0; z < v->getZ(); z++)
+    for (unsigned int y = 0; y < v->getY(); y++)
+      for (unsigned int x = 0; x < v->getX(); x++)
+        if (!v->isEmpty(x, y, z)) {
+          x0 = std::min(x0, (int)x);
+          y0 = std::min(y0, (int)y);
+          x1 = std::max(x1, (int)x);
+          y1 = std::max(y1, (int)y);
+        }
+  if (x1 < 0)
+    return;
+
+  /* As large as fits, with a margin, but not a single cell filling it all. */
+  const int margin = 8;
+  const int cw = x1 - x0 + 1;
+  const int ch = y1 - y0 + 1;
+  int cell = std::min((w() - 2 * margin) / cw, (h() - 2 * margin) / ch);
+  cell = std::min(cell, 48);
+  if (cell < 2)
+    return;
+  const int left = x() + (w() - cw * cell) / 2;
+  const int bottom = y() + (h() + ch * cell) / 2;
+
+  fl_push_clip(x() + Fl::box_dx(box()), y() + Fl::box_dy(box()),
+               w() - Fl::box_dw(box()), h() - Fl::box_dh(box()));
+  const Fl_Color fill = fl_rgb_color(pieceColorRi(shape), pieceColorGi(shape), pieceColorBi(shape));
+  /* cell edges that show on dark pieces as well as on light ones */
+  const unsigned int light = pieceColorRi(shape) * 3 + pieceColorGi(shape) * 6 + pieceColorBi(shape);
+  const Fl_Color edge = light < 800 ? fl_lighter(fl_lighter(fill)) : fl_darker(fl_darker(fill));
+  /* y rises upwards, as in the grid editor */
+  for (int y = y0; y <= y1; y++)
+    for (int x = x0; x <= x1; x++) {
+      bool filled = false;
+      for (unsigned int z = 0; z < v->getZ() && !filled; z++)
+        filled = !v->isEmpty(x, y, z);
+      if (!filled)
+        continue;
+      const int px = left + (x - x0) * cell;
+      const int py = bottom - (y - y0 + 1) * cell;
+      fl_color(fill);
+      fl_rectf(px, py, cell, cell);
+      fl_color(edge);
+      fl_rect(px, py, cell, cell);
+    }
+  fl_pop_clip();
+}
+
+/* Lay out again the scroll the widget sits in: its size may have changed. */
+static void relayoutAround(Fl_Widget * w) {
+  for (Fl_Widget * p = w; p; p = p->parent())
+    if (LFl_Scroll * s = dynamic_cast<LFl_Scroll *>(p)) {
+      s->relayout();
+      return;
+    }
+}
+
+static void cb_ToolTab0Relayout_stub(Fl_Widget * o, void *) { relayoutAround(o); }
+
+ToolTab_0::ToolTab_0(int x, int y, int w, int h) : ToolTab(x, y, w, h), pieceList(0), piecePreview(0), sgControls(0), sgInfo(0), sgTabColor(FL_BACKGROUND_COLOR), plainTabColor(FL_BACKGROUND_COLOR), plainGroupColor(FL_BACKGROUND_COLOR), selectedSgPiece((unsigned int)-1), modeCallbackPending(false), shownTab(0) {
 
   {
     layouter_c * o = new layouter_c(0, 1, 1, 1);
@@ -670,6 +778,9 @@ ToolTab_0::ToolTab_0(int x, int y, int w, int h) : ToolTab(x, y, w, h), pieceLis
     startGoalTab->pitch(5);
     startGoalTab->hide();
 
+    sgControls = new layouter_c(0, 0, 1, 1);
+    sgControls->weight(1, 1);
+
     modeStart = new LFl_Radio_Button("Start", 0, 0, 1, 1);
     modeStart->tooltip(" Paint start labels onto the selected start/goal shape ");
     modeStart->value(1);
@@ -681,15 +792,45 @@ ToolTab_0::ToolTab_0(int x, int y, int w, int h) : ToolTab(x, y, w, h), pieceLis
     (new LFl_Box(1, 0, 1, 2))->setMinimumSize(20, 0);
 
     LFl_Hold_Browser * list = new LFl_Hold_Browser(2, 0, 1, 2);
-    list->weight(1, 1);
+    list->weight(3, 1);
     list->callback(cb_ToolTab0SgPiece_stub);
     pieceList = list;
+
+    (new LFl_Box(3, 0, 1, 2))->setMinimumSize(8, 0);
+
+    /* About 40% of the width: the piece chosen in the list. */
+    piecePreview = new slidePiecePreview_c(4, 0, 1, 2);
+    piecePreview->weight(5, 1);
+    piecePreview->tooltip(" The piece chosen in the list ");
+
+    sgControls->end();
+
+    /* in the controls' place while another shape is chosen */
+    sgInfo = new StackValidBar_c(0, 2, 1, 1);
+    sgInfo->weight(1, 1);
+    sgInfo->align(FL_ALIGN_INSIDE | FL_ALIGN_WRAP | FL_ALIGN_LEFT | FL_ALIGN_TOP);
+    sgInfo->setMessage("This tab is only used to define the Start and Goal position of pieces "
+                       "for a Start/Goal specific piece.", FL_BACKGROUND_COLOR, FL_FOREGROUND_COLOR);
+    sgInfo->labelfont(FL_HELVETICA);
+    sgInfo->callback(cb_ToolTab0Relayout_stub);
+    sgInfo->hide();
+
+    plainTabColor = startGoalTab->selection_color();
+    sgTabColor = plainTabColor;
+    plainGroupColor = selection_color();
 
     startGoalTab->end();
   }
 
   end();
+  /* Taken out until a sliding puzzle needs it (setVoxelSpace). */
+  remove(startGoalTab);
   shownTab = value();
+}
+
+ToolTab_0::~ToolTab_0(void) {
+  if (startGoalTab && startGoalTab->parent() != this)
+    delete startGoalTab;
 }
 
 void ToolTab_0::cb_startGoalMode(void) {
@@ -699,6 +840,8 @@ void ToolTab_0::cb_startGoalMode(void) {
 
 void ToolTab_0::selectPiece(unsigned int shapeId) {
   selectedSgPiece = shapeId;
+  if (piecePreview)
+    piecePreview->setPiece(puzzle, shapeId);
   modeCallbackPending = true;
   do_callback();
 }
@@ -775,6 +918,74 @@ void ToolTab_0::refreshPieceList(void) {
   }
   pieceList->callback(cb_ToolTab0SgPiece_stub);
   pieceList->redraw();
+  if (piecePreview) {
+    piecePreview->setPiece(puzzle, selectedSgPiece);
+    if (editing) piecePreview->activate();
+    else piecePreview->deactivate();
+  }
+  refreshStartGoalState();
+}
+
+void ToolTab_0::refreshStartGoalState(void) {
+  if (!sgControls)
+    return;
+
+  const bool sliding = puzzle && puzzle->getGridType()->getType() == gridType_c::GT_SLIDING;
+  const bool editing = sliding && shape < puzzle->getNumberOfShapes() &&
+                       sliding::isStartGoalShape(puzzle->getShape(shape));
+
+  bool relayout = false;
+  auto setVis = [&relayout](Fl_Widget * w, bool on) {
+    if ((w->visible() != 0) == on)
+      return;
+    if (on) w->show(); else w->hide();
+    relayout = true;
+  };
+  setVis(sgControls, editing);
+  setVis(sgInfo, !editing);
+
+  /* Whether it can be solved is said under the 3D view; the tab's colour
+   * says it here. */
+  if (editing) {
+    const std::string err = sliding::startGoalError(*puzzle, shape);
+    sgTabColor = err.empty() ? fl_rgb_color(190, 235, 190) : fl_rgb_color(245, 190, 190);
+  } else {
+    sgTabColor = plainTabColor;
+  }
+  startGoalTab->selection_color(sgTabColor);
+
+  if (relayout)
+    relayoutAround(this);
+  redraw();
+}
+
+/* The selected tab takes the colour of the group, the others their own:
+ * the Start/Goal tab shows whether it is valid either way. */
+void ToolTab_0::draw(void) {
+  selection_color(startGoalTab && value() == startGoalTab ? sgTabColor : plainGroupColor);
+  ToolTab::draw();
+}
+
+/* The buttons that would give a piece more layers or move it along Z:
+ * nudge along Z (4, 5), rotate about X and Y (6 to 9), double and triple
+ * the shape (22, 23), and the grid scale (41). */
+static void lockZButtons(Fl_Widget * w, bool lock) {
+  if (LFlatButton_c * b = dynamic_cast<LFlatButton_c *>(w)) {
+    const long task = b->argument();
+    if ((task >= 4 && task <= 9) || task == 22 || task == 23 || task == 41) {
+      if (lock) b->deactivate();
+      else b->activate();
+    }
+    return;
+  }
+  if (Fl_Group * g = w->as_group())
+    for (int i = 0; i < g->children(); i++)
+      lockZButtons(g->child(i), lock);
+}
+
+void ToolTab_0::lockZ(bool lock) {
+  changeSize->lockZ(lock);
+  lockZButtons(this, lock);
 }
 
 void ToolTab_0::cb_size(void) {

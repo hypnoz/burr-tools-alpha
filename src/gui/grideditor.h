@@ -83,6 +83,8 @@ public:
 
   void setSlidingLabels(int mode) { slidingLabel = mode; redraw(); }
   void setSlidingPiece(unsigned int shapeIndexPlusOne) { slidingPiece = shapeIndexPlusOne; }
+  /** The mouse button of the last RS_SLIDING_CLICK: 1 left, 3 right. */
+  int getClickButton(void) const { return clickButton; }
 
 protected:
 
@@ -119,6 +121,7 @@ protected:
   int slidingLabel;
   /** Shape index + 1 of the piece whose S# is stamped, or 0. */
   unsigned int slidingPiece;
+  int clickButton = 0;
 
   bool setLayer(unsigned int zv);
   int handle(int event);
@@ -212,6 +215,17 @@ public:
   virtual void drawTileFrame(int x, int y, int z, int tx, int ty, int sx, int sy) = 0;
   virtual void drawTileColor(int x, int y, int z, int tx, int ty, int sx, int sy) = 0;
   virtual void drawTileCursor(int x, int y, int z, int tx, int ty, int sx, int sy) = 0;
+  /* An outline just inside tile x;y in the current colour and line style,
+   * for the Start/Goal preview. Only the square grid, which sliding uses,
+   * draws one. */
+  virtual void drawTileOutline(int /*x*/, int /*y*/, int /*tx*/, int /*ty*/, int /*sx*/, int /*sy*/) {}
+
+private:
+  /* Start/Goal tab: where a click would put the chosen piece, green when it
+   * fits, red when it does not, orange when it is there already and the
+   * click takes it away. */
+  void drawStampPreview(int tx, int ty, int sx, int sy);
+public:
 
 private:
 

@@ -109,7 +109,7 @@ voxel_c::voxel_c(const voxel_c & orig) :
   gt(orig.gt), sx(orig.sx), sy(orig.sy), sz(orig.sz), voxels(orig.voxels), space(orig.space),
   bx1(orig.bx1), bx2(orig.bx2), by1(orig.by1), by2(orig.by2), bz1(orig.bz1), bz2(orig.bz2),
   doRecalc(true), symmetries(symmetryInvalid()), hx(orig.hx), hy(orig.hy), hz(orig.hz),
-  name(orig.name), weight(orig.weight), diskSize(orig.diskSize), goalPiece(orig.goalPiece),
+  name(orig.name), weight(orig.weight), diskSize(orig.diskSize), shapeColor(orig.shapeColor), goalPiece(orig.goalPiece),
   BbHsCache(9 * orig.gt->getSymmetries()->getNumTransformationsMirror(), BBHSCACHE_UNINIT) {
 }
 
@@ -117,7 +117,7 @@ voxel_c::voxel_c(const voxel_c * orig) :
   gt(orig->gt), sx(orig->sx), sy(orig->sy), sz(orig->sz), voxels(orig->voxels), space(orig->space),
   bx1(orig->bx1), bx2(orig->bx2), by1(orig->by1), by2(orig->by2), bz1(orig->bz1), bz2(orig->bz2),
   doRecalc(true), symmetries(symmetryInvalid()), hx(orig->hx), hy(orig->hy), hz(orig->hz),
-  name(orig->name), weight(orig->weight), diskSize(orig->diskSize), goalPiece(orig->goalPiece),
+  name(orig->name), weight(orig->weight), diskSize(orig->diskSize), shapeColor(orig->shapeColor), goalPiece(orig->goalPiece),
   BbHsCache(9 * orig->gt->getSymmetries()->getNumTransformationsMirror(), BBHSCACHE_UNINIT) {
 }
 
@@ -586,6 +586,7 @@ void voxel_c::copy(const voxel_c * orig) {
 
   weight = orig->weight;
   diskSize = orig->diskSize;
+  shapeColor = orig->shapeColor;
   goalPiece = orig->goalPiece;
 }
 
@@ -722,6 +723,13 @@ void voxel_c::save(xmlWriter_c & xml) const {
   if (diskSize)
     xml.newAttrib("diskSize", diskSize);
 
+  /* "#RRGGBB"; versions that do not know it pass over it */
+  if (shapeColor >= 0) {
+    char c[8];
+    snprintf(c, sizeof(c), "#%06X", (unsigned int)shapeColor & 0xFFFFFF);
+    xml.newAttrib("color", c);
+  }
+
   if (hasGoalPieces()) {
     std::string g;
     for (unsigned int i = 0; i < getXYZ(); i++) {
@@ -823,6 +831,10 @@ voxel_c::voxel_c(xmlParser_c & pars, const gridType_c * g) : gt(g), hx(0), hy(0)
   szStr = pars.getAttributeValue("weight");
   if (szStr != "")
     weight = atoi(szStr.c_str());
+
+  szStr = pars.getAttributeValue("color");
+  if (szStr.size() == 7 && szStr[0] == '#')
+    shapeColor = (int)(strtoul(szStr.c_str() + 1, nullptr, 16) & 0xFFFFFF);
 
   szStr = pars.getAttributeValue("diskSize");
   if (szStr != "")
