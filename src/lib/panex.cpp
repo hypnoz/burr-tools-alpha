@@ -114,6 +114,10 @@ public:
   bool pocket[MAX_RODS] = {};
   int position[MAX_RODS] = {};
   bool distance = false;
+  /* The outside channel joins these two rods past every raised disc; -1
+   * when there is none. */
+  int channelA = -1;
+  int channelB = -1;
   /* The rods mirror onto each other end to end: no pocket. */
   bool mirrorable = false;
 
@@ -150,8 +154,10 @@ public:
         const int b = position[to];
         const int lo = std::min(a, b);
         const int hi = std::max(a, b);
+        const bool channel = ((int)from == channelA && (int)to == channelB) ||
+                             ((int)from == channelB && (int)to == channelA);
         bool blocked = false;
-        for (unsigned int r = 0; r < rods && !blocked; r++)
+        for (unsigned int r = 0; r < rods && !blocked && !channel; r++)
           if (r != from && r != to && !pocket[r] && position[r] > lo && position[r] < hi && up[r])
             blocked = true;
         if (blocked || (distance && hi - lo != 1))
@@ -1317,6 +1323,10 @@ bool setup(const problem_c & prob, rules_c & rules, pkey_c & startKey, pkey_c & 
       rules.mirrorable = false;
   }
   rules.distance = board.distanceMatters && !board.canMoveOver;
+  if (stacking::hasOutsideChannel(board)) {
+    rules.channelA = 0;
+    rules.channelB = (int)board.rodCount - 1;
+  }
   startKey = rules.encode(rules.fromStacking(startSt));
   goalKey = rules.encode(rules.fromStacking(goalSt));
   return true;
@@ -1405,6 +1415,9 @@ uint64_t fingerprintOf(const rules_c & rules, pkey_c start, pkey_c goal) {
     mix((uint64_t)(int64_t)rules.position[r]);
   }
   mix(rules.distance);
+  /* Only when on, so searches saved before the channel keep their folder. */
+  if (rules.channelA >= 0)
+    mix(0x6368616e6e656cull);
   mix(start.hi);
   mix(start.lo);
   mix(goal.hi);

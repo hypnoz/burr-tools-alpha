@@ -246,6 +246,7 @@ class mainWindow_c : public LFl_Double_Window {
   LFl_Check_Button * rodPanex;
   LFl_Check_Button * rodPocket;
   LFl_Value_Input * rodPocketHeight;
+  LFl_Check_Button * rodChannel;
   bool rodFieldGuard;
 
   FlatButton *BtnNewRod, *BtnDelRod, *BtnCpyRod, *BtnRenRod, *BtnRodLeft, *BtnRodRight, *BtnRodUndo, *BtnRodRedo;

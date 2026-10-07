@@ -282,7 +282,7 @@ void mainWindow_c::cb_SolverTypeHelp(void) {
     addSolverHelpHeading(row++, "Stacking Solver");
     addSolverHelpBody(row++,
         "•  Finds the fewest rod transfers from the start stacking to the goal. One move is one disc going from the top of one rod to the top of another.\n"
-        "•  Follows the rod set's rules: size, distance and Panex columns.\n"
+        "•  Follows the rod set's rules: size, distance, Panex columns, the pocket and the outside channel.\n"
         "•  Stops when the stackings it holds fill about 2 GB, or half of this computer's memory with Enable High Memory.");
     (new LFl_Box(0, row++))->setMinimumSize(0, 16);
 

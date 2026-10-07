@@ -93,7 +93,7 @@ How many rods: the pegs on the board.
 Grow to the height of all pieces, or Defined height: whether a rod can hold every disc or is full at a given count.
 Disc size matters: no large disc on a smaller one, as in the Tower of Hanoi.
 Disc can only move over 1 rod: a disc may only go to a neighbouring rod.
-Panex Style Columns: the rules of the Panex puzzle, where a disc of size n can sit at most n places below the top of its column. "Add pocket column" adds the extra column some Panex variants have.
+Panex Style Columns: the rules of the Panex puzzle, where a disc of size n can sit at most n places below the top of its column. "Add pocket column" adds the extra column some Panex variants have. "Extra outside channel" joins the first and last rods around the bridge, so a disc raised on a rod in between no longer blocks moves between them; it needs three rods or more.
 
 -- The puzzle:
 On the Puzzle tab, press "New" to make a puzzle, choose its rod set, and add the discs it uses. Under "Stack Order", choose "Start", pick a rod, and order the discs that start on it from bottom to top; then do the same with "Goal" for where they must end. The 3D view shows the rods with the stacks.

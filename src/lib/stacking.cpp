@@ -129,8 +129,9 @@ bool panexRaised(const std::vector<unsigned int> & depth) {
 }
 
 /* Height above the base of each disc on one rod, bottom to top. Discs
- * stack from the base, except in a Panex column, where they hang from the
- * bridge as high as they go: the top one in the bridge when it is raised. */
+ * stack from the base, except in a Panex column, where each falls as far
+ * as its depth lets it and comes to rest on the V or on the disc below.
+ * The capacity is the bridge, so a raised top disc sits in it. */
 std::vector<int> discHeights(const rodSet_c & board, const std::vector<piece_c> & pieces,
                              const std::vector<unsigned int> & column, unsigned int rod) {
   std::vector<int> z(column.size());
@@ -140,12 +141,11 @@ std::vector<int> discHeights(const rodSet_c & board, const std::vector<piece_c> 
       z[h] = (int)h;
     return z;
   }
-  std::vector<unsigned int> depth;
-  for (unsigned int d : column)
-    depth.push_back(depthOf(board, pieces[d], n));
-  const int top = (int)capacityOf(board, n) - (panexRaised(depth) ? 0 : 1);
-  for (size_t h = 0; h < column.size(); h++)
-    z[h] = top - (int)(column.size() - 1 - h);
+  const int bridge = (int)capacityOf(board, n);
+  for (size_t h = 0; h < column.size(); h++) {
+    const int floor = bridge - (int)depthOf(board, pieces[column[h]], n);
+    z[h] = h == 0 ? floor : std::max(floor, z[h - 1] + 1);
+  }
   return z;
 }
 
@@ -235,11 +235,13 @@ bool moveAllowed(const rodSet_c & board, const std::vector<piece_c> & pieces,
   const int a = rodPosition(board, from);
   const int b = rodPosition(board, to);
   if (board.panexColumns) {
-    /* A disc raised into the bridge blocks every move that passes over it. */
+    /* A disc raised into the bridge blocks every move that passes over it,
+     * except one that goes around through the outside channel. */
     const int lo = std::min(a, b);
     const int hi = std::max(a, b);
+    const bool channel = viaOutsideChannel(board, from, to);
     std::vector<unsigned int> depth;
-    for (unsigned int r = 0; r < cfg.size(); r++) {
+    for (unsigned int r = 0; r < cfg.size() && !channel; r++) {
       const int p = rodPosition(board, r);
       if (r == from || r == to || p <= lo || p >= hi || isPocket(board, r))
         continue;
@@ -431,6 +433,16 @@ int rodPosition(const rodSet_c & board, unsigned int rod) {
   return isPocket(board, rod) ? -1 : (int)rod;
 }
 
+bool hasOutsideChannel(const rodSet_c & board) {
+  return board.panexColumns && board.outsideChannel && board.rodCount >= 3;
+}
+
+bool viaOutsideChannel(const rodSet_c & board, unsigned int from, unsigned int to) {
+  const unsigned int last = board.rodCount - 1;
+  return hasOutsideChannel(board) &&
+         ((from == 0 && to == last) || (from == last && to == 0));
+}
+
 std::string rodName(const rodSet_c & board, unsigned int rod) {
   return isPocket(board, rod) ? "the pocket column" : "rod " + std::to_string(rod + 1);
 }
@@ -512,6 +524,8 @@ void saveRodSets(const puzzle_c & puz, xmlWriter_c & xml) {
       xml.newAttrib("panex", 1u);
     if (r.pocketColumn)
       xml.newAttrib("pocket", r.pocketHeight);
+    if (r.outsideChannel)
+      xml.newAttrib("channel", 1u);
     xml.endTag("rodSet");
   }
   xml.endTag("rodSets");
@@ -538,6 +552,7 @@ void loadRodSets(puzzle_c & puz, xmlParser_c & pars) {
         r.pocketColumn = true;
         r.pocketHeight = pocket;
       }
+      r.outsideChannel = countAttribute(pars, "channel", r.outsideChannel, 1) != 0;
       puz.addRodSet(r);
       pars.skipSubTree();
     } else {

@@ -391,6 +391,11 @@ void mainWindow_c::CreateShapeTab(void) {
       rodPocketHeight->when(FL_WHEN_RELEASE | FL_WHEN_ENTER_KEY);
       rodPocketHeight->stretchVCenter();
       rodPocketHeight->callback(cb_RodField_stub, this);
+
+      y++;
+      rodChannel = new LFl_Check_Button("Extra outside channel", 0, y, 2, 1);
+      rodChannel->tooltip(" A channel outside the bridge joins the first and last rods, so a disc can move between them even while a disc is raised on a rod in between. Needs Panex Style Columns and three rods or more. ");
+      rodChannel->callback(cb_RodField_stub, this);
       rules->end();
     }
     rodsPanel->end();
@@ -1640,6 +1645,7 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   rodPanex = 0;
   rodPocket = 0;
   rodPocketHeight = 0;
+  rodChannel = 0;
   rodFieldGuard = false;
   BtnNewRod = BtnDelRod = BtnCpyRod = BtnRenRod = 0;
   BtnRodLeft = BtnRodRight = BtnRodUndo = BtnRodRedo = 0;

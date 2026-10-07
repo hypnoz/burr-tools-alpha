@@ -385,11 +385,32 @@ TEST_CASE("stacking: a Panex column limits how deep a disc goes", "[stacking]") 
   CHECK(setupError(*pr).find("Panex column") != std::string::npos);
 }
 
+TEST_CASE("stacking: Panex discs rest as low as they can go", "[stacking]") {
+  puzzle_c puz = makeBoard();
+  problem_c * pr = makePanexJr(puz);
+
+  /* Ids 0..5 are sizes 6..1. Take the size 1 and size 2 discs off: the
+   * rest stay at the bottom of rod 1 instead of rising to the bridge. */
+  REQUIRE(liftTop(*pr, false, 0).empty());
+  REQUIRE(liftTop(*pr, false, 0).empty());
+  /* On rod 2 the size 2 disc falls two below the bridge, and the size 1
+   * disc on it rests one below. */
+  REQUIRE(placeDisk(*pr, false, 4, 1).empty());
+  REQUIRE(placeDisk(*pr, false, 5, 1).empty());
+
+  const boardLayout_c lay = layoutBoard(*pr, false);
+  for (unsigned int id = 0; id < 4; id++)
+    CHECK(lay.disks[id].z == (int)id);
+  CHECK(lay.disks[4].z == 4);
+  CHECK(lay.disks[5].z == 5);
+}
+
 TEST_CASE("stacking: Panex settings survive a save and load", "[stacking]") {
   puzzle_c puz = makeBoard();
   puz.getRodSet(0).panexColumns = true;
   puz.getRodSet(0).pocketColumn = true;
   puz.getRodSet(0).pocketHeight = 2;
+  puz.getRodSet(0).outsideChannel = true;
 
   std::stringstream saved;
   {
@@ -403,6 +424,7 @@ TEST_CASE("stacking: Panex settings survive a save and load", "[stacking]") {
   CHECK(loaded.getRodSet(0).panexColumns);
   CHECK(loaded.getRodSet(0).pocketColumn);
   CHECK(loaded.getRodSet(0).pocketHeight == 2);
+  CHECK(loaded.getRodSet(0).outsideChannel);
 }
 
 /* The classic Panex swap: three Panex columns n deep, a tower of n discs on
@@ -489,6 +511,48 @@ TEST_CASE("panex: the two solvers agree on the Panex swap", "[stacking][panex]")
     REQUIRE(path);
     CHECK(logicalMoves(*path) == logicalMoves(*stacked));
   }
+}
+
+/* The outside channel lets a disc go between the outer rods while one is
+ * raised on the middle rod, which makes the swap shorter; both solvers
+ * keep the rule. */
+TEST_CASE("panex: the outside channel shortens the Panex swap", "[stacking][panex]") {
+  for (unsigned int n = 2; n <= 4; n++) {
+    INFO(n << " discs a tower");
+    puzzle_c puz = makeBoard();
+    problem_c * pr = makePanexSwap(puz, n);
+    panex::panexSearch_c plain;
+    std::unique_ptr<separation_c> without = panex::solve(*pr, plain);
+    REQUIRE(without);
+
+    puz.getRodSet(0).outsideChannel = true;
+    REQUIRE(hasOutsideChannel(puz.getRodSet(0)));
+    panex::panexSearch_c search;
+    std::unique_ptr<separation_c> path = panex::solve(*pr, search);
+    REQUIRE(path);
+    CHECK(logicalMoves(*path) < logicalMoves(*without));
+    if (n <= 3) {
+      std::unique_ptr<separation_c> stacked = findStackPath(*pr);
+      REQUIRE(stacked);
+      CHECK(logicalMoves(*path) == logicalMoves(*stacked));
+    }
+  }
+}
+
+TEST_CASE("stacking: the outside channel needs Panex columns and three rods", "[stacking]") {
+  rodSet_c board;
+  board.panexColumns = true;
+  board.outsideChannel = true;
+  board.rodCount = 4;
+  CHECK(hasOutsideChannel(board));
+  CHECK(viaOutsideChannel(board, 0, 3));
+  CHECK(viaOutsideChannel(board, 3, 0));
+  CHECK_FALSE(viaOutsideChannel(board, 0, 2));
+  board.rodCount = 2;
+  CHECK_FALSE(hasOutsideChannel(board));
+  board.rodCount = 3;
+  board.panexColumns = false;
+  CHECK_FALSE(hasOutsideChannel(board));
 }
 
 TEST_CASE("panex: the Panex Solver needs Panex columns", "[stacking][panex]") {

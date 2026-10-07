@@ -68,6 +68,12 @@ struct rodSet_c {
   bool pocketColumn = false;
   /** Discs the pocket column holds. */
   unsigned int pocketHeight = 1;
+  /**
+   * With Panex columns and three rods or more: a channel outside the bridge
+   * joins the first and last rods, so a move between them is not blocked by
+   * a disc raised on a rod in between.
+   */
+  bool outsideChannel = false;
 };
 
 /** Rods on the board: the rod count, plus the pocket column when it is on. */
@@ -81,6 +87,12 @@ bool isPocket(const rodSet_c & board, unsigned int rod);
 
 /** Where a rod stands along the board: rod r at r, the pocket at -1. */
 int rodPosition(const rodSet_c & board, unsigned int rod);
+
+/** The outside channel is in use: it is set, with Panex columns and three rods or more. */
+bool hasOutsideChannel(const rodSet_c & board);
+
+/** A move between these rods can go through the outside channel. */
+bool viaOutsideChannel(const rodSet_c & board, unsigned int from, unsigned int to);
 
 /** "rod 2" or "the pocket column", for messages. */
 std::string rodName(const rodSet_c & board, unsigned int rod);

@@ -337,6 +337,7 @@ void mainWindow_c::loadRodFields(void) {
     rodPanex->value(r.panexColumns ? 1 : 0);
     rodPocket->value(r.pocketColumn ? 1 : 0);
     rodPocketHeight->value(r.pocketHeight);
+    rodChannel->value(r.outsideChannel ? 1 : 0);
     syncPanexFields();
     if (r.growHeight) rodGrow->setonly();
     else rodFixed->setonly();
@@ -467,7 +468,8 @@ void mainWindow_c::cb_RodSel(void) {
   updateInterface();
 }
 
-/* Panex columns replace the size rule, and the pocket needs them. */
+/* Panex columns replace the size rule, and the pocket and the outside
+ * channel need them; the channel needs three rods too. */
 void mainWindow_c::syncPanexFields(void) {
   if (!rodPanex)
     return;
@@ -484,6 +486,12 @@ void mainWindow_c::syncPanexFields(void) {
     rodPocketHeight->activate();
   else
     rodPocketHeight->deactivate();
+  if (panex && rodCountInput->value() >= 3) {
+    rodChannel->activate();
+  } else {
+    rodChannel->value(0);
+    rodChannel->deactivate();
+  }
 }
 
 void mainWindow_c::cb_RodField(void) {
@@ -517,6 +525,7 @@ void mainWindow_c::cb_RodField(void) {
   if (ph < 1) ph = 1;
   if (ph > 64) ph = 64;
   r.pocketHeight = ph;
+  r.outsideChannel = r.panexColumns && r.rodCount >= 3 && rodChannel->value() != 0;
   if (r.growHeight) rodHeightInput->deactivate();
   else rodHeightInput->activate();
   syncPanexFields();
@@ -946,6 +955,7 @@ void mainWindow_c::syncStackingChrome(void) {
       rodSizeMatters->deactivate();
       rodPocket->deactivate();
       rodPocketHeight->deactivate();
+      rodChannel->deactivate();
     } else {
       if (rodGrow->value()) rodHeightInput->deactivate();
       else rodHeightInput->activate();
