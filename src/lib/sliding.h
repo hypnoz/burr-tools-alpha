@@ -207,6 +207,12 @@ struct slideSearch_c {
   bool highMemory = false;
   /** Let a piece carry what is nested in its outline. */
   bool nested = false;
+  /**
+   * Let a piece also carry what is partly nested in its outline: a piece
+   * with at least one cell in the outline, the rest sticking out of it.
+   * Implies nested.
+   */
+  bool partialNested = false;
   /** Checked as the search runs; when it reads true the search stops. */
   const std::atomic<bool> * stop = nullptr;
   /** When set, kept up to date with the arrangements visited so far. */
@@ -257,7 +263,9 @@ struct slideSearch_c {
  * others stay put, turns included; slideRoute gives the way it goes. With
  * nested true a piece may also carry every piece nested inside it, that is
  * lying wholly in its outline (its cells plus the empty cells between them
- * along a row or column, such as a pocket). Touching alone is not nesting. Returns a single-branch separation_c suitable for replay, or
+ * along a row or column, such as a pocket). Touching alone is not nesting.
+ * With slideSearch_c::partialNested, a piece with only some cells in the
+ * outline is carried too. Returns a single-branch separation_c suitable for replay, or
  * nullptr if no path is found within the state budget.
  */
 std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,

@@ -150,6 +150,7 @@ class mainWindow_c : public LFl_Double_Window {
   Fl_Check_Button *SolveDisasm, *CheckRotations, *JustCount, *DropDisassemblies, *KeepMirrors, *KeepRotations, *StrictColors, *CompleteRotations;
   /* Sliding only. It takes the place of Just Levels. */
   Fl_Check_Button *NestedSlides;
+  Fl_Check_Button *PartialNested;
   Fl_Check_Button *HighMemory;
   Fl_Check_Button *Autosave;
   /* Autosave of brick and sliding solves: when the solve last started or

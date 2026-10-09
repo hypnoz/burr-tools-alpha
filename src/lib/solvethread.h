@@ -203,6 +203,7 @@ class solveThread_c : public assembler_cb, public thread_c {
     static const int PAR_PANEX_SOLVER =     0x2000;  // stacking: the Panex Solver, for Panex columns
     static const int PAR_PANEX_RESUME =     0x4000;  // Panex Solver: carry on the problem's saved search
     static const int PAR_PANEX_NO_AUTOSAVE = 0x8000; // Panex Solver: save only when paused, not every 20 minutes
+    static const int PAR_PARTIAL_NESTED =  0x10000;  // sliding: a piece may also carry pieces partly nested inside it
 
     // create all the necessary data structures to start the thread later on
     solveThread_c(problem_c & puz, int par);

@@ -78,7 +78,7 @@ The Puzzle tab lists one puzzle for each start/goal shape. BurrTools keeps it up
 
 -- Solving the puzzle:
 On the Solver tab, keep "Find Solutions" ticked and press "Solve". The Sliding Full Solver, the default, searches until it finds the fewest moves or proves there is no solution. It keeps older moves on disk, so a large search is limited by free disk space rather than memory. The Fast and Deep solvers stop after 250,000 or 1,000,000 arrangements; they can finish sooner on a puzzle with many start layouts, at the risk of missing a solution.
-"Allow Nested Slides" lets a piece carry the pieces that sit inside it, such as a small piece in another piece's pocket. Pieces that only touch never move together. "Enable High Memory" gives the search more memory for its widest step.
+"Allow Nested Slides" lets a piece carry the pieces that sit inside it, such as a small piece in another piece's pocket. Pieces that only touch never move together. "Allow Partially Nested" goes further: a piece also carries a piece that sits partly inside it and sticks out. "Enable High Memory" gives the search more memory for its widest step.
 While it runs, the Activity line shows how many moves deep the search is and how many arrangements it has seen. When it finishes, move the "Move" slider to watch the pieces slide from start to goal. If there is no solution, the note under the solver says whether that is proven or the search stopped at a limit.
 )TUTORIAL";
 

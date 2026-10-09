@@ -259,6 +259,8 @@ void mainWindow_c::cb_BtnCont(bool prep_only, int forProblem) {
   const bool slidingSolve = sliding::isSliding(*puzzle);
   if (slidingSolve) {
     if (NestedSlides->value() != 0) par |= solveThread_c::PAR_NESTED_SLIDES;
+    if (NestedSlides->value() != 0 && PartialNested->value() != 0)
+      par |= solveThread_c::PAR_PARTIAL_NESTED;
     if (solverTypeChoice && solverTypeChoice->value() == 1) par |= solveThread_c::PAR_DEEP_SEARCH;
     if (solverTypeChoice && solverTypeChoice->value() == 2) par |= solveThread_c::PAR_FULL_SEARCH;
   }
@@ -520,9 +522,9 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
   }
 
   /* Just Levels does nothing for sliding, and Strict Colors nothing for
-   * sliding or stacking (neither uses the assembler). Nested slides
-   * takes Just Levels' place and High Memory (sliding and stacking) takes
-   * Deep Symmetry Check's;
+   * sliding or stacking (neither uses the assembler). High Memory
+   * (sliding and stacking) takes Deep Symmetry Check's place, and the two
+   * nested slide options take Keep Mirror and Keep Rotated Solutions';
    * search depth is the Solver Type choice.
    * The symmetry options go for sliding and stacking alike. */
   {
@@ -541,6 +543,7 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
     setVis(DropDisassemblies, !slidingPuzzle);
     setVis(StrictColors, !slidingPuzzle && !stackingPuzzle);
     setVis(NestedSlides, slidingPuzzle);
+    setVis(PartialNested, slidingPuzzle);
     setVis(HighMemory, slidingPuzzle || stackingPuzzle);
     /* The symmetry filter drops starts that are rotations or mirrors of
      * another. Stacking never assembles, and sliding must keep every start,
@@ -557,6 +560,12 @@ void mainWindow_c::updateSolverOptionCheckboxes(void) {
     if (moved && TabSolve)
       relayoutTab(TabSolve);
   }
+
+  /* Partially nested widens nested slides, so it needs them on. */
+  if (NestedSlides->value() != 0)
+    PartialNested->activate();
+  else
+    PartialNested->deactivate();
 
   if (stackingPuzzle) {
     CheckRotations->value(0);
@@ -595,7 +604,7 @@ namespace {
 const char * const optionNames[] = {
   "disassemble", "checkRotations", "justCount", "justLevels",
   "deepSymmetry", "keepMirrors", "keepRotations", "strictColors",
-  "nestedSlides", "highMemory", "autosave",
+  "nestedSlides", "partialNested", "highMemory", "autosave",
 };
 const char * const sortNames[] = { "unsorted", "moves", "level", "rotations" };
 const char * const slidingSolverNames[] = { "fast", "deep", "full" };
@@ -620,6 +629,7 @@ Fl_Check_Button * mainWindow_c::solverOptionBox(const char * name) {
   if (n == "keepRotations") return KeepRotations;
   if (n == "strictColors") return StrictColors;
   if (n == "nestedSlides") return NestedSlides;
+  if (n == "partialNested") return PartialNested;
   if (n == "highMemory") return HighMemory;
   if (n == "autosave") return Autosave;
   return nullptr;

@@ -872,6 +872,69 @@ TEST_CASE("sliding: a tray too big for 64-bit keys is searched with 128-bit ones
   CHECK(old->getMoves() == path->getMoves());
 }
 
+TEST_CASE("sliding: a piece sticking out of a pocket rides along only when partially nested", "[sliding]") {
+  /* A 3x4 tray. The outer piece is a C, open to the left, in columns 1-2:
+   *   ##
+   *   .#
+   *   ##
+   * The inner piece is 2x1, one cell in the pocket and one sticking out to
+   * the left, so it is not wholly in the outer piece's outline. Both must
+   * rise one row. Alone, neither can move; together they rise in one move. */
+  puzzle_c puz(new gridType_c(gridType_c::GT_SLIDING));
+  sliding::ensureSetup(puz, 3, 4);
+
+  unsigned int outer = puz.addShape(2, 3, 1);
+  for (auto c : std::vector<std::pair<int, int>>{{0, 0}, {1, 0}, {1, 1}, {0, 2}, {1, 2}})
+    puz.getShape(outer)->setState(c.first, c.second, 0, voxel_c::VX_FILLED);
+  unsigned int inner = puz.addShape(2, 1, 1);
+  puz.getShape(inner)->setState(0, 0, 0, voxel_c::VX_FILLED);
+  puz.getShape(inner)->setState(1, 0, 0, voxel_c::VX_FILLED);
+  problem_c * pr = puz.getProblem(0);
+  pr->setShapeMaximum(outer, 1);
+  pr->setShapeMaximum(inner, 1);
+  REQUIRE(sliding::placeGoal(*pr, outer, 1, 0));
+  REQUIRE(sliding::placeGoal(*pr, inner, 0, 1));
+  REQUIRE(sliding::placeStart(*pr, outer, 1, 1));
+  REQUIRE(sliding::placeStart(*pr, inner, 0, 2));
+
+  assembly_c start(puz.getGridType());
+  start.addPlacement(0, 1, 1, 0);
+  start.addPlacement(0, 0, 2, 0);
+
+  const bool legacyAsked = std::getenv("BURRTOOLS_SLIDE_LEGACY") != nullptr;
+  for (int legacy = 0; legacy < 2; legacy++) {
+    if (legacy)
+      slideEnv("BURRTOOLS_SLIDE_LEGACY", true);
+    for (unsigned long states : {(unsigned long)sliding::SEARCH_STATES, (unsigned long)sliding::FULL_SEARCH}) {
+      INFO("legacy " << legacy << ", states " << states);
+      sliding::slideSearch_c plain;
+      plain.maxStates = states;
+      CHECK(sliding::findSlidePath(*pr, start, plain) == nullptr);
+
+      sliding::slideSearch_c nested;
+      nested.maxStates = states;
+      nested.nested = true;
+      CHECK(sliding::findSlidePath(*pr, start, nested) == nullptr);
+
+      /* Partially nested implies nested. */
+      sliding::slideSearch_c partial;
+      partial.maxStates = states;
+      partial.partialNested = true;
+      std::unique_ptr<separation_c> path = sliding::findSlidePath(*pr, start, partial);
+      REQUIRE(path != nullptr);
+      REQUIRE(path->getMoves() == 1);
+      CHECK(path->getState(1)->getY(0) == 0);
+      CHECK(path->getState(1)->getY(1) == 1);
+
+      std::vector<unsigned int> movers;
+      sliding::slideRoute(*pr, *path, 0, &movers);
+      CHECK(movers == std::vector<unsigned int>{0, 1});
+    }
+    if (legacy && !legacyAsked)
+      slideEnv("BURRTOOLS_SLIDE_LEGACY", false);
+  }
+}
+
 TEST_CASE("sliding: a key set finds what was put in it, on disk and in memory", "[sliding]") {
   const std::filesystem::path dir =
       std::filesystem::temp_directory_path() / "burrtools_test_keyset";

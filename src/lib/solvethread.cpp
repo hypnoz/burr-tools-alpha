@@ -461,6 +461,8 @@ std::string solveThread_c::slidingSummary(void) const {
                       "with the current settings.";
     if (!(parameters & PAR_NESTED_SLIDES))
       msg += " If a piece can carry pieces that sit inside it, try Allow Nested Slides.";
+    else if (!(parameters & PAR_PARTIAL_NESTED))
+      msg += " If a piece can carry pieces that stick out of it, try Allow Partially Nested.";
     return msg;
   }
   return "";
@@ -902,6 +904,7 @@ bool solveThread_c::assembly(std::unique_ptr<assembly_c> a) {
                          : sliding::SEARCH_STATES;
         search.highMemory = (parameters & PAR_HIGH_MEMORY) != 0;
         search.nested = (parameters & PAR_NESTED_SLIDES) != 0;
+        search.partialNested = (parameters & PAR_PARTIAL_NESTED) != 0;
         search.stop = &stopPressed;
         search.progress = &slideProgress;
         search.depthProgress = &searchDepth;

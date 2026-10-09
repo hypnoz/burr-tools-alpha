@@ -928,11 +928,17 @@ void mainWindow_c::CreateSolveTab(void) {
     StrictColors->clear_visible_focus();
     StrictColors->callback(cb_SolverOptions_stub, this);
 
-    NestedSlides = new LFl_Check_Button("Allow Nested Slides", 0, 3, 1, 1);
+    NestedSlides = new LFl_Check_Button("Allow Nested Slides", 1, 1, 1, 1);
     NestedSlides->tooltip(" A piece may slide together with the pieces nested inside its outline, such as a piece in another piece's pocket. Pieces that only touch never slide together. ");
     NestedSlides->clear_visible_focus();
     NestedSlides->callback(cb_SolverOptions_stub, this);
     NestedSlides->hide();
+
+    PartialNested = new LFl_Check_Button("Allow Partially Nested", 1, 2, 1, 1);
+    PartialNested->tooltip(" With Allow Nested Slides: a piece may also slide together with a piece that sits partly in its outline, such as a piece in another piece's pocket that sticks out of it. Pieces that only touch never slide together. ");
+    PartialNested->clear_visible_focus();
+    PartialNested->callback(cb_SolverOptions_stub, this);
+    PartialNested->hide();
 
     HighMemory = new LFl_Check_Button("Enable High Memory", 1, 0, 1, 1);
     HighMemory->tooltip(" Let a sliding or stacking search hold up to half of this computer's memory in arrangements, instead of stopping at about 2 GB. The Sliding Full Solver keeps older moves on disk and needs memory only for the widest move. ");
@@ -1665,6 +1671,7 @@ mainWindow_c::mainWindow_c(gridType_c * gt) : LFl_Double_Window(true) {
   stackValidBar = 0;
   slideValidBar = 0;
   NestedSlides = 0;
+  PartialNested = 0;
   HighMemory = 0;
   Autosave = 0;
   probArrowGapL[0] = probArrowGapL[1] = 0;

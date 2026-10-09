@@ -65,6 +65,7 @@ bool disassemble;
 bool checkRotations;
 bool strictColors;
 bool nestedSlides;
+bool partialNested;
 bool highMemory;
 /* Set from --solver once the file shows a sliding puzzle. */
 bool deepSearch;
@@ -275,6 +276,7 @@ public:
         sliding::slideSearch_c search;
         search.maxStates = slideStates();
         search.nested = nestedSlides;
+        search.partialNested = partialNested;
         search.highMemory = highMemory;
         da = sliding::findSlidePath(*puzzle, *a, search);
         if (search.outcome == sliding::SLIDE_LIMIT || search.outcome == sliding::SLIDE_MEMORY ||
@@ -491,6 +493,10 @@ void usage(puzzleKind_e kind = PK_ANY) {
     cout << "          a piece may carry the pieces nested inside its outline, such as a\n";
     cout << "          piece in another piece's pocket. Pieces that only touch never move\n";
     cout << "          together.\n";
+    cout << "  --partial-nested\n";
+    cout << "          with --nested-slides, a piece also carries the pieces partly nested\n";
+    cout << "          in its outline: some of their cells inside it, the rest sticking out.\n";
+    cout << "          Implies --nested-slides.\n";
     cout << "  --high-memory\n";
     cout << "          let the search hold up to half of this computer's memory in\n";
     cout << "          arrangements, instead of stopping at about 2 GB\n";
@@ -625,6 +631,7 @@ int main(int argv, char* args[]) {
   checkRotations = false;
   strictColors = false;
   nestedSlides = false;
+  partialNested = false;
   highMemory = false;
   deepSearch = false;
   fullSearch = false;
@@ -680,6 +687,9 @@ int main(int argv, char* args[]) {
         return 0;
       } else if (strcmp(args[i], "--nested-slides") == 0) {
         nestedSlides = true;
+      } else if (strcmp(args[i], "--partial-nested") == 0) {
+        nestedSlides = true;
+        partialNested = true;
       } else if (strcmp(args[i], "--restart") == 0) {
         panexRestart = true;
       } else if (strcmp(args[i], "--panex-dir") == 0 && i + 1 < argv) {
@@ -824,7 +834,8 @@ int main(int argv, char* args[]) {
                           : sliding::isSliding(p) ? PK_SLIDING
                           : PK_BRICK;
   if (nestedSlides && kind != PK_SLIDING) {
-    fprintf(stderr, "burrTxt: --nested-slides is for sliding puzzles; this is a %s puzzle\n", kindName(kind));
+    fprintf(stderr, "burrTxt: %s is for sliding puzzles; this is a %s puzzle\n",
+            partialNested ? "--partial-nested" : "--nested-slides", kindName(kind));
     return 2;
   }
   if (highMemory && kind == PK_BRICK) {
@@ -1173,7 +1184,8 @@ int main(int argv, char* args[]) {
                                       : (fullSearch ? "" : " (try --solver full)")) << endl;
           else if (a.Solutions == 0 && a.Assemblies > 0)
             cout << "every reachable arrangement was searched: no solution"
-                 << (nestedSlides ? "" : " (without --nested-slides)") << endl;
+                 << (!nestedSlides ? " (without --nested-slides)"
+                     : !partialNested ? " (without --partial-nested)" : "") << endl;
         }
       }
 
@@ -1219,6 +1231,7 @@ int main(int argv, char* args[]) {
             sliding::slideSearch_c search;
             search.maxStates = slideStates();
             search.nested = nestedSlides;
+        search.partialNested = partialNested;
             search.highMemory = highMemory;
             da = sliding::findSlidePath(*problem, *problem->getSavedSolution(sol)->getAssembly(), search);
           } else {

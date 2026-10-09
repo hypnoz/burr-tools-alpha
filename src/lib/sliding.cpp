@@ -489,11 +489,12 @@ cellList_t fewestTurns(const voxel_c & tray, const std::vector<cell3List_t> & ce
 }
 
 /* `outer` and everything nested inside it: pieces whose cells all lie in
- * the outline of a piece already in the group, repeated until no more join.
- * Pieces that merely touch are not nested. */
+ * the outline of a piece already in the group, or with partial set, pieces
+ * with any cell there; repeated until no more join. Pieces that merely
+ * touch are not nested. */
 std::vector<unsigned int> nestedGroup(const std::vector<cell3List_t> & cells,
                                       const std::vector<cell3List_t> & outlines,
-                                      const SlideState & s, unsigned int outer) {
+                                      const SlideState & s, unsigned int outer, bool partial) {
   std::vector<unsigned int> group{outer};
   for (size_t k = 0; k < group.size(); k++) {
     unsigned int a = group[k];
@@ -504,12 +505,14 @@ std::vector<unsigned int> nestedGroup(const std::vector<cell3List_t> & cells,
       if (std::find(group.begin(), group.end(), b) != group.end() || cells[b].empty())
         continue;
       bool all = true;
-      for (const auto & c : cells[b])
-        if (!inside.count({s.places[b].x + c.x, s.places[b].y + c.y, s.places[b].z + c.z})) {
+      bool any = false;
+      for (const auto & c : cells[b]) {
+        if (inside.count({s.places[b].x + c.x, s.places[b].y + c.y, s.places[b].z + c.z}))
+          any = true;
+        else
           all = false;
-          break;
-        }
-      if (all)
+      }
+      if (partial ? any : all)
         group.push_back(b);
     }
   }
@@ -1282,7 +1285,7 @@ void legacySearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
     for (unsigned int pi = 0; pi < n && !found; pi++) {
       std::vector<std::vector<unsigned int>> moverSets{{pi}};
       if (nested) {
-        std::vector<unsigned int> group = nestedGroup(cells, outlines, cur, pi);
+        std::vector<unsigned int> group = nestedGroup(cells, outlines, cur, pi, search.partialNested);
         if (group.size() > 1)
           moverSets.push_back(group);
       }
@@ -1580,6 +1583,8 @@ struct slideSpace_c {
   size_t words = 0;
   unsigned int n = 0;
   bool nested = false;
+  /* With nested: a piece partly in a member's outline joins its group too. */
+  bool partial = false;
   int trayW = 0;
   int trayH = 0;
   SlideState initial;
@@ -1820,7 +1825,8 @@ private:
 
   /* outer and everything nested inside it (see nestedGroup) with the pieces
    * at at[]: a piece is nested in a member when its cells all lie in that
-   * member's outline. Into group, and as a bit set. */
+   * member's outline, or with s.partial, when any of them does. Into group,
+   * and as a bit set. */
   uint64_t groupAt(const int * at, unsigned int outer, unsigned int * group,
                    unsigned int & members) const {
     const std::vector<posTable_c> & t = s.t;
@@ -1834,10 +1840,17 @@ private:
         if ((inGroup >> b) & 1)
           continue;
         const uint64_t * inner = &t[b].mask[(size_t)at[b] * s.words];
-        bool all = true;
-        for (size_t w = 0; w < s.words && all; w++)
-          all = (inner[w] & ~out[w]) == 0;
-        if (all) {
+        bool joins;
+        if (s.partial) {
+          joins = false;
+          for (size_t w = 0; w < s.words && !joins; w++)
+            joins = (inner[w] & out[w]) != 0;
+        } else {
+          joins = true;
+          for (size_t w = 0; w < s.words && joins; w++)
+            joins = (inner[w] & ~out[w]) == 0;
+        }
+        if (joins) {
           group[members++] = b;
           inGroup |= uint64_t(1) << b;
         }
@@ -2577,6 +2590,7 @@ bool tableSearch(const voxel_c & tray, const std::vector<cell3List_t> & cells,
   slideSpace_c<key_t> space;
   if (!space.build(tray, cells, outlines, nested, initial, goals))
     return false;
+  space.partial = nested && search.partialNested;
   std::vector<key_t> chain;
   if (search.maxStates == FULL_SEARCH && !std::getenv("BURRTOOLS_SLIDE_QUEUE"))
     levelSearch(space, search, chain);
@@ -2602,7 +2616,7 @@ std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
 std::unique_ptr<separation_c> findSlidePath(const problem_c & prob,
                                             const assembly_c & start,
                                             slideSearch_c & search) {
-  const bool nested = search.nested;
+  const bool nested = search.nested || search.partialNested;
   search.outcome = SLIDE_NO_PATH;
   search.visited = 0;
   if (!prob.resultValid())
