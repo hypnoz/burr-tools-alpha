@@ -350,8 +350,22 @@ jobs:
           strip -x build/burrtools build/burrTxt build/burrTxt2
           ccache -s || true
 
+      # As on Linux: print the failing assertions from meson's full log, which
+      # the progress lines on stderr crowd out of the last 100 lines it shows.
       - name: Run tests
-        run: just test
+        run: |
+          just test || {
+            grep -v -E '^(blockpack:|using assembler|removed [0-9]+ rows|range optimisation)' \
+              build/meson-logs/testlog.txt | grep -B 12 -A 20 -E 'FAILED:|test cases:' || true
+            exit 1
+          }
+
+      - name: Upload test log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-testlog
+          path: build/meson-logs/testlog.txt
 
       - name: Create macOS app bundle and DMG
         env:
