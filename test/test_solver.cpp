@@ -127,6 +127,31 @@ struct ForceNoSimd {
 
 } // namespace
 
+/* The orange piece of this sphere puzzle has a symmetry list the generated
+ * tables never contained; before symmetries_2_c learned to register new
+ * lists, createMatrix() failed an assertion on it (and the GUI crashed in
+ * the solve thread's unwinding). The counts come from an independent
+ * brute-force tiling of the puzzle: 48 assemblies with every piece rotated
+ * freely, 12 rotations of the result shape that map it onto itself, so 4
+ * distinct assemblies (mirroring adds none, so keeping mirrors changes
+ * nothing). */
+int sphereAssemblies(bool keepMirror, bool keepRotations) {
+  auto p = puzzle_c::load("test/test_sphere_symmetry.xmpuzzle");
+  REQUIRE(p != nullptr);
+  problem_c * problem = p->getProblem(0);
+  std::unique_ptr<assembler_c> assm = p->getGridType()->findAssembler(*problem);
+  REQUIRE(assm != nullptr);
+  REQUIRE(assm->createMatrix(keepMirror, keepRotations, false) == assembler_c::ERR_NONE);
+  TestAssemblerCallback cb;
+  assm->assemble(&cb);
+  return cb.assemblies;
+}
+
+TEST_CASE("Spheres: a piece with an unlisted symmetry assembles", "[solver][spheres]") {
+  REQUIRE(sphereAssemblies(false, false) == 4);
+  REQUIRE(sphereAssemblies(true, false) == 4);
+}
+
 TEST_CASE("Pelikan Burr solver regression (GT_BRICKS)", "[solver][pelikan]") {
   SolveResult res = solvePuzzle("examples/PelikanBurr.xmpuzzle", 0, true);
 

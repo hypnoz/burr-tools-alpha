@@ -55,10 +55,12 @@
 
 
 /**
- * This type holds the symmetry list entry number. Right now spheres are the greatest user
- * with 241 entries
+ * This type holds the symmetry list entry number. The brick and triangle grids have a
+ * fixed list. The sphere grid starts from a generated list of 241 entries and appends
+ * the symmetry list of any shape it has not seen before (see symmetries_2_c), so the
+ * number must leave room for more than 256 entries.
  */
-typedef uint8_t symmetries_t;
+typedef uint16_t symmetries_t;
 
 /* some macros for the symmeties_t type */
 
@@ -71,12 +73,12 @@ typedef uint8_t symmetries_t;
  * There is a value for an invalid symmetry group that can be used to signify uncalculated
  * symmetry groups
  */
-#define symmetryInvalid() (0xFF)
+#define symmetryInvalid() (0xFFFF)
 
 /**
  * check, if the given symmetry group is the invalid symmetry group
  */
-#define isSymmetryInvalid(s) ((s) == 0xFF)
+#define isSymmetryInvalid(s) ((s) == symmetryInvalid())
 
 class voxel_c;
 

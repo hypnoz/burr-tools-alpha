@@ -271,29 +271,45 @@ void solveThread_c::run(void){
       action.store(ACT_PREPARATION, std::memory_order_relaxed);
       beginPhase(PHASE_PREPARE);
       std::unique_ptr<assembler_c> new_assm = puzzle.getPuzzle().getGridType()->findAssembler(puzzle, false, solverType);
-      a = new_assm.get();
-      publishAssembler(a);
+      {
+        /* While new_assm is published but still owned here, an assertion
+         * thrown by createMatrix() or reduce() unwinds through this block.
+         * withdraw_c above is destroyed after new_assm and would then read
+         * the freed assembler (it asks it for getFinished()), so withdraw
+         * from inside the block, before new_assm goes. The explicit calls
+         * below stay so that the GUI never sees the error or pause state
+         * with the assembler still published. */
+        struct unpublish_c {
+          solveThread_c * t;
+          ~unpublish_c() { t->publishAssembler(nullptr); }
+        } unpublish{this};
 
-      errState = a->createMatrix(parameters & PAR_KEEP_MIRROR, parameters & PAR_KEEP_ROTATIONS, parameters & PAR_COMPLETE_ROTATIONS, strictColors);
-      endPhase(prepareMs);
-      if (errState != assembler_c::ERR_NONE) {
-        errParam = a->getErrorsParam();
-        publishAssembler(nullptr);  // before new_assm goes
-        action.store(ACT_ERROR, std::memory_order_relaxed);
-        return;
-      }
+        a = new_assm.get();
+        publishAssembler(a);
 
-      if (!stopPressed.load(std::memory_order_relaxed) && (parameters & PAR_REDUCE)) {
-        action.store(ACT_REDUCE, std::memory_order_relaxed);
-        beginPhase(PHASE_REDUCE);
-        a->reduce();
-        endPhase(reduceMs);
-      }
+        errState = a->createMatrix(parameters & PAR_KEEP_MIRROR, parameters & PAR_KEEP_ROTATIONS, parameters & PAR_COMPLETE_ROTATIONS, strictColors);
+        endPhase(prepareMs);
+        if (errState != assembler_c::ERR_NONE) {
+          errParam = a->getErrorsParam();
+          publishAssembler(nullptr);  // before new_assm goes
+          action.store(ACT_ERROR, std::memory_order_relaxed);
+          return;
+        }
 
-      if (stopPressed.load(std::memory_order_relaxed)) {
-        publishAssembler(nullptr);  // before new_assm goes
-        action.store(ACT_PAUSING, std::memory_order_relaxed);
-        return;
+        if (!stopPressed.load(std::memory_order_relaxed) && (parameters & PAR_REDUCE)) {
+          action.store(ACT_REDUCE, std::memory_order_relaxed);
+          beginPhase(PHASE_REDUCE);
+          a->reduce();
+          endPhase(reduceMs);
+        }
+
+        if (stopPressed.load(std::memory_order_relaxed)) {
+          publishAssembler(nullptr);  // before new_assm goes
+          action.store(ACT_PAUSING, std::memory_order_relaxed);
+          return;
+        }
+
+        publishAssembler(nullptr);
       }
 
       /* set the assembler to the problem as soon as it is finished
@@ -301,7 +317,6 @@ void solveThread_c::run(void){
        * also restores the assembler state to a state that might
        * be saved within the problem
        */
-      publishAssembler(nullptr);
       errState = puzzle.setAssembler(std::move(new_assm));
       if (errState != assembler_c::ERR_NONE) {
         action.store(ACT_ERROR, std::memory_order_relaxed);

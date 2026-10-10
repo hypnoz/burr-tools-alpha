@@ -295,3 +295,173 @@ TEST_CASE("symmetries: normalizeTransformation returns a usable transformation",
     }
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* the sphere grid's symmetry registry                                 */
+/* ------------------------------------------------------------------ */
+
+#include "lib/puzzle.h"
+#include "lib/symmetries_2.h"
+
+#include <cstring>
+#include <vector>
+
+namespace {
+
+/* The generated tables, read a second time here so the run-time
+ * derivation can be checked against them entry by entry. */
+namespace sphereTables {
+
+constexpr unsigned int NT = symmetries_2_c::TRANSFORMATIONS;
+constexpr unsigned int NG = 241;
+
+const bitfield_c<NT> symmetries[NG] = {
+#include "lib/tabs_2/symmetries.inc"
+};
+const bitfield_c<NT> unified[NG] = {
+#include "lib/tabs_2/unifiedsym.inc"
+};
+const bitfield_c<NT> unique[NG] = {
+#include "lib/tabs_2/uniquesym.inc"
+};
+const unsigned char minimizer[NG][NT] = {
+#include "lib/tabs_2/transformmini.inc"
+};
+
+} // namespace sphereTables
+
+/**
+ * Check every answer the symmetry tables give for one shape against the
+ * shape itself: transform it every way the grid allows and compare.
+ */
+void checkSymmetryTables(const gridType_c & gt, const voxel_c & shape) {
+  const symmetries_c * sym = gt.getSymmetries();
+  const symmetries_t s = shape.selfSymmetries();
+  const unsigned int NT = sym->getNumTransformationsMirror();
+
+  /* the shape in every orientation the grid can hold, null where it cannot */
+  std::vector<std::unique_ptr<voxel_c>> orient(NT);
+  for (unsigned int t = 0; t < NT; t++) {
+    std::unique_ptr<voxel_c> v = copyVoxel(gt, shape);
+    if (v->transform(t))
+      orient[t] = std::move(v);
+  }
+  auto same = [&](unsigned int a, unsigned int b) {
+    return orient[a] && orient[b] && orient[a]->identicalInBB(orient[b].get());
+  };
+
+  bool mirror = false;
+  for (unsigned int t = 0; t < NT; t++) {
+    INFO("transformation " << t);
+    const bool self = orient[t] && shape.identicalInBB(orient[t].get());
+    REQUIRE(sym->symmetrieContainsTransformation(s, t) == self);
+    if (self && t >= sym->getNumTransformations())
+      mirror = true;
+  }
+  REQUIRE(sym->symmetryContainsMirror(s) == mirror);
+
+  for (unsigned int t = 0; t < NT; t++) {
+    if (!orient[t])
+      continue;
+    INFO("transformation " << t);
+
+    /* exactly one of the unique transformations gives this orientation */
+    unsigned int uniques = 0;
+    for (unsigned int u = 0; u < NT; u++)
+      if (sym->isTransformationUnique(s, u) && same(u, t))
+        uniques++;
+    REQUIRE(uniques == 1);
+
+    /* the minimizer names the lowest transformation with this orientation */
+    const unsigned int m = sym->minimizeTransformation(s, (unsigned char)t);
+    REQUIRE(m <= t);
+    REQUIRE(same(m, t));
+    REQUIRE(sym->minimizeTransformation(s, (unsigned char)m) == m);
+    for (unsigned int lower = 0; lower < m; lower++)
+      REQUIRE_FALSE(same(lower, t));
+  }
+}
+
+} // namespace
+
+TEST_CASE("spheres: run-time table derivation reproduces the generated tables", "[symmetry][spheres]") {
+  using namespace sphereTables;
+
+  gridType_c gt(gridType_c::GT_SPHERES);
+  const symmetries_c * sym = gt.getSymmetries();
+  REQUIRE(sym->getNumTransformationsMirror() == NT);
+
+  for (unsigned int g = 0; g < NG; g++) {
+    INFO("symmetry list " << g);
+
+    bitfield_c<NT> uni, unq;
+    unsigned char mini[NT];
+    symmetries_2_c::deriveTables(symmetries[g], uni, unq, mini);
+    REQUIRE(uni == unified[g]);
+    REQUIRE(unq == unique[g]);
+    REQUIRE(memcmp(mini, minimizer[g], NT) == 0);
+
+    /* and the registry hands out the generated entries unchanged */
+    for (unsigned int t = 0; t < NT; t++) {
+      REQUIRE(sym->symmetrieContainsTransformation((symmetries_t)g, t) == symmetries[g].get(t));
+      REQUIRE(sym->isTransformationUnique((symmetries_t)g, t) == unique[g].get(t));
+      REQUIRE(sym->minimizeTransformation((symmetries_t)g, (unsigned char)t) == minimizer[g][t]);
+    }
+    const unsigned int other = (g * 7 + 3) % NG;
+    REQUIRE(sym->countSymmetryIntersection((symmetries_t)g, (symmetries_t)other) ==
+            (unified[g] & symmetries[other]).countbits());
+  }
+}
+
+TEST_CASE("symmetries: the tables answer like the shape itself", "[symmetry]") {
+  for (gridType_c::gridType t : ALL_GRIDS) {
+    INFO("grid " << gridName(t));
+    gridType_c gt(t);
+    if (!gt.getSymmetries())
+      continue;
+
+    /* the spiral is drawn on cube coordinates; where some of them are not
+       grid positions (spheres) its transformed copies drop them and the
+       comparison would be against a different shape */
+    std::unique_ptr<voxel_c> spiral = lopsidedSpiral(gt);
+    if (countValidFilled(*spiral) == spiral->countState(voxel_c::VX_FILLED))
+      checkSymmetryTables(gt, *spiral);
+    for (unsigned int cells = 1; cells <= 9; cells += 2) {
+      INFO("legal shape with " << cells << " cells");
+      std::unique_ptr<voxel_c> v = legalShape(gt, LEGAL_SHAPE_BOX, cells);
+      REQUIRE(v != nullptr);
+      checkSymmetryTables(gt, *v);
+    }
+  }
+}
+
+TEST_CASE("spheres: a shape outside the generated symmetry lists gets its own entry", "[symmetry][spheres]") {
+  /* The orange piece of this puzzle (shape 2) maps onto itself under 12
+   * transformations, a list the generator never found. Solving the puzzle
+   * used to fail the assertion in calculateSymmetry(). */
+  std::unique_ptr<puzzle_c> p = puzzle_c::load("test/test_sphere_symmetry.xmpuzzle");
+  REQUIRE(p != nullptr);
+  REQUIRE(p->getGridType()->getType() == gridType_c::GT_SPHERES);
+  const gridType_c & gt = *p->getGridType();
+
+  const voxel_c * orange = p->getShape(2);
+  REQUIRE(std::string(orange->getName()) == "orange");
+  REQUIRE(symmetries_2_c::symmetryList(orange).countbits() == 12);
+
+  const unsigned int before = symmetries_2_c::numSymmetryLists();
+  const symmetries_t s = orange->selfSymmetries();
+  REQUIRE(s >= sphereTables::NG);
+  REQUIRE(symmetries_2_c::numSymmetryLists() >= before);
+  REQUIRE(s < symmetries_2_c::numSymmetryLists());
+
+  /* the same list, asked for again, gets the same number */
+  std::unique_ptr<voxel_c> copy = copyVoxel(gt, *orange);
+  REQUIRE(copy->selfSymmetries() == s);
+  REQUIRE(gt.getSymmetries()->calculateSymmetry(orange) == s);
+  REQUIRE(symmetries_2_c::numSymmetryLists() == before + (s == before ? 1 : 0));
+
+  for (unsigned int i = 0; i < p->getNumberOfShapes(); i++) {
+    INFO("shape " << i << " " << p->getShape(i)->getName());
+    checkSymmetryTables(gt, *p->getShape(i));
+  }
+}

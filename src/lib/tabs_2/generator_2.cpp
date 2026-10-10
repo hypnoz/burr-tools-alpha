@@ -186,59 +186,6 @@ void outputUniqueSymmetries(void) {
 
 
 
-/* this function creates a decision tree for symmetry creation trying to optimize for the
- * lowest number of checks (6-7 should be possible, if we can subdivide each time#
- * with nearly equal subparts
- */
-void makeSymmetryTree(bitfield_c<NUM_TRANSFORMATIONS_MIRROR> taken,bitfield_c<NUM_TRANSFORMATIONS_MIRROR> val, FILE * out) {
-
-  /* greedy implementation: find the subdivision that is most equal */
-  int best_div = -100;
-  int best_bit = 0;
-  int b1, b2;
-
-  for (int t = 0; t < NUM_TRANSFORMATIONS_MIRROR; t++)
-    if (!taken.get(t)) {
-      b1 = 0;
-      b2 = 0;
-      int lastfound = 0;
-      for (int s = 0; s < NUM_SYMMETRY_GROUPS; s++) {
-        if ((symmetries[s] & taken) == val) {
-          b1++;
-          lastfound = s;
-        }
-        taken.set(t);
-        if ((symmetries[s] & taken) == val)
-          b2++;
-        taken.reset(t);
-      }
-
-      if (b1 == 1) {
-        fprintf(out, "return (symmetries_t)%i;\n", lastfound);
-        return;
-      }
-
-      if ((b2 > 0) && (b1-b2>0) && (abs(b1/2 - best_div) > abs(b1/2 - b2))) {
-        best_div = b2;
-        best_bit = t;
-      }
-    }
-
-  fprintf(out, "voxel_2_c v(pp);\nif (v.transform(%i) && pp->identicalInBB(&v)) {\n", best_bit);
-
-  taken.set(best_bit);
-  val.set(best_bit);
-  makeSymmetryTree(taken, val, out);
-  val.reset(best_bit);
-
-  fprintf(out, "} else {\n");
-
-  makeSymmetryTree(taken, val, out);
-
-  fprintf(out, "}\n");
-
-}
-
 void mmult(double * m, int num) {
 
   double n[9];
@@ -321,8 +268,9 @@ int main(int /*argv*/, char** /*args[]*/) {
   outputCompleteSymmetries();
   outputUniqueSymmetries();
 
-  FILE * out = fopen("symcalc.inc", "w");
-  makeSymmetryTree("0", "0", out);
-  fclose(out);
+  /* No symcalc.inc for spheres: symmetries_2_c computes the whole symmetry
+   * list of a shape and looks it up, because the generated lists are not
+   * complete (the transformations do not form a group) and the decision
+   * tree would answer wrongly for a list outside them. */
 }
 
